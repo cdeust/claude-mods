@@ -1,5 +1,8 @@
 import type { Worktree } from '../types'
-import { isInsideWorktreeRoot } from './guard'
+// source: ~/.claude/CLAUDE.md rule 2 and Cortex CLAUDE.md: <repo>/.claude/worktrees/<name>/,
+// .Codex/worktrees/<name>/ for Codex. The same rule cortex-guard enforces; a viewer only reads it.
+const WORKTREE_ROOTS = ['/.claude/worktrees/', '/.Codex/worktrees/'] as const
+const isInsideWorktreeRoot = (path: string): boolean => WORKTREE_ROOTS.some((root) => path.includes(root))
 
 // source: ~/.local/state/disk-hygiene/ownership.json, the registry disk_hygiene.py keeps
 // (its --state default); one entry per registered path, `owner` is "<host>:<session>".

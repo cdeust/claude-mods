@@ -1,5 +1,6 @@
-import type { ContextHealth, HygieneSnapshot, PolicyState, Refusal, StageTally } from '../types'
-import { band, bar, tokensLeft } from './context'
+import type { HygieneSnapshot, StageTally } from '../types'
+import { bar, tokensLeft } from './contextview'
+import type { ContextHealth, GeniusState, PolicyDecision, PolicyState, Refusal } from './deps'
 import { shortPath } from './hygiene'
 import { ageLabel, group } from './model'
 import { STAGES, shortName } from './pipeline'
@@ -18,7 +19,7 @@ const TOP = 5 // source: own choice, the rows a one-line summary can carry
 export const ContextPanel = (ui: Ui, surface: Surface, c: ContextHealth | null, now: number) => {
   const { Box, Text } = ui
   if (c === null) return <Text dimColor>context: pending (no response measured yet)</Text>
-  const b = band(c)
+  const b = c.band
   const color =
     b === 'hard' ? tone(surface, 'danger') : b === 'warn' ? tone(surface, 'warn') : undefined
   const left = tokensLeft(c)
@@ -155,17 +156,49 @@ export const RefusalsPanel = (ui: Ui, surface: Surface, refusals: readonly Refus
 
 const SHOWN_DECISIONS = 6 // source: own choice, the newest decisions on screen
 
-export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState) => {
+type AnyDecision = PolicyDecision | GeniusState['decisions'][number]
+const decisionRow = (d: AnyDecision): string =>
+  `${clock(d.at)} ${d.kind.padEnd(6)} ${d.subject.padEnd(28)} ${'from' in d ? `${d.from} → ` : '→ '}${d.to}${
+    d.applied ? '' : ' · observed'
+  }`
+
+const GeniusLine = (ui: Ui, g: GeniusState | null) => {
+  const { Text } = ui
+  if (g === null) return <Text dimColor>genius: not loaded</Text>
+  const c = g.classified
+  const picks = c === null ? [] : [...c.geniuses.map((p) => `${p.agent} · ${p.shape}`), ...c.shapes]
+  const last =
+    c === null
+      ? 'no request graded yet'
+      : `last: ${c.taskClass} → effort ${c.effort} · ${picks.length === 0 ? 'no pattern' : picks.join(' · ')} · ${c.ms} ms`
+  return (
+    <Text dimColor>
+      genius {g.mode} · classifier {g.classifierModel} · {g.skillShapesLoaded} skills · {g.geniusShapesLoaded} genius
+      shapes · {last}
+      {g.classifierError === null ? '' : ` · ${g.classifierError}`}
+    </Text>
+  )
+}
+
+export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState | null, g: GeniusState | null) => {
   const { Box, Text } = ui
+  if (p === null)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>autopilot: not loaded</Text>
+        {GeniusLine(ui, g)}
+      </Box>
+    )
   const pressureColor = p.pressure === 'none' ? undefined : tone(surface, 'warn')
+  const decisions: AnyDecision[] = [...p.decisions, ...(g?.decisions ?? [])].sort((a, b) => a.at - b.at)
   return (
     <Box flexDirection="column">
       <Text>
         <Text bold>{p.mode}</Text>
         <Text dimColor>
           {' '}
-          · ladder: first request kept, loop at medium, pressure at low · quota pressure from{' '}
-          {p.quotaPercent} % of 5 h · results capped at {group(p.resultCapChars)} chars
+          · ladder from the graded rung, loop at medium, pressure at low · quota pressure from {p.quotaPercent} % of
+          5 h · results capped at {group(p.resultCapChars)} chars
         </Text>
       </Text>
       <Text color={pressureColor}>
@@ -174,24 +207,11 @@ export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState) => {
           ? ` · ${group(p.charsCut)} chars kept out, about ${group(Math.round(p.charsCut / 4))} tokens (estimated)`
           : ''}
       </Text>
-      <Text dimColor>
-        classifier {p.classifierModel} · {p.shapesLoaded} shapes loaded ·{' '}
-        {p.classified === null
-          ? 'no request classified yet'
-          : `last: ${p.classified.taskClass} → effort ${p.classified.effort} · ${
-              p.classified.shapes.length === 0 ? 'no shape' : p.classified.shapes.join(' + ')
-            } · ${p.classified.ms} ms`}
-        {p.classifierError === null ? '' : ` · ${p.classifierError}`}
-      </Text>
-      {p.decisions.length === 0 ? (
+      {GeniusLine(ui, g)}
+      {decisions.length === 0 ? (
         <Text dimColor>no decision yet</Text>
       ) : (
-        p.decisions.slice(-SHOWN_DECISIONS).map((d) => (
-          <Text dimColor={!d.applied}>
-            {clock(d.at)} {d.kind.padEnd(6)} {d.subject.padEnd(28)} {d.from} → {d.to}
-            {d.applied ? '' : ' · observed'}
-          </Text>
-        ))
+        decisions.slice(-SHOWN_DECISIONS).map((d) => <Text dimColor={!d.applied}>{decisionRow(d)}</Text>)
       )}
     </Box>
   )

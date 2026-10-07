@@ -1,0 +1,34 @@
+{
+  "name": "zetetic-autopilot",
+  "version": "0.1.0",
+  "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the tool loop steps down the ladder; subagents run on the family their type and the turn's class call for (haiku, sonnet, opus, fable); under quota or context pressure everything goes one notch down and long streaming tool results keep head and tail. Starts in observe.",
+  "types": "./types/index.d.ts",
+  "dependencies": ["zetetic-genius"],
+  "userConfig": {
+    "policy_mode": {
+      "type": "string",
+      "title": "Policy mode",
+      "description": "observe: every effort, model and lean decision is logged (the cockpit's POLICY panel) and not applied. enforce: applied as logged.",
+      "default": "observe",
+      "options": [
+        "observe",
+        "enforce"
+      ]
+    },
+    "quota_pressure_percent": {
+      "type": "number",
+      "title": "Quota pressure (% of the five-hour window)",
+      "description": "At or past this share of the five-hour window, requests run at low effort, heavy subagents are spawned on sonnet and main drops to sonnet.",
+      "default": 80
+    },
+    "result_cap_chars": {
+      "type": "number",
+      "title": "Tool result cap (characters)",
+      "description": "A Bash, Grep, Glob, WebFetch or WebSearch result longer than this keeps its head and tail; the cut is named in the row.",
+      "default": 16000
+    }
+  },
+  "author": {
+    "name": "cdeust"
+  }
+}

@@ -1,15 +1,7 @@
 import type { Elements, RenderChildren } from 'claude-code'
 
-import type {
-  ContextHealth,
-  CortexEntry,
-  CortexStats,
-  HygieneSnapshot,
-  PolicyState,
-  Refusal,
-  StageTally,
-  TurnTally,
-} from '../types'
+import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
+import type { ContextHealth, GeniusState, PolicyState, Refusal } from './deps'
 import { ageLabel, cacheShare, countBy, group, heatCells } from './model'
 import { ContextPanel, HygienePanel, PipelinePanel, PolicyPanel, RefusalsPanel, clock } from './panels'
 import { HEAT_TRACK, type Surface, tone } from './tokens'
@@ -29,7 +21,8 @@ export type CockpitData = {
   stages: Record<string, StageTally>
   refusals: readonly Refusal[]
   hygiene: HygieneSnapshot | null
-  policy: PolicyState
+  policy: PolicyState | null
+  genius: GeniusState | null
   onRefresh: () => void
   onConsolidate: () => void
   onCurateWiki: () => void
@@ -180,7 +173,7 @@ export const Cockpit = (ui: Ui, d: CockpitData) => {
       {Section(ui, 'MEMORY', Memory(ui, d))}
       {Section(ui, 'PIPELINE SPEC → CODE', PipelinePanel(ui, d.surface, d.stages))}
       {Section(ui, 'HYGIENE', HygienePanel(ui, d.surface, d.hygiene, d.repo, d.now))}
-      {Section(ui, 'POLICY', PolicyPanel(ui, d.surface, d.policy))}
+      {Section(ui, 'POLICY', PolicyPanel(ui, d.surface, d.policy, d.genius))}
       {Section(ui, 'ENFORCED', RefusalsPanel(ui, d.surface, d.refusals))}
       {Section(ui, 'CORTEX CALLS', Ledger(ui, d))}
       {Section(ui, 'TURNS', Turns(ui, d))}

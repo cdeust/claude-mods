@@ -2,8 +2,11 @@
 // subagent runs on, and whether main drops under quota. Families are matched by substring, so
 // an alias (`haiku`) and a full id of any release (4.5, 5.5) resolve the same way.
 
-import type { TaskClass } from './classify'
 import { type Pressure, agentModelFor } from './policy'
+
+// Mirrors the zetetic-genius contract (its types/index.d.ts): a mod never imports across mods,
+// so the class names are spelled here and checked where the state is read.
+export type TaskClass = 'routine' | 'planned' | 'bugfix' | 'analysis' | 'critical'
 
 // source: ~/.claude/reference/agent-reference/effort-calibration.md § Which model when.
 // Haiku: a task fully planned by a more capable model with mechanical execution, bounded

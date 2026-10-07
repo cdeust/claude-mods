@@ -20,6 +20,9 @@ const PANE = {
 // throws when the tree does not validate.
 test('the cockpit pane validates and draws on every surface that takes a Box', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
+  on('state.get', ($$, e, next) =>
+    (e as { plugin?: string }).plugin === 'cortex-cockpit' ? next(e) : { value: { value: undefined, version: 0 } as never },
+  )
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ plugin: 'cortex-cockpit', surface, ...PANE })
     expect(await ui.find({ type: 'Text', text: /Cortex cockpit/ })).toBeDefined()
@@ -89,6 +92,7 @@ const FULL = {
     usd: 3.02,
     categories: [{ name: 'MCP tools', tokens: 42000 }, { name: 'Messages', tokens: 30000 }],
     mcpServers: [{ server: 'claude.ai Vercel', tools: 300, tokens: 39000 }],
+    band: 'warn',
     readAt: 999_000,
   },
   stages: {
@@ -113,19 +117,26 @@ const FULL = {
       { at: 995_500, kind: 'effort', subject: 'main step 2 (claude-fable-5-1)', from: 'high', to: 'medium', applied: false },
     ],
     charsCut: 0,
+    errorsInRow: 0,
+  },
+  genius: {
+    mode: 'observe',
     classifierModel: 'haiku',
     classified: {
       turnId: 't1',
-      text: 'Did the cache change actually cause the latency drop?',
+      text: 'Is the claim that the cache caused the speedup even testable?',
       taskClass: 'analysis',
       effort: 'medium',
-      shapes: ['causal-audit'],
+      shapes: [],
+      geniuses: [{ agent: 'popper', shape: 'falsifiability-gate' }],
       ms: 412,
       at: 995_400,
     },
     classifierError: null,
-    errorsInRow: 0,
-    shapesLoaded: 15,
+    skillShapesLoaded: 15,
+    geniusShapesLoaded: 451,
+    geniusDir: '/p/agents/genius',
+    decisions: [{ at: 995_400, kind: 'genius', subject: 'falsifiability-gate', to: 'popper pattern', applied: false }],
   },
   repo: '/r',
   onRefresh: () => {},
@@ -161,8 +172,12 @@ test('the populated cockpit validates and shows exact numbers', async ($, on) =>
     expect(await ui.find({ type: 'Text', text: /outside <repo>\/\.claude\/worktrees/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /pid 4242/ })).toBeDefined()
     expect(
-      await ui.find({ type: 'Text', text: /classifier haiku · 15 shapes loaded · last: analysis → effort medium · causal-audit · 412 ms/ }),
+      await ui.find({
+        type: 'Text',
+        text: /genius observe · classifier haiku · 15 skills · 451 genius\s+shapes · last: analysis → effort medium · popper · falsifiability-gate · 412 ms/,
+      }),
     ).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /genius falsifiability-gate\s+→ popper pattern · observed/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /wiki-write-only/ })).toBeDefined()
     expect(await ui.find({ key: 'consolidate' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /pressure: quota/ })).toBeDefined()

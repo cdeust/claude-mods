@@ -83,7 +83,7 @@ export const leanText = (text: string, cap: number): Lean | undefined => {
   const head = text.slice(0, Math.floor(cap * HEAD_SHARE))
   const tail = text.slice(text.length - Math.floor(cap * TAIL_SHARE))
   const cut = text.length - head.length - tail.length
-  const marker = `\n[cortex-cockpit cut ${cut} characters here; rerun with a narrower filter if they matter]\n`
+  const marker = `\n[zetetic-autopilot cut ${cut} characters here; rerun with a narrower filter if they matter]\n`
   return { text: `${head}${marker}${tail}`, cut }
 }
 
@@ -93,6 +93,29 @@ export const CHARS_PER_TOKEN = 4
 // The effort a request carries now: its own setting, else the model's default.
 export const currentEffort = (model: string, current: unknown): Effort =>
   isEffort(current) ? current : defaultEffort(model)
+
+// source: effort-calibration.md task table, "genuinely stuck / surprising result → high".
+export const STUCK_ERRORS = 3 // source: own choice, three tool errors in a row is a loop, not a slip
+const LADDER: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+export const escalate = (effort: Effort): Effort => {
+  const i = LADDER.indexOf(effort)
+  return i < 0 || i >= LADDER.indexOf('high') ? effort : (LADDER[i + 1] ?? effort)
+}
+
+// A tool_result's content as the Messages API spells it: a string, or text blocks (joined here).
+export const resultText = (content: unknown): string | undefined => {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+  const texts = content
+    .map((b) => b as { type?: string; text?: string })
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+  return texts.length === content.length ? texts.join('\n') : undefined
+}
+
+// Exact counts, thousands grouped by a space: "119 304" (the design system's data surface).
+export const group = (n: number): string =>
+  String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 
 export type Decision = {
   at: number

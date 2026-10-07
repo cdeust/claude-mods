@@ -61,6 +61,6 @@ test('a long result keeps its head and tail and names the cut', () => {
   expect(lean?.text.startsWith('A'.repeat(600))).toBe(true)
   expect(lean?.text.endsWith('C'.repeat(250))).toBe(true)
   expect(lean?.cut).toBe(3000 - 600 - 250)
-  expect(lean?.text).toContain('cortex-cockpit cut 2150 characters')
+  expect(lean?.text).toContain('zetetic-autopilot cut 2150 characters')
   expect(leanText('short', 1000)).toBe(undefined)
 })

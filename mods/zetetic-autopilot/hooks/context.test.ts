@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { ContextHealth } from '../types'
-import { band, bar, crossed, matchThresholds, serversOf, tokensLeft } from './context'
+import { band, crossed, matchThresholds, serversOf } from './context'
 
 const FILE = JSON.stringify({
   models: [
@@ -23,6 +23,7 @@ const health = (tokens: number | null, warn = 120000, hard = 160000): ContextHea
   usd: null,
   categories: [],
   mcpServers: [],
+  band: 'measured',
   readAt: 0,
 })
 
@@ -40,14 +41,6 @@ test('bands follow the thresholds and unknown stays unknown', () => {
   expect(band(health(null))).toBe('unknown')
 })
 
-test('the bar marks warn and hard and fills to the tokens', () => {
-  const b = bar(health(100000), 20)
-  expect(b.length).toBe(20)
-  expect(b.slice(0, 10)).toBe('██████████')
-  expect(b[12]).toBe('│')
-  expect(b[16]).toBe('┃')
-})
-
 test('MCP tool schemas are summed per server, largest first', () => {
   const rows = serversOf([
     { serverName: 'cortex', tokens: 100 },
@@ -60,8 +53,7 @@ test('MCP tool schemas are summed per server, largest first', () => {
   ])
 })
 
-test('distance to the thresholds and crossings', () => {
-  expect(tokensLeft(health(100000))).toEqual({ toWarn: 20000, toHard: 60000 })
+test('crossings are transitions into a worse band', () => {
   expect(crossed(health(100000), health(125000))).toBe('warn')
   expect(crossed(health(125000), health(130000))).toBe(undefined)
   expect(crossed(health(125000), health(165000))).toBe('hard')

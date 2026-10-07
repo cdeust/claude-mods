@@ -1,0 +1,27 @@
+{
+  "name": "zetetic-genius",
+  "version": "0.1.0",
+  "description": "Grades every request before its turn starts (task class → effort rung, in one low-effort completion) and routes it to the genius reasoning patterns and problem-shaped skills whose trigger it matches, from the installed zetetic-team-subagents index; under enforce, the matched pattern's workflow rides beside the prompt.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "observe: the grade and the picks are logged and shown above the prompt, nothing is attached. enforce: the matched patterns' workflow is attached to the prompt as context.",
+      "default": "observe",
+      "options": [
+        "observe",
+        "enforce"
+      ]
+    },
+    "classifier_model": {
+      "type": "string",
+      "title": "Classifier model",
+      "description": "The model that grades each request in one low-effort completion. An alias (haiku, sonnet) or a full id; Haiku 5.5 is built for classification and routing.",
+      "default": "haiku"
+    }
+  },
+  "author": {
+    "name": "cdeust"
+  }
+}
