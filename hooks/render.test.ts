@@ -113,6 +113,19 @@ const FULL = {
       { at: 995_500, kind: 'effort', subject: 'main step 2 (claude-fable-5-1)', from: 'high', to: 'medium', applied: false },
     ],
     charsCut: 0,
+    classifierModel: 'haiku',
+    classified: {
+      turnId: 't1',
+      text: 'Did the cache change actually cause the latency drop?',
+      taskClass: 'analysis',
+      effort: 'medium',
+      shapes: ['causal-audit'],
+      ms: 412,
+      at: 995_400,
+    },
+    classifierError: null,
+    errorsInRow: 0,
+    shapesLoaded: 15,
   },
   repo: '/r',
   onRefresh: () => {},
@@ -147,6 +160,9 @@ test('the populated cockpit validates and shows exact numbers', async ($, on) =>
     expect(await ui.find({ type: 'Text', text: /spec\s+not reached/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /outside <repo>\/\.claude\/worktrees/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /pid 4242/ })).toBeDefined()
+    expect(
+      await ui.find({ type: 'Text', text: /classifier haiku · 15 shapes loaded · last: analysis → effort medium · causal-audit · 412 ms/ }),
+    ).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /wiki-write-only/ })).toBeDefined()
     expect(await ui.find({ key: 'consolidate' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /pressure: quota/ })).toBeDefined()

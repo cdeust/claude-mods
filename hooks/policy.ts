@@ -5,12 +5,14 @@ export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Pressure = 'none' | 'quota' | 'context'
 export type PolicyMode = 'observe' | 'enforce'
 
-// source: ~/.claude/reference/model-behavior.md § Effort: Fable `high` by default, `medium`/`low`
-// for routine; Opus `low`/`medium` strong; Sonnet respects effort strictly.
+// source: platform.claude.com/docs/en/models/haiku-5-5/overview § How it compares (read
+// 2026-10-07), the API's default effort per model: Fable 5.1 `high`, Opus 5.5 `medium`,
+// Sonnet 5.5 `high`, Haiku 5.5 `medium`. ~/.claude/reference/model-behavior.md § Effort agrees
+// on Fable and Opus (Opus `low`/`medium` strong; Sonnet respects effort strictly).
 const DEFAULT_EFFORT: { match: string; effort: Effort }[] = [
   { match: 'fable', effort: 'high' },
   { match: 'opus', effort: 'medium' },
-  { match: 'sonnet', effort: 'medium' },
+  { match: 'sonnet', effort: 'high' },
   { match: 'haiku', effort: 'medium' },
 ]
 const RANK: Record<Effort, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }

@@ -2,10 +2,11 @@ import { expect, test } from 'claude-code/testing'
 
 import { agentModelFor, defaultEffort, effortFor, leanText, pressureOf } from './policy'
 
-test('the default effort follows model-behavior.md', () => {
+test("the default effort follows the API's per-model default", () => {
   expect(defaultEffort('claude-fable-5-1')).toBe('high')
   expect(defaultEffort('claude-opus-5-5')).toBe('medium')
-  expect(defaultEffort('Sonnet 5.5')).toBe('medium')
+  expect(defaultEffort('Sonnet 5.5')).toBe('high')
+  expect(defaultEffort('claude-haiku-5-5')).toBe('medium')
 })
 
 test('the ladder keeps the first request, lowers the loop, never raises', () => {

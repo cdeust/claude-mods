@@ -153,3 +153,119 @@ test(
     expect(spawned).toBe('sonnet')
   },
 )
+
+// The classifier flow: prompt.submit grades the request, turn.start binds it, turn.step and
+// agent.spawn consume it. Observed, nothing moves; enforced, the shapes ride beside the prompt.
+
+const TABLE = [
+  '| Shape(s) | Skill | Description |',
+  '|---|---|---|',
+  '| causal-audit | causal-audit | Correlation walked in; make it prove causation. |',
+  '| estimation | estimation | Bound it before you build it. |',
+].join('\n')
+
+// Like startStubs, with the shape table readable and the classifier answering `answer`;
+// the clock comes from stepStub (or mock.clock) in the test itself.
+const classifierStubs = (
+  on: Parameters<TestBody>[1],
+  answer: string,
+  calls: { n: number; context?: readonly string[] },
+) => {
+  on('session.start', () => ({ cwd: '/r' }))
+  on('session.repo', () => ({ value: { root: '/r' } as never }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never,
+  }))
+  on('session.model', () => ({ value: 'claude-fable-5-1' }))
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', () => ({ value: TABLE }))
+  on('command.register', () => ({ value: undefined } as never))
+  on('mcp.call', () => ({ deny: 'no server in a test' }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: 'no git' } as never }))
+  on('model.complete', () => {
+    calls.n += 1
+    return {
+      value: {
+        isAnswered: true,
+        text: answer,
+        usage: { input_tokens: 400, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      } as never,
+    }
+  })
+  on('prompt.submit', ($, e) => {
+    calls.context = e.context
+    return { text: e.text }
+  })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+}
+
+const PROMPT = { wait: false, origin: { kind: 'composer' } } as const
+
+test('observe: the request is graded, the prompt and the first request go out unchanged', async ($, on) => {
+  const calls: { n: number; context?: readonly string[] } = { n: 0 }
+  classifierStubs(on, '{"task_class":"routine","shapes":["estimation"]}', calls)
+  const seen: { effort?: unknown }[] = []
+  stepStub(on, seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const text = 'List every file under hooks/ and count the lines of each'
+  await $.prompt.submit({ ...PROMPT, text } as never)
+  expect(calls.n).toBe(1)
+  expect(calls.context).toBe(undefined)
+  await $.turn.start({ text, turnId: 'turn-1' })
+  await drain($.turn.step({ ...STEP, turnId: 'turn-1', index: 0, effort: 'high' }))
+  expect(seen.map((s) => s.effort)).toEqual(['high'])
+})
+
+test(
+  'enforce: the shape rides beside the prompt, the turn runs at the classified effort, Explore spawns on haiku',
+  { options: { policy_mode: 'enforce' } },
+  async ($, on) => {
+    const calls: { n: number; context?: readonly string[] } = { n: 0 }
+    classifierStubs(on, '{"task_class":"routine","shapes":["estimation"]}', calls)
+    const seen: { effort?: unknown }[] = []
+    stepStub(on, seen)
+    let spawned: string | undefined
+    on('agent.spawn', ($, e) => {
+      spawned = e.model
+      return { model: e.model ?? 'inherit' }
+    })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+    const text = 'How many requests per second can the ingest path take before it falls over?'
+    await $.prompt.submit({ ...PROMPT, text } as never)
+    expect(calls.context?.length).toBe(1)
+    expect(calls.context?.[0]).toContain('zetetic-team-subagents:estimation')
+    await $.turn.start({ text, turnId: 'turn-2' })
+    await drain($.turn.step({ ...STEP, turnId: 'turn-2', index: 0, effort: 'high' }))
+    await drain($.turn.step({ ...STEP, turnId: 'turn-2', index: 1, effort: 'high' }))
+    expect(seen.map((s) => s.effort)).toEqual(['low', 'low'])
+    await $.agent.spawn({
+      tool_use_id: 'a2',
+      prompt: 'find the ingest entry points',
+      description: 'explore',
+      subagentType: 'Explore',
+      provider: { kind: 'model', model: 'claude-fable-5-1' },
+      parentModel: 'claude-fable-5-1',
+    } as never)
+    expect(spawned).toBe('haiku')
+  },
+)
+
+test(
+  'enforce: an off-contract answer is no decision, and a slash command is never classified',
+  { options: { policy_mode: 'enforce' } },
+  async ($, on) => {
+    const calls: { n: number; context?: readonly string[] } = { n: 0 }
+    classifierStubs(on, 'routine, I think', calls)
+    const seen: { effort?: unknown }[] = []
+    stepStub(on, seen)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+    await $.prompt.submit({ ...PROMPT, text: '/cortex' } as never)
+    expect(calls.n).toBe(0)
+    const text = 'Explain why the consolidation job runs twice a night'
+    await $.prompt.submit({ ...PROMPT, text } as never)
+    expect(calls.n).toBe(1)
+    await $.turn.start({ text, turnId: 'turn-3' })
+    await drain($.turn.step({ ...STEP, turnId: 'turn-3', index: 0, effort: 'high' }))
+    expect(seen.map((s) => s.effort)).toEqual(['high'])
+  },
+)

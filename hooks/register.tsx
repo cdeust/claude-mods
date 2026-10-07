@@ -330,12 +330,17 @@ export const register: Register = (on, options) => {
   const resultCapChars = Number(options.result_cap_chars ?? 16000)
   const classifierModel = String(options.classifier_model ?? 'haiku')
   const surface = surfaceOf(options.surface)
+  // A hot reload keeps $.state from the previous load: fields this version added are filled in.
   const configured = (p: PolicyState): PolicyState => ({
     ...p,
     mode: policyMode,
     quotaPercent,
     resultCapChars,
     classifierModel,
+    classified: p.classified ?? null,
+    classifierError: p.classifierError ?? null,
+    errorsInRow: p.errorsInRow ?? 0,
+    shapesLoaded: p.shapesLoaded ?? 0,
   })
 
   on('session.start', async ($, e, next) => {
