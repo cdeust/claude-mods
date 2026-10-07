@@ -26,7 +26,10 @@ import {
   parseGeniusIndex,
 } from './genius'
 
-const CLASSIFIER_MAX_TOKENS = 160 // source: own choice, the JSON answer is under 60 tokens
+// source: platform.claude.com/docs/en/models/haiku-5-5/whats-new-haiku-5-5: adaptive thinking is on by
+// default and its tokens count toward max_tokens, so a small cap can end after the thinking block;
+// the JSON answer itself is under 60 tokens, unused room costs nothing.
+const CLASSIFIER_MAX_TOKENS = 1024
 const CLASSIFIER_TIMEOUT_MS = 4000 // source: own choice, a prompt must not wait longer on its classifier
 const DECISIONS_CAP = 50 // source: bounds $.state size; a viewer shows the last rows only
 

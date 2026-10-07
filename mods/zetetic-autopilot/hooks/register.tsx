@@ -32,7 +32,7 @@ const policy = atom({ plugin: 'zetetic-autopilot', key: 'policy' } as const, {
 
 // The classifier's verdict is zetetic-genius's state (a dependency): read, never written here.
 const geniusState = { plugin: 'zetetic-genius', key: 'state' } as const
-type Grade = { turnId: string | null; taskClass: TaskClass; effort: PolicyState['mode'] extends never ? never : 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
+type Grade = { turnId: string | null; taskClass: TaskClass; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 
 const decide = (p: PolicyState, d: PolicyDecision, charsCut = 0): PolicyState => ({
   ...p,
