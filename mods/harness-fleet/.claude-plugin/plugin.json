@@ -1,0 +1,24 @@
+{
+  "name": "harness-fleet",
+  "version": "0.1.0",
+  "description": "The owner's interface to the plugin fleet: /fleet shows each owned plugin's installed and offered version, the repository's open PRs with their CI state and its open issue count, and the session's harness signals. The mod only reads (gh pr list, gh issue list, git remote): every outward action starts with a button the owner presses, which puts a prompt in front of the model, which then acts under the standing rules.",
+  "types": "./types/index.d.ts",
+  "dependencies": ["cortex-guard", "zetetic-genius", "zetetic-autopilot"],
+  "userConfig": {
+    "github_owner": {
+      "type": "string",
+      "title": "GitHub owner",
+      "description": "Marketplaces whose GitHub repository sits under this owner, and directory marketplaces, are the fleet; the rest is not shown.",
+      "default": "cdeust"
+    },
+    "refresh_on_start": {
+      "type": "boolean",
+      "title": "Read the repositories at session start",
+      "description": "On: open PRs and issue counts are read through gh when the session starts. Off: only on /fleet or the Refresh button.",
+      "default": true
+    }
+  },
+  "author": {
+    "name": "cdeust"
+  }
+}
