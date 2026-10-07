@@ -1,0 +1,61 @@
+{
+  "name": "cortex-cockpit",
+  "version": "0.1.0",
+  "description": "Harness cockpit for Claude Code: context health against the Stop guard's thresholds, Cortex memory health and grooming, the spec-to-code pipeline as observed, worktree and test-process hygiene, and two enforced rules (wiki pages only through wiki_write, worktrees inside the repo), plus /wiki to compile a page with TikZ to PDF.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "surface": {
+      "type": "string",
+      "title": "Terminal surface",
+      "description": "ink: lifted status tones for a dark terminal. paper: deep status inks for a light terminal (the design system's data-surface).",
+      "default": "ink",
+      "options": [
+        "ink",
+        "paper"
+      ]
+    },
+    "cortex_server": {
+      "type": "string",
+      "title": "Cortex MCP server name",
+      "description": "The server name as /mcp lists it, or its tool-name spelling (plugin_hypermnesia-mcp_cortex).",
+      "default": "plugin_hypermnesia-mcp_cortex"
+    },
+    "hygiene_script": {
+      "type": "string",
+      "title": "disk_hygiene.py path",
+      "description": "The registered cleanup procedure (CLAUDE.md). A worktree created with git worktree add is registered through it; empty disables the registration.",
+      "default": "/Users/cdeust/Developments/disk-hygiene/disk_hygiene.py"
+    },
+    "policy_mode": {
+      "type": "string",
+      "title": "Policy mode",
+      "description": "observe: every effort, model and lean decision is logged in the pane and not applied. enforce: applied as logged.",
+      "default": "observe",
+      "options": [
+        "observe",
+        "enforce"
+      ]
+    },
+    "quota_pressure_percent": {
+      "type": "number",
+      "title": "Quota pressure (% of the five-hour window)",
+      "description": "At or past this share of the five-hour window, requests run at low effort and opus/fable subagents are spawned on sonnet.",
+      "default": 80
+    },
+    "result_cap_chars": {
+      "type": "number",
+      "title": "Tool result cap (characters)",
+      "description": "A Bash, Grep, Glob, WebFetch or WebSearch result longer than this keeps its head and tail; the cut is named in the row.",
+      "default": 16000
+    },
+    "classifier_model": {
+      "type": "string",
+      "title": "Request classifier model",
+      "description": "The model that classifies each request (task class → effort, reasoning shapes → skills) in one low-effort completion before the turn starts. An alias (haiku, sonnet) or a full id.",
+      "default": "haiku"
+    }
+  },
+  "author": {
+    "name": "cdeust"
+  }
+}
