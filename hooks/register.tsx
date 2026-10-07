@@ -406,10 +406,13 @@ export const register: Register = (on, options) => {
       c !== null &&
       c.turnId === null &&
       c.text.slice(0, BIND_HEAD_CHARS) === e.text.slice(0, BIND_HEAD_CHARS)
+    // A turn of its own (a short continuation, a plugin's submit) carries no grade: the band
+    // speaks for the current turn only, the POLICY rows keep the history.
+    const bound = isOurs && c !== null ? { ...c, turnId: e.turnId } : c?.turnId === null ? c : null
     await update($, policy, (s) => ({
       ...s,
-      classified: isOurs && c !== null ? { ...c, turnId: e.turnId } : s.classified,
-      errorsInRow: 0,
+      classified: bound,
+      errorsInRow: isOurs ? 0 : s.errorsInRow,
     }))
 
     return next(e)
@@ -601,6 +604,8 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const u = e.usage
+    // The stuck counter is a turn's own; main's ends with its turn.
+    if (e.agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
     if (u !== undefined && e.agentId === undefined) {
       await update($, tally, (t: TurnTally) => ({
         ...t,
