@@ -26,6 +26,13 @@ the engine watches the folder a link names.
 
 ## Installing
 
-A folder marketplace reads the mods from this checkout, with no copy:
-`claude plugin marketplace add <this folder>` once `.claude-plugin/marketplace.json` lists each
-mod as `"source": "./mods/<mod>"`, then `/plugin install <mod>` and `/reload-plugins` after an edit.
+`.claude-plugin/marketplace.json` lists each mod as `"source": "./mods/<mod>"`, so the repository
+is the marketplace. From another machine:
+
+```sh
+/plugin install <mod> --marketplace cdeust/claude-mods
+```
+
+`y` adds the marketplace, then the user scope. On this machine a folder marketplace reads the
+mods from the checkout, with no copy: `claude plugin marketplace add <this folder>`, then
+`/plugin install <mod>` and `/reload-plugins` after an edit.

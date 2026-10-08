@@ -1,0 +1,12 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "cdeust" },
+  "plugins": [
+    { "name": "cortex-guard", "source": "./mods/cortex-guard" },
+    { "name": "cortex-wiki", "source": "./mods/cortex-wiki" },
+    { "name": "zetetic-genius", "source": "./mods/zetetic-genius" },
+    { "name": "zetetic-autopilot", "source": "./mods/zetetic-autopilot" },
+    { "name": "cortex-cockpit", "source": "./mods/cortex-cockpit" },
+    { "name": "harness-fleet", "source": "./mods/harness-fleet" }
+  ]
+}
