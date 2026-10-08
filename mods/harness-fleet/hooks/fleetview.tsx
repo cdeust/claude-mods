@@ -52,8 +52,9 @@ const RepoBlock = (ui: Ui, r: RepoRow, now: number, onReview: FleetData['onRevie
       </Text>
       {r.error !== null && <Text color="red">gh: {r.error}</Text>}
       {r.repo !== null && r.readAt !== null && (
+        // A failed PR read carries an error and no list: say "no reading", never "0 open PRs".
         <Text dimColor>
-          {r.prs.length} open PR{r.prs.length === 1 ? '' : 's'} ·{' '}
+          {r.error !== null ? 'PRs: no reading' : `${r.prs.length} open PR${r.prs.length === 1 ? '' : 's'}`} ·{' '}
           {r.openIssues === null ? 'issues: no reading' : `${r.openIssues >= 100 ? '100+' : r.openIssues} open issues`}
         </Text>
       )}

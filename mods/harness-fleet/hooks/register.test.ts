@@ -85,6 +85,51 @@ test('Refresh rebuilds the inventory without a session.start, as after a /clear'
   await ui.unmount()
 })
 
+// The row the owner pasted on 2026-10-08: gh's GraphQL call ended in EOF, the PR list stayed empty
+// and the pane said "0 open PRs" beside the error. A failed read must say "no reading".
+test('a failed PR read says "PRs: no reading", never "0 open PRs"', async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'failed-read' }, ($$, e) =>
+    FleetView($$.ui.resolve(e) as never, {
+      now: Date.parse('2026-10-08T00:00:00Z'),
+      lessons: { refusals: 0, classifierErrors: 0, stuckEscalations: 0, leanCuts: 0 },
+      fleet: {
+        inventoryError: null,
+        isRefreshing: false,
+        readAt: Date.parse('2026-10-07T23:59:00Z'),
+        repos: [
+          {
+            repo: 'cdeust/ai-architect-mcp-spec',
+            local: null,
+            marketplace: 'ai-architect-mcp-spec-marketplace',
+            marketplaceUpdatedAt: '2026-09-09T20:59:09Z',
+            plugins: [{ name: 'ai-architect-mcp-spec', installed: '0.8.0', offered: '0.8.0', isBehind: false }],
+            prs: [],
+            openIssues: null,
+            error: 'Post "https://api.github.com/graphql": EOF',
+            readAt: Date.parse('2026-10-07T23:59:00Z'),
+          },
+        ],
+      },
+      onRefresh: () => {},
+      onReview: () => {},
+      onDraftIssue: () => {},
+    }),
+  )
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({
+      plugin: 'harness-fleet',
+      surface,
+      component: 'Pane',
+      requestId: 'failed-read',
+      props: { title: 'Fleet', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+    })
+    expect(await ui.find({ type: 'Text', text: /gh: Post .*graphql.*: EOF/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /PRs: no reading · issues: no reading/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /0 open PRs/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
 test('the fleet pane validates and shows versions, CI and the lessons on terminal and desktop', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'populated' }, ($$, e) =>
     FleetView($$.ui.resolve(e) as never, {
