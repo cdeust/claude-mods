@@ -63,20 +63,25 @@ async function lessonsOf($: EngineInterface): Promise<Lessons> {
   return l
 }
 
-// The inventory is local: the engine's records and each owned marketplace's manifest.
+// The inventory is local: the engine's records and each owned marketplace's manifest. Rejects
+// when a record cannot be read.
+async function buildInventory($: EngineInterface, owner: string): Promise<RepoRow[]> {
+  const installed = parseInstalled(await $.fs.read(await expandHome($, INSTALLED_PLUGINS_PATH)))
+  const marketplaces = parseMarketplaces(await $.fs.read(await expandHome($, KNOWN_MARKETPLACES_PATH)))
+  const offered: Record<string, Record<string, string>> = {}
+  for (const m of marketplaces) {
+    try {
+      offered[m.name] = parseOffered(await $.fs.read(`${m.installLocation}/${MARKETPLACE_MANIFEST}`))
+    } catch {
+      offered[m.name] = {}
+    }
+  }
+  return fleetRows(installed, marketplaces, offered, owner)
+}
+
 async function loadInventory($: EngineInterface, owner: string): Promise<void> {
   try {
-    const installed = parseInstalled(await $.fs.read(await expandHome($, INSTALLED_PLUGINS_PATH)))
-    const marketplaces = parseMarketplaces(await $.fs.read(await expandHome($, KNOWN_MARKETPLACES_PATH)))
-    const offered: Record<string, Record<string, string>> = {}
-    for (const m of marketplaces) {
-      try {
-        offered[m.name] = parseOffered(await $.fs.read(`${m.installLocation}/${MARKETPLACE_MANIFEST}`))
-      } catch {
-        offered[m.name] = {}
-      }
-    }
-    const repos = fleetRows(installed, marketplaces, offered, owner)
+    const repos = await buildInventory($, owner)
     await update($, fleet, (f) => ({ ...f, repos, inventoryError: null }))
   } catch (error) {
     await update($, fleet, (f) => ({ ...f, inventoryError: String(error).slice(0, 140) }))
@@ -107,13 +112,26 @@ async function readRepo($: EngineInterface, r: RepoRow): Promise<RepoRow> {
   }
 }
 
-async function refreshRemote($: EngineInterface): Promise<void> {
+// source: the engine's session.start doc ("once per process for each loaded plugin ... never
+// /clear") and SessionEndInput.reason ("the process goes on under a new session id, and no
+// session.start fires for it"): after a /clear the session state starts empty and no event
+// rebuilds the inventory. So every refresh rebuilds it first; the local reads also pick up a
+// plugin installed or a marketplace updated since the session began. The rows already shown
+// stay on screen until the remote reading lands: the state is written once, at the end.
+async function refreshRemote($: EngineInterface, owner: string): Promise<void> {
   const before = await read($, fleet)
   if (before.isRefreshing) return
   await update($, fleet, (f) => ({ ...f, isRefreshing: true }))
   try {
-    const repos = await Promise.all(before.repos.map((r) => readRepo($, r)))
-    await update($, fleet, (f) => ({ ...f, repos, readAt: repos[0]?.readAt ?? f.readAt }))
+    let inventory: RepoRow[]
+    try {
+      inventory = await buildInventory($, owner)
+    } catch (error) {
+      await update($, fleet, (f) => ({ ...f, inventoryError: String(error).slice(0, 140) }))
+      return
+    }
+    const repos = await Promise.all(inventory.map((r) => readRepo($, r)))
+    await update($, fleet, (f) => ({ ...f, repos, inventoryError: null, readAt: repos[0]?.readAt ?? f.readAt }))
   } finally {
     await update($, fleet, (f) => ({ ...f, isRefreshing: false }))
   }
@@ -132,14 +150,17 @@ export const register: Register = (on, options) => {
     }
     // Not awaited: nine repositories of gh calls would outlast the hook's budget; the pane
     // says "remote: not read yet" until the reading lands.
-    if (refreshOnStart) void refreshRemote($)
+    if (refreshOnStart) void refreshRemote($, owner)
 
     return next(e)
   })
 
   on('command.run', { command: 'fleet' }, async ($) => {
     await $.ui.open({ id: PANE, title: 'Fleet' })
-    void refreshRemote($)
+    // With nothing shown yet, the local inventory is awaited so the pane has its rows at once;
+    // the remote reading goes on in the background and writes the whole state when it lands.
+    if ((await read($, fleet)).repos.length === 0) await loadInventory($, owner)
+    void refreshRemote($, owner)
 
     return { text: 'Harness fleet opened.' }
   })
@@ -149,7 +170,7 @@ export const register: Register = (on, options) => {
       fleet: await read($, fleet),
       lessons: await lessonsOf($),
       now: await $.clock.now(),
-      onRefresh: () => void refreshRemote($),
+      onRefresh: () => void refreshRemote($, owner),
       onReview: (repo: string, pr: PrRow) => void $.prompt.submit({ text: reviewPrompt(repo, pr) }),
       onDraftIssue: () =>
         void (async () => {

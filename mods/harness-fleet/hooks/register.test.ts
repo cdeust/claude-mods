@@ -49,6 +49,42 @@ test(
   },
 )
 
+// After a /clear the session state starts empty and no session.start fires (engine doc), so the
+// inventory must come back from a refresh alone. No session.start here: the pane starts empty,
+// Refresh rebuilds the inventory from the engine records and reads the repository.
+test('Refresh rebuilds the inventory without a session.start, as after a /clear', async ($, on) => {
+  mock.clock(on, { now: Date.parse('2026-10-08T00:00:00Z') })
+  on('env.get', () => ({ value: '/home/t' }))
+  on('fs.read', ($$, e) => {
+    const path = String((e as { path?: string }).path ?? '')
+    if (path.endsWith('installed_plugins.json')) return { value: INSTALLED }
+    if (path.endsWith('known_marketplaces.json')) return { value: MARKETPLACES }
+    if (path.endsWith('marketplace.json')) return { value: MANIFEST }
+    return { deny: `no such file in the test: ${path}` }
+  })
+  on('process.run', ($$, e) => {
+    const argv = (e as { argv: string[] }).argv
+    const out = argv[1] === 'pr' ? PRS : argv[1] === 'issue' ? '[{"number":1}]' : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+  })
+  on('state.get', ($$, e, next) =>
+    (e as { plugin?: string }).plugin === 'harness-fleet' ? next(e) : { value: { value: undefined, version: 0 } as never },
+  )
+  const ui = await $.ui.mount({
+    plugin: 'harness-fleet',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'harness-fleet',
+    props: { title: 'Fleet', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+  expect(await ui.find({ type: 'Text', text: /no owned plugin found/ })).toBeDefined()
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /hypermnesia-mcp 4\.23\.4 → 4\.24\.0 offered/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /#670 deps: bump multidict · CI failure/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 open PR · 1 open issues/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the fleet pane validates and shows versions, CI and the lessons on terminal and desktop', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'populated' }, ($$, e) =>
     FleetView($$.ui.resolve(e) as never, {
