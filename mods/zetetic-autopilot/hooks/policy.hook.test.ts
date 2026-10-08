@@ -36,7 +36,10 @@ const drain = async (stream: AsyncGenerator<unknown, unknown>) => {
   return step.value
 }
 
-test('observe: the ladder is logged and the request goes out unchanged', async ($, on) => {
+test(
+  'observe: the ladder is logged and the request goes out unchanged',
+  { options: { policy_mode: 'observe' } },
+  async ($, on) => {
   const seen: { effort?: unknown }[] = []
   stubs(on, seen)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
@@ -83,7 +86,10 @@ test(
   },
 )
 
-test('a long Bash result is left whole under observe', async ($, on) => {
+test(
+  'a long Bash result is left whole under observe',
+  { options: { policy_mode: 'observe' } },
+  async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   let stored = ''
   on('session.append', ($, e, next) => {

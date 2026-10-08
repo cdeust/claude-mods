@@ -1,15 +1,15 @@
 {
   "name": "zetetic-autopilot",
   "version": "0.1.0",
-  "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the tool loop steps down the ladder; subagents run on the family their type and the turn's class call for (haiku, sonnet, opus, fable); under quota or context pressure everything goes one notch down and long streaming tool results keep head and tail. Starts in observe.",
+  "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the tool loop steps down the ladder; subagents run on the family their type and the turn's class call for (haiku, sonnet, opus, fable); under quota or context pressure everything goes one notch down and long streaming tool results keep head and tail. Starts in enforce; observe logs the decisions without applying them.",
   "types": "./types/index.d.ts",
   "dependencies": ["zetetic-genius"],
   "userConfig": {
     "policy_mode": {
       "type": "string",
       "title": "Policy mode",
-      "description": "observe: every effort, model and lean decision is logged (the cockpit's POLICY panel) and not applied. enforce: applied as logged.",
-      "default": "observe",
+      "description": "enforce (default): every effort, model and lean decision is applied as logged in the cockpit's POLICY panel. observe: logged only, nothing applied.",
+      "default": "enforce",
       "options": [
         "observe",
         "enforce"
