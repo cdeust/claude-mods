@@ -1,14 +1,12 @@
 // Pure verdicts for the two rules no settings hook enforces: wiki pages are written only
 // through the wiki tool, and every git worktree lives inside the repo.
 
+import { isInsideWorktreeRoot, withSlashes } from './rules'
+
 // source: the generated mirrors carry "Read-only mirror: edit the canonical wiki page"
 // (docs/adr/ADR-1060-*.md header); the canonical pages live under wiki/ (wiki/README.md).
 const MIRROR = /(^|\/)docs\/adr\/ADR-\d+[^/]*\.md$/
 const CANONICAL = /(^|\/)wiki\/(adr|specs|lessons)\/.+\.md$/
-
-// source: ~/.claude/CLAUDE.md rule 2 and Cortex CLAUDE.md: <repo>/.claude/worktrees/<name>/,
-// .Codex/worktrees/<name>/ for Codex.
-export const WORKTREE_ROOTS = ['/.claude/worktrees/', '/.Codex/worktrees/'] as const
 
 export type Verdict = { allow: true } | { allow: false; rule: string; reason: string }
 
@@ -23,9 +21,12 @@ const refuseWiki = (path: string, why: string): Verdict => ({
   reason: `${path}: ${why} Use the Cortex wiki_write tool (wiki_adr for a decision); wiki_reindex regenerates the mirror.`,
 })
 
+// The patterns are written with `/`; a Windows path is matched in its slashed spelling and reported
+// as it was typed.
 export const judgePath = (path: string): Verdict => {
-  if (MIRROR.test(path)) return refuseWiki(path, 'a generated read-only mirror.')
-  if (CANONICAL.test(path))
+  const slashed = withSlashes(path)
+  if (MIRROR.test(slashed)) return refuseWiki(path, 'a generated read-only mirror.')
+  if (CANONICAL.test(slashed))
     return refuseWiki(path, 'a canonical wiki page, written only through the wiki tool.')
   return ALLOW
 }
@@ -44,9 +45,6 @@ export const judgeShellWiki = (command: string): Verdict => {
   }
   return ALLOW
 }
-
-export const isInsideWorktreeRoot = (path: string): boolean =>
-  WORKTREE_ROOTS.some((root) => path.includes(root))
 
 // source: `git [-C <path>] [-c <name>=<value>] [--git-dir=<path>|--git-dir <path>] ...
 // <command>` (git(1) SYNOPSIS); these global options take a value when given separately.

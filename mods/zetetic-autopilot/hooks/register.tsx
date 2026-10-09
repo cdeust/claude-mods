@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ContextHealth, PolicyDecision, PolicyState } from '../types'
+import { placePath } from './paths'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
 import {
   CHARS_PER_TOKEN,
@@ -40,8 +41,18 @@ const decide = (p: PolicyState, d: PolicyDecision, charsCut = 0): PolicyState =>
   charsCut: p.charsCut + charsCut,
 })
 
-const expandHome = async ($: EngineInterface, path: string): Promise<string> =>
-  path.startsWith('~/') ? `${(await $.env.get('HOME')) ?? ''}/${path.slice(2)}` : path
+// Where a `~/` path lands on this machine: HOME, else USERPROFILE, and CLAUDE_CONFIG_DIR for what lives
+// in the engine's config directory (paths.ts). No home to place it is an error with that reason.
+async function expandHome($: EngineInterface, path: string): Promise<string> {
+  if (!path.startsWith('~/')) return path
+  const placed = placePath(
+    { home: await $.env.get('HOME'), userProfile: await $.env.get('USERPROFILE'), configDir: await $.env.get('CLAUDE_CONFIG_DIR') },
+    path,
+  )
+  if ('reason' in placed) throw new Error(placed.reason)
+
+  return placed.path
+}
 
 // The current grade, when the genius mod is loaded and has one bound to a turn.
 async function gradeOf($: EngineInterface): Promise<Grade | undefined> {
@@ -73,16 +84,17 @@ async function readContext($: EngineInterface, m: Measured, before: ContextHealt
   const model = await $.session.model()
   let warn: number | null = null
   let hard: number | null = null
-  let source = `${THRESHOLDS_PATH} absent`
+  let source = THRESHOLDS_PATH
   try {
     const t = matchThresholds(await $.fs.read(await expandHome($, THRESHOLDS_PATH)), model)
     if (t !== undefined) {
       warn = t.warn
       hard = t.hard
-      source = THRESHOLDS_PATH
     } else source = `${THRESHOLDS_PATH} has no match for ${model}`
-  } catch {
-    // The file is the Stop guard's; absent means no thresholds, which a viewer says.
+  } catch (error) {
+    // The file is the Stop guard's. A refusal, a missing file and a file that is not JSON all leave
+    // no thresholds; the viewer is told which, with the reason, instead of reading all three as absent.
+    source = `${THRESHOLDS_PATH} unreadable: ${(error instanceof Error ? error.message : String(error)).slice(0, 100)}`
   }
   const reading = { tokens: m.context.tokens ?? null, warn, hard }
   return {

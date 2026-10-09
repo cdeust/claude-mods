@@ -1,8 +1,5 @@
 import type { Worktree } from '../types'
-// source: ~/.claude/CLAUDE.md rule 2 and Cortex CLAUDE.md: <repo>/.claude/worktrees/<name>/,
-// .Codex/worktrees/<name>/ for Codex. The same rule cortex-guard enforces; a viewer only reads it.
-const WORKTREE_ROOTS = ['/.claude/worktrees/', '/.Codex/worktrees/'] as const
-const isInsideWorktreeRoot = (path: string): boolean => WORKTREE_ROOTS.some((root) => path.includes(root))
+import { isInsideWorktreeRoot } from './rules'
 
 // source: ~/.local/state/disk-hygiene/ownership.json, the registry disk_hygiene.py keeps
 // (its --state default); one entry per registered path, `owner` is "<host>:<session>".
@@ -10,13 +7,18 @@ export const OWNERSHIP_PATH = '~/.local/state/disk-hygiene/ownership.json'
 
 export type Ownership = Record<string, { owner?: string; pr?: string; kind?: string }>
 
-export const parseOwnership = (text: string): Ownership | undefined => {
+// A registry that is not a JSON object is an error with the reason, never an empty registry: an
+// empty one would read every worktree as unregistered.
+export const parseOwnership = (text: string): Ownership => {
+  let raw: unknown
   try {
-    const raw = JSON.parse(text) as unknown
-    return raw !== null && typeof raw === 'object' ? (raw as Ownership) : undefined
-  } catch {
-    return undefined
+    raw = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`ownership.json is not valid JSON (${error instanceof Error ? error.message : String(error)})`.slice(0, 160))
   }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('ownership.json is not an object')
+
+  return raw as Ownership
 }
 
 // `git worktree list --porcelain`: stanzas separated by a blank line, the first is main.
@@ -48,6 +50,10 @@ export const worktrees = (porcelain: string, ownership: Ownership | undefined): 
 
 // source: the test runners the Cortex and ai-architect projects use (pytest, vitest, cargo).
 const TEST_RUNNER = /\b(pytest|vitest|jest|cargo test|go test|mutmut|hypothesis)\b/
+
+// The reason a `ps -eo pid,etime,command` call gave no process table, or null when it did.
+export const psRefusal = (ran: { exitCode: number; stderr: string }): string | null =>
+  ran.exitCode === 0 ? null : `ps exit ${ran.exitCode}: ${ran.stderr.trim().slice(0, 100) || 'no output'}`
 
 // `ps -eo pid,etime,command` rows that are a test runner; the header row never matches.
 export const testProcesses = (

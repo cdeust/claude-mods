@@ -7,9 +7,18 @@ import type { TestBody } from 'claude-code/testing'
 
 type Answer<T> = T | { deny: string }
 
+type Ran = { exitCode: number; stdout: string; stderr: string }
+
 type World = {
-  python?: Answer<{ exitCode: number; stdout: string; stderr: string }>
-  gh?: Answer<{ exitCode: number; stdout: string; stderr: string }>
+  // The three pythons the guard tries, by name; python3 answers by default, the other two are not there.
+  python?: Answer<Ran>
+  pythons?: { python?: Answer<Ran>; py?: Answer<Ran> }
+  gh?: Answer<Ran>
+  auth?: Answer<Ran>
+  ps?: Answer<Ran>
+  // The variables the mod may ask for (HOME alone by default) and what stats the config directory.
+  env?: Record<string, string>
+  configDir?: 'directory' | 'file' | { deny: string }
   script?: 'file' | 'directory' | { deny: string }
   files?: Record<string, string | { deny: string }>
   memoryStats?: Answer<{ content: { type: 'text'; text: string }[]; isError: boolean }>
@@ -58,27 +67,52 @@ const OWN_COMMANDS = [
 
 const wrap = (answer: unknown): never => ((answer as { deny?: string }).deny !== undefined ? answer : { value: answer }) as never
 
+const NOT_THERE: Ran = { exitCode: 127, stdout: '', stderr: 'command not found' }
+const AUTH: Ran = { exitCode: 0, stdout: 'github.com\n  ✓ Logged in to github.com account cdeust (keyring)\n', stderr: '' }
+const PS: Ran = { exitCode: 0, stdout: '  PID ELAPSED COMMAND\n    1 01:00 /sbin/launchd\n', stderr: '' }
+const CONFIG_DIR = `${HOME}/.claude`
+const INSTALLED = JSON.stringify({ plugins: { 'hypermnesia-mcp@cortex-plugins': [{ version: '4.23.4' }], 'a@b': [{ version: '1' }] } })
+const MARKETPLACES = JSON.stringify({
+  'cortex-plugins': { source: { source: 'github', repo: 'cdeust/cortex' }, installLocation: '/m/cortex' },
+  'claude-mods': { source: { source: 'directory', path: '/dev/mods' }, installLocation: '/dev/mods' },
+  'other-market': { source: { source: 'github', repo: 'obra/other' }, installLocation: '/m/other' },
+})
+const MANIFEST = JSON.stringify({ plugins: [{ name: 'hypermnesia-mcp', version: '4.24.0' }, { name: 'hypermnesia-mcp-viz', version: '3.2.0' }] })
+// What the machine holds unless a test says otherwise, by path suffix.
+const FILES: Record<string, string> = {
+  'plugins/installed_plugins.json': INSTALLED,
+  'plugins/known_marketplaces.json': MARKETPLACES,
+  '/m/cortex/.claude-plugin/marketplace.json': MANIFEST,
+  '/dev/mods/.claude-plugin/marketplace.json': MANIFEST,
+}
+
 const install = (on: Parameters<TestBody>[1], world: World): void => {
   mock.clock(on, { now: 1_000_000 })
-  on('env.get', () => ({ value: HOME }))
+  const vars = world.env ?? { HOME }
+  on('env.get', (_$, e) => ({ value: vars[String((e as { name?: string }).name ?? '')] as never }))
   on('config.list', () => wrap(world.config ?? ROWS))
   on('command.list', () => ({ value: (world.commands ?? OWN_COMMANDS).map((c) => ({ description: '', ...c })) }) as never)
   on('process.run', ($, e) => {
     const argv = (e as { argv: string[] }).argv
     world.runs?.push({ argv, timeoutMs: (e as { init?: { timeoutMs?: number } }).init?.timeoutMs })
     if (argv[0] === 'python3') return wrap(world.python ?? OK)
+    if (argv[0] === 'python') return wrap(world.pythons?.python ?? NOT_THERE)
+    if (argv[0] === 'py') return wrap(world.pythons?.py ?? NOT_THERE)
     if (argv[0] === 'gh' && argv[1] === 'api') return wrap(world.gh ?? RATE)
+    if (argv[0] === 'gh' && argv[1] === 'auth') return wrap(world.auth ?? AUTH)
+    if (argv[0] === 'ps') return wrap(world.ps ?? PS)
 
     return wrap({ exitCode: 0, stdout: `${argv[0]} ok`, stderr: '' })
   })
   on('fs.stat', ($, e) => {
-    if (e.path !== SCRIPT) return { deny: `no stat in the test: ${e.path}` }
-    const script = world.script ?? 'file'
+    const kind = e.path === SCRIPT ? (world.script ?? 'file') : e.path === CONFIG_DIR || e.path === world.env?.CLAUDE_CONFIG_DIR ? (world.configDir ?? 'directory') : undefined
+    if (kind === undefined) return { deny: `no stat in the test: ${e.path}` }
 
-    return typeof script === 'string' ? ({ value: { kind: script, size: 1, mtimeMs: 0 } } as never) : script
+    return typeof kind === 'string' ? ({ value: { kind, size: 1, mtimeMs: 0 } } as never) : kind
   })
   on('fs.read', ($, e) => {
-    const file = (world.files ?? {})[e.path] ?? '{}'
+    const explicit = (world.files ?? {})[e.path]
+    const file = explicit ?? Object.entries(FILES).find(([suffix]) => e.path.endsWith(suffix))?.[1] ?? '{}'
 
     return typeof file === 'string' ? { value: file } : file
   })
@@ -110,7 +144,7 @@ test('every check passes on a machine that answers', async ($, on) => {
   install(on, {})
   const text = await check($)
   expect(text).toMatch(/^\/cortex check: every check passed, reads only/)
-  expect(lineOf(text, 'python3 (cortex-guard)')).toBe('ok    python3 (cortex-guard): Python 3.12.1')
+  expect(lineOf(text, 'python (cortex-guard)')).toBe('ok    python (cortex-guard): python3 answers: Python 3.12.1 (tried in order python3, python, py)')
   expect(lineOf(text, 'hygiene script')).toBe(`ok    hygiene script (cortex-guard): ${SCRIPT} exists`)
   expect(lineOf(text, 'Cortex MCP server')).toMatch(/^ok {4}Cortex MCP server plugin_hypermnesia-mcp_cortex: memory_stats answers, 12 memories/)
   expect(lineOf(text, 'gh api rate_limit')).toMatch(/^ok {4}gh api rate_limit: api.github.com answers, core 4990\/5000 left/)
@@ -129,13 +163,30 @@ test('a refusal from the machine reaches the line as its first 160 characters', 
 })
 
 test('a command the sandbox refuses to start is shown with its text', async ($, on) => {
-  install(on, { python: { deny: 'sandbox-exec: python3 is not in the allow list' } })
-  expect(lineOf(await check($), 'python3 (cortex-guard)')).toMatch(/^FAIL {2}python3 \(cortex-guard\): python3 --version could not start: .*not in the allow list/)
+  install(on, { python: { deny: 'sandbox-exec: python3 is not in the allow list' }, pythons: { python: { deny: 'sandbox-exec: python is not in the allow list' }, py: { deny: 'sandbox-exec: py is not in the allow list' } } })
+  expect(lineOf(await check($), 'python (cortex-guard)')).toMatch(
+    /^FAIL {2}python \(cortex-guard\): none of python3, python, py started: python3: could not start: .*python3 is not in the allow list; python: could not start: .*python is not in the allow list; py: could not start: .*py is not in the allow list/,
+  )
 })
 
-test('a python3 that exits non-zero shows its exit code and stderr', async ($, on) => {
+test('a python3 that exits non-zero shows its exit code and stderr, and a failure stays a failure', async ($, on) => {
   install(on, { python: { exitCode: 127, stdout: '', stderr: 'python3: command not found' } })
-  expect(lineOf(await check($), 'python3 (cortex-guard)')).toBe('FAIL  python3 (cortex-guard): exit 127: python3: command not found')
+  expect(lineOf(await check($), 'python (cortex-guard)')).toBe(
+    'FAIL  python (cortex-guard): none of python3, python, py started: python3: exit 127: python3: command not found; python: exit 127: command not found; py: exit 127: command not found',
+  )
+})
+
+// A Windows machine: python3 is the Store alias (exit 9009), python is absent, py is the launcher.
+test('python3 that exits 9009 and an absent python leave py, and the line says which answered and why not the others', async ($, on) => {
+  install(on, {
+    python: { exitCode: 9009, stdout: '', stderr: 'Python was not found; run without arguments to install from the Microsoft Store' },
+    pythons: { python: { deny: 'spawn python ENOENT' }, py: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } },
+  })
+  const text = await check($)
+  expect(lineOf(text, 'python (cortex-guard)')).toMatch(
+    /^ok {4}python \(cortex-guard\): py answers: Python 3\.12\.1 \(tried in order python3, python, py; before it python3: exit 9009: Python was not found.*; python: could not start: .*ENOENT\)/,
+  )
+  expect(text).toMatch(/every check passed/)
 })
 
 test('a missing hygiene script is named with its path and the cause', async ($, on) => {
@@ -176,11 +227,102 @@ test('an MCP call the engine refuses shows the refusal', async ($, on) => {
   expect(lineOf(await check($), 'Cortex MCP server')).toMatch(/^FAIL {2}Cortex MCP server .*: memory_stats call refused: .*no such MCP server/)
 })
 
-test('the files the fleet reads: a refused read shows the refusal, a readable one its size', async ($, on) => {
-  install(on, { files: { [`${HOME}/.claude/plugins/known_marketplaces.json`]: { deny: 'EPERM: operation not permitted, open' } } })
+test('the files the fleet reads: a refused read shows the refusal, a readable one what it holds', async ($, on) => {
+  install(on, { files: { [`${CONFIG_DIR}/plugins/known_marketplaces.json`]: { deny: 'EPERM: operation not permitted, open' } } })
   const text = await check($)
-  expect(lineOf(text, 'installed_plugins.json')).toBe('ok    fleet file ~/.claude/plugins/installed_plugins.json: readable, 2 characters')
+  expect(lineOf(text, 'installed_plugins.json')).toBe(`ok    fleet file ~/.claude/plugins/installed_plugins.json: readable, 2 plugins installed (${CONFIG_DIR}/plugins/installed_plugins.json)`)
   expect(lineOf(text, 'known_marketplaces.json')).toMatch(/^FAIL {2}fleet file ~\/\.claude\/plugins\/known_marketplaces\.json: .*EPERM/)
+  expect(lineOf(text, 'fleet manifests')).toMatch(/^n\/a {3}fleet manifests: not checked: known_marketplaces\.json was not read/)
+})
+
+test('a fleet record that is not the JSON the engine writes is a failure that names it', async ($, on) => {
+  install(on, { files: { [`${CONFIG_DIR}/plugins/installed_plugins.json`]: '{truncated', [`${CONFIG_DIR}/plugins/known_marketplaces.json`]: '[]' } })
+  const text = await check($)
+  expect(lineOf(text, 'installed_plugins.json')).toMatch(/^FAIL {2}fleet file .*installed_plugins\.json: installed_plugins\.json is not valid JSON/)
+  expect(lineOf(text, 'known_marketplaces.json')).toBe('FAIL  fleet file ~/.claude/plugins/known_marketplaces.json: known_marketplaces.json is not an object')
+  expect(text).toMatch(/\d failed/)
+})
+
+test("the fleet's manifests are read for the owner's marketplaces and the directory ones, not for others", async ($, on) => {
+  install(on, {})
+  const text = await check($)
+  expect(lineOf(text, 'fleet manifest cortex-plugins')).toBe('ok    fleet manifest cortex-plugins: 2 plugins offered (/m/cortex)')
+  expect(lineOf(text, 'fleet manifest claude-mods')).toBe('ok    fleet manifest claude-mods: 2 plugins offered (/dev/mods)')
+  expect(text).not.toContain('fleet manifest other-market')
+})
+
+test('a manifest that is refused or corrupt is a failure on its marketplace, the other still reads', async ($, on) => {
+  install(on, { files: { '/m/cortex/.claude-plugin/marketplace.json': { deny: 'EACCES: permission denied' }, '/dev/mods/.claude-plugin/marketplace.json': '<html>' } })
+  const text = await check($)
+  expect(lineOf(text, 'fleet manifest cortex-plugins')).toMatch(/^FAIL {2}fleet manifest cortex-plugins: .*EACCES/)
+  expect(lineOf(text, 'fleet manifest claude-mods')).toMatch(/^FAIL {2}fleet manifest claude-mods: marketplace\.json is not valid JSON/)
+})
+
+test('CLAUDE_CONFIG_DIR moves the fleet records, and the config directory line says where from', async ($, on) => {
+  install(on, { env: { HOME, CLAUDE_CONFIG_DIR: '/work/cfg' }, files: { '/work/cfg/plugins/installed_plugins.json': INSTALLED } })
+  const text = await check($)
+  expect(lineOf(text, 'config directory')).toBe('ok    config directory (fleet records): /work/cfg exists (from CLAUDE_CONFIG_DIR)')
+  expect(lineOf(text, 'installed_plugins.json')).toContain('(/work/cfg/plugins/installed_plugins.json)')
+})
+
+test('USERPROFILE stands for HOME, and with neither the records and the script have no place', async ($, on) => {
+  install(on, { env: { USERPROFILE: HOME } })
+  expect(lineOf(await check($), 'config directory')).toBe(`ok    config directory (fleet records): ${CONFIG_DIR} exists (from HOME or USERPROFILE + /.claude)`)
+})
+
+test('with no HOME, USERPROFILE or CLAUDE_CONFIG_DIR the checks that need a place fail with the reason, none says ok', async ($, on) => {
+  install(on, { env: {} })
+  const text = await check($)
+  expect(lineOf(text, 'config directory')).toBe('FAIL  config directory (fleet records): neither HOME nor USERPROFILE is set')
+  expect(lineOf(text, 'installed_plugins.json')).toBe('FAIL  fleet file ~/.claude/plugins/installed_plugins.json: ~/.claude/plugins/installed_plugins.json has no place: neither HOME nor USERPROFILE is set')
+  expect(lineOf(text, 'hygiene script')).toMatch(/^FAIL {2}hygiene script \(cortex-guard\): cannot place .*neither HOME nor USERPROFILE is set/)
+  expect(lineOf(text, 'fleet manifests')).toMatch(/^n\/a/)
+})
+
+test('a config directory that is a file, or one the machine refuses to stat, is a failure', async ($, on) => {
+  install(on, { configDir: 'file' })
+  expect(lineOf(await check($), 'config directory')).toBe(`FAIL  config directory (fleet records): ${CONFIG_DIR} is not a directory (file)`)
+})
+
+test('gh not logged in is a failure with gh\'s first line, cut at 160 characters', async ($, on) => {
+  const text = `You are not logged into any GitHub hosts. To log in, run: gh auth login ${'x'.repeat(200)}`
+  install(on, { auth: { exitCode: 1, stdout: '', stderr: `${text}\nsecond line` } })
+  const line = lineOf(await check($), 'gh auth status')
+  expect(line.startsWith('FAIL  gh auth status (harness-fleet): exit 1: You are not logged into any GitHub hosts')).toBe(true)
+  expect(line.endsWith(text.slice(0, 160))).toBe(true)
+  expect(line).not.toContain('second line')
+})
+
+test('gh logged in names the account line', async ($, on) => {
+  install(on, {})
+  expect(lineOf(await check($), 'gh auth status')).toBe('ok    gh auth status (harness-fleet): ✓ Logged in to github.com account cdeust (keyring)')
+})
+
+test('a refused gh auth call shows the refusal', async ($, on) => {
+  install(on, { auth: { deny: 'sandbox-exec: gh auth is not allowed' } })
+  expect(lineOf(await check($), 'gh auth status')).toMatch(/^FAIL {2}gh auth status \(harness-fleet\): could not run: .*not allowed/)
+})
+
+test('gh answering the rate limit with something that is not the document is a failure, not ok', async ($, on) => {
+  install(on, { gh: { exitCode: 0, stdout: '<html>Blocked by the company proxy</html>', stderr: '' } })
+  const text = await check($)
+  expect(lineOf(text, 'gh api rate_limit')).toBe('FAIL  gh api rate_limit: exit 0 but the answer is not the rate_limit JSON: <html>Blocked by the company proxy</html>')
+  expect(text).toMatch(/1 failed/)
+})
+
+test('a ps that answers says how many lines it read', async ($, on) => {
+  install(on, {})
+  expect(lineOf(await check($), 'ps (cortex-cockpit)')).toBe('ok    ps (cortex-cockpit): process table readable, 2 lines')
+})
+
+test('a ps that exits non-zero is a failure with its stderr', async ($, on) => {
+  install(on, { ps: { exitCode: 1, stdout: '', stderr: 'ps: operation not permitted' } })
+  expect(lineOf(await check($), 'ps (cortex-cockpit)')).toBe('FAIL  ps (cortex-cockpit): exit 1: ps: operation not permitted')
+})
+
+test('a ps the machine does not have (Windows) is a failure with the refusal', async ($, on) => {
+  install(on, { ps: { deny: 'spawn ps ENOENT' } })
+  expect(lineOf(await check($), 'ps (cortex-cockpit)')).toMatch(/^FAIL {2}ps \(cortex-cockpit\): could not run: .*ENOENT/)
 })
 
 test('a mod whose command is not registered reads as not loaded', async ($, on) => {
@@ -249,7 +391,7 @@ test('a refused config read shows the refusal and the checks that need no option
   install(on, { config: { deny: 'config.list refused by policy' } })
   const text = await check($)
   expect(lineOf(text, 'options in /config')).toMatch(/^FAIL {2}options in \/config: \$\.config\.list refused: .*refused by policy/)
-  expect(lineOf(text, 'python3 (cortex-guard)')).toMatch(/^ok/)
+  expect(lineOf(text, 'python (cortex-guard)')).toMatch(/^ok/)
 })
 
 test('the model aliases are reported as not checked, never faked', async ($, on) => {

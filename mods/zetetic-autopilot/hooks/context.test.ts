@@ -31,7 +31,7 @@ test('thresholds match the model by substring, else the default, else nothing', 
   expect(matchThresholds(FILE, 'claude-fable-5-1')).toEqual({ warn: 120000, hard: 160000 })
   expect(matchThresholds(FILE, 'Sonnet 5.5')).toEqual({ warn: 180000, hard: 200000 })
   expect(matchThresholds(FILE, 'claude-opus-5-5')).toEqual({ warn: 180000, hard: 200000 })
-  expect(matchThresholds('not json', 'x')).toBe(undefined)
+  expect(() => matchThresholds('not json', 'x')).toThrow(/ctxguard-thresholds\.json is not valid JSON/)
 })
 
 test('bands follow the thresholds and unknown stays unknown', () => {

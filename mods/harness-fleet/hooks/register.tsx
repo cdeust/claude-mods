@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { FleetState, IssueRow, PrRow, RepoRow } from '../types'
+import { placePath } from './paths'
 import {
   INSTALLED_PLUGINS_PATH,
   KNOWN_MARKETPLACES_PATH,
@@ -44,8 +45,18 @@ const GUARD_REFUSALS = { plugin: 'cortex-guard', key: 'refusals' } as const
 const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
 const AUTOPILOT_POLICY = { plugin: 'zetetic-autopilot', key: 'policy' } as const
 
-const expandHome = async ($: EngineInterface, path: string): Promise<string> =>
-  path.startsWith('~/') ? `${(await $.env.get('HOME')) ?? ''}/${path.slice(2)}` : path
+// Where a `~/` path lands on this machine: HOME, else USERPROFILE, and CLAUDE_CONFIG_DIR for what lives
+// in the engine's config directory (paths.ts). No home to place it is an error with that reason.
+async function expandHome($: EngineInterface, path: string): Promise<string> {
+  if (!path.startsWith('~/')) return path
+  const placed = placePath(
+    { home: await $.env.get('HOME'), userProfile: await $.env.get('USERPROFILE'), configDir: await $.env.get('CLAUDE_CONFIG_DIR') },
+    path,
+  )
+  if ('reason' in placed) throw new Error(placed.reason)
+
+  return placed.path
+}
 
 async function lessonsOf($: EngineInterface): Promise<Lessons> {
   const l: Lessons = { refusals: 0, classifierErrors: 0, stuckEscalations: 0, leanCuts: 0 }

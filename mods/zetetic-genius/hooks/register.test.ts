@@ -29,14 +29,19 @@ const POPPER = [
 
 type Seen = { completions: number; context?: readonly string[] }
 
-const stubs = (on: Parameters<TestBody>[1], answer: string, seen: Seen) => {
+// The fake machine: the environment by name (HOME alone by default) and every path read.
+type World = { env?: Record<string, string>; reads?: string[]; installed?: string }
+
+const stubs = (on: Parameters<TestBody>[1], answer: string, seen: Seen, world: World = {}) => {
   mock.clock(on, { now: 1_000_000 })
   on('session.start', () => ({ cwd: '/r' }))
-  on('env.get', () => ({ value: '/home/t' }))
+  const vars = world.env ?? { HOME: '/home/t' }
+  on('env.get', ($, e) => ({ value: vars[String((e as { name?: string }).name ?? '')] as never }))
   on('fs.read', ($, e) => {
     const path = String((e as { path?: string }).path ?? '')
+    world.reads?.push(path)
     if (path.endsWith('skill-routing-table.md')) return { value: TABLE }
-    if (path.endsWith('installed_plugins.json')) return { value: INSTALLED }
+    if (path.endsWith('installed_plugins.json')) return { value: world.installed ?? INSTALLED }
     if (path.endsWith('INDEX.md')) return { value: INDEX }
     if (path.endsWith('popper.md')) return { value: POPPER }
     return { deny: `no such file in the test: ${path}` }
@@ -90,4 +95,40 @@ test('a slash command and an off-contract answer leave the prompt alone', { opti
   await $.prompt.submit({ ...PROMPT, text: 'Explain why the consolidation job runs twice a night' } as never)
   expect(seen.completions).toBe(1)
   expect(seen.context).toBe(undefined)
+})
+
+// What the mod last wrote under its `state` key, read off the state.set it made.
+const errorsOf = (on: Parameters<TestBody>[1]): { classifierError: string | null | undefined } => {
+  const seen: { classifierError: string | null | undefined } = { classifierError: undefined }
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'state') seen.classifierError = (e as unknown as { value: { classifierError: string | null } }).value.classifierError
+    return next(e)
+  })
+  return seen
+}
+
+test('the routing table and the installed plugins are read under CLAUDE_CONFIG_DIR when it is set', async ($, on) => {
+  const reads: string[] = []
+  stubs(on, GRADED, { completions: 0 }, { env: { HOME: '/home/t', CLAUDE_CONFIG_DIR: '/work/cfg' }, reads })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  expect(reads).toContain('/work/cfg/reference/skill-routing-table.md')
+  expect(reads).toContain('/work/cfg/plugins/installed_plugins.json')
+  expect(reads.some((r) => r.startsWith('/home/t'))).toBe(false)
+})
+
+test('with no home the mod says the routing table has no place, instead of reading /.claude', async ($, on) => {
+  const reads: string[] = []
+  const seen = errorsOf(on)
+  stubs(on, GRADED, { completions: 0 }, { env: {}, reads })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  expect(reads).toEqual([])
+  expect(seen.classifierError).toMatch(/no place: neither HOME nor USERPROFILE is set/)
+})
+
+test('an installed_plugins.json that is not JSON is reported as that, not as "not installed"', async ($, on) => {
+  const seen = errorsOf(on)
+  stubs(on, GRADED, { completions: 0 }, { installed: '{truncated' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  expect(seen.classifierError).toMatch(/installed_plugins\.json is not valid JSON/)
+  expect(seen.classifierError).not.toMatch(/is not installed/)
 })

@@ -105,6 +105,8 @@ const FULL = {
       { path: '/tmp/stray', branch: null, isMain: false, isInsideRepoRule: false, isRegistered: false, owner: null, pr: null },
     ],
     testProcesses: [{ pid: 4242, elapsed: '00:12', command: 'python3 -m pytest' }],
+    processesError: null,
+    ownershipError: null,
     error: null,
     readAt: 996_000,
   },

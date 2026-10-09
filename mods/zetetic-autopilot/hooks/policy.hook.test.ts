@@ -8,15 +8,25 @@ const STEP = { turnId: 't', model: 'claude-fable-5-1', messageCount: 3 } as cons
 
 type Grade = { turnId: string | null; taskClass: string; effort: string } | null
 
-const stubs = (on: Parameters<TestBody>[1], seen: { effort?: unknown }[], grade: Grade = null) => {
+// What the fake machine holds for the thresholds file: its text, or the refusal; the environment by
+// name (HOME alone by default); every path read.
+type World = { env?: Record<string, string>; thresholds?: string | { deny: string }; reads?: string[] }
+
+const stubs = (on: Parameters<TestBody>[1], seen: { effort?: unknown }[], grade: Grade = null, world: World = {}) => {
   mock.clock(on, { now: 1_000_000 })
   on('session.start', () => ({ cwd: '/r' }))
   on('session.usage', () => ({
     value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never,
   }))
   on('session.model', () => ({ value: 'claude-fable-5-1' }))
-  on('env.get', () => ({ value: '/home/t' }))
-  on('fs.read', () => ({ deny: 'absent' }))
+  const vars = world.env ?? { HOME: '/home/t' }
+  on('env.get', ($, e) => ({ value: vars[String((e as { name?: string }).name ?? '')] as never }))
+  on('fs.read', ($, e) => {
+    world.reads?.push(String((e as { path?: string }).path ?? ''))
+    const file = world.thresholds ?? { deny: 'absent' }
+
+    return typeof file === 'string' ? { value: file } : file
+  })
   // Only the dependency's state is stubbed; the mod's own values go to the real store beneath.
   on('state.get', ($, e, next) =>
     (e as { plugin?: string }).plugin === 'zetetic-genius'
@@ -170,3 +180,53 @@ test(
     expect(spawned).toBe('sonnet')
   },
 )
+
+const MEASURE = { context: { window: 200000, tokens: 1000, percent: 1 }, rateLimits: [], changed: ['context'] } as never
+const THRESHOLDS = JSON.stringify({ default: { warn: 150000, hard: 190000 } })
+// The context health the mod wrote, read off the state.set it made (the test cannot read another
+// plugin's atom back directly).
+const written = (on: Parameters<TestBody>[1]): { context?: { thresholdsSource: string; hard: number | null } } => {
+  const seen: { context?: { thresholdsSource: string; hard: number | null } } = {}
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'context') seen.context = (e as unknown as { value: typeof seen.context }).value
+    return next(e)
+  })
+  return seen
+}
+
+test('the thresholds file is read under CLAUDE_CONFIG_DIR when it is set, not under HOME', async ($, on) => {
+  const reads: string[] = []
+  const seen = written(on)
+  stubs(on, [], null, { env: { HOME: '/home/t', CLAUDE_CONFIG_DIR: '/work/cfg' }, thresholds: THRESHOLDS, reads })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.session.measure(MEASURE)
+  expect([...new Set(reads)]).toEqual(['/work/cfg/ctxguard-thresholds.json'])
+  expect(seen.context?.thresholdsSource).toBe('~/.claude/ctxguard-thresholds.json')
+  expect(seen.context?.hard).toBe(190000)
+})
+
+test('a thresholds file that is not JSON shows that as its source, not as a missing match', async ($, on) => {
+  const seen = written(on)
+  stubs(on, [], null, { thresholds: '{truncated' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.session.measure(MEASURE)
+  expect(seen.context?.thresholdsSource).toMatch(/ctxguard-thresholds\.json unreadable: ctxguard-thresholds\.json is not valid JSON/)
+  expect(seen.context?.hard).toBe(null)
+})
+
+test('a refused thresholds file shows the refusal as its source', async ($, on) => {
+  const seen = written(on)
+  stubs(on, [], null, { thresholds: { deny: 'EACCES: permission denied' } })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.session.measure(MEASURE)
+  expect(seen.context?.thresholdsSource).toMatch(/unreadable: .*EACCES: permission denied/)
+})
+
+test('with no home to place the thresholds file the source says so', async ($, on) => {
+  const seen = written(on)
+  stubs(on, [], null, { env: {}, thresholds: THRESHOLDS })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.session.measure(MEASURE)
+  expect(seen.context?.thresholdsSource).toMatch(/unreadable: ~\/\.claude\/ctxguard-thresholds\.json has no place: neither HOME nor USERPROFILE is set/)
+})

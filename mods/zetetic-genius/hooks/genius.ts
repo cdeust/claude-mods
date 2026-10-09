@@ -13,8 +13,9 @@ export const installPathOf = (installedPluginsJson: string, plugin: string): str
   let parsed: { plugins?: Record<string, { installPath?: unknown }[]> }
   try {
     parsed = JSON.parse(installedPluginsJson) as typeof parsed
-  } catch {
-    return undefined
+  } catch (error) {
+    // A record that is not JSON is not "plugin not installed": the caller is told which it is.
+    throw new Error(`installed_plugins.json is not valid JSON (${error instanceof Error ? error.message : String(error)})`.slice(0, 160))
   }
   const path = parsed.plugins?.[plugin]?.[0]?.installPath
   return typeof path === 'string' && path !== '' ? path : undefined

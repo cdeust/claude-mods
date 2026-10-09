@@ -29,7 +29,7 @@ test(
     return { value: undefined } as never
   })
   on('session.start', () => ({ cwd: '/r' }))
-  on('env.get', () => ({ value: '/home/t' }))
+  on('env.get', ($$, e) => ({ value: ({ HOME: '/home/t' } as Record<string, string>)[String((e as { name?: string }).name ?? '')] as never }))
   on('fs.read', ($$, e) => {
     const path = String((e as { path?: string }).path ?? '')
     if (path.endsWith('installed_plugins.json')) return { value: INSTALLED }
@@ -57,7 +57,7 @@ test(
 // Refresh rebuilds the inventory from the engine records and reads the repository.
 test('Refresh rebuilds the inventory without a session.start, as after a /clear', async ($, on) => {
   mock.clock(on, { now: Date.parse('2026-10-08T00:00:00Z') })
-  on('env.get', () => ({ value: '/home/t' }))
+  on('env.get', ($$, e) => ({ value: ({ HOME: '/home/t' } as Record<string, string>)[String((e as { name?: string }).name ?? '')] as never }))
   on('fs.read', ($$, e) => {
     const path = String((e as { path?: string }).path ?? '')
     if (path.endsWith('installed_plugins.json')) return { value: INSTALLED }
@@ -203,6 +203,10 @@ type World = {
   env?: Record<string, string>
   files?: Record<string, string | { deny: string }>
   run?: (argv: string[]) => Ran
+  // Every path fs.read was asked for.
+  reads?: string[]
+  // env.get rejects with this instead of answering.
+  envDeny?: string
 }
 
 const ISSUES_OK = '[{"number":1,"title":"t","labels":[],"createdAt":"2026-10-01T00:00:00Z","url":"u","comments":[]}]'
@@ -218,9 +222,12 @@ const PANE_PROPS = { title: 'Fleet', isFocused: true, bodyColumns: 100, placemen
 async function refreshed($: Engine, on: On, w: World) {
   mock.clock(on, { now: Date.parse('2026-10-08T00:00:00Z') })
   const env = w.env ?? { HOME: '/home/t' }
-  on('env.get', ($$, e) => ({ value: env[String((e as { name?: string }).name ?? '')] as never }))
+  on('env.get', ($$, e) =>
+    w.envDeny === undefined ? { value: env[String((e as { name?: string }).name ?? '')] as never } : { deny: w.envDeny },
+  )
   on('fs.read', ($$, e) => {
     const path = String((e as { path?: string }).path ?? '')
+    w.reads?.push(path)
     const hit = Object.entries({ 'installed_plugins.json': INSTALLED, 'known_marketplaces.json': MARKETPLACES, 'marketplace.json': MANIFEST, ...w.files }).find(([suffix]) => path.endsWith(suffix))
     if (hit === undefined) return { deny: `no such file in the test: ${path}` }
     return typeof hit[1] === 'string' ? { value: hit[1] } : hit[1]
@@ -365,3 +372,39 @@ for (const [kind, manifest] of BAD_MANIFESTS) {
     await ui.unmount()
   })
 }
+
+// The home and the config directory (paths.ts): HOME, else USERPROFILE, CLAUDE_CONFIG_DIR for what
+// the engine keeps under ~/.claude.
+test('CLAUDE_CONFIG_DIR relocates the engine records, whatever HOME says', async ($, on) => {
+  const reads: string[] = []
+  const ui = await refreshed($, on, { env: { HOME: '/home/t', CLAUDE_CONFIG_DIR: '/work/cfg' }, reads })
+  expect(await ui.find({ type: 'Text', text: /hypermnesia-mcp 4\.23\.4 → 4\.24\.0 offered/ })).toBeDefined()
+  expect(reads).toContain('/work/cfg/plugins/installed_plugins.json')
+  expect(reads).toContain('/work/cfg/plugins/known_marketplaces.json')
+  expect(reads.some((r) => r.startsWith('/home/t'))).toBe(false)
+  await ui.unmount()
+})
+
+test('without HOME the home is USERPROFILE (a Windows machine)', async ($, on) => {
+  const reads: string[] = []
+  const ui = await refreshed($, on, { env: { USERPROFILE: 'C:\\Users\\t' }, reads })
+  expect(await ui.find({ type: 'Text', text: /hypermnesia-mcp 4\.23\.4 → 4\.24\.0 offered/ })).toBeDefined()
+  // This engine is POSIX and resolves the Windows spelling against the working directory; the tail is the mod's.
+  expect(reads.some((r) => r.endsWith('C:\\Users\\t/.claude/plugins/installed_plugins.json'))).toBe(true)
+  await ui.unmount()
+})
+
+test('with no HOME, USERPROFILE or CLAUDE_CONFIG_DIR the inventory error says so, and reads nothing at /', async ($, on) => {
+  const reads: string[] = []
+  const ui = await refreshed($, on, { env: {}, reads })
+  expect(await ui.find({ type: 'Text', text: /inventory: ~\/\.claude\/plugins\/installed_plugins\.json has no place: neither HOME nor USERPROFILE is set/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /no owned plugin found/ })).toBeUndefined()
+  expect(reads).toEqual([])
+  await ui.unmount()
+})
+
+test('an environment the sandbox refuses to read is an inventory error with the refusal', async ($, on) => {
+  const ui = await refreshed($, on, { envDeny: 'env.get is not allowed here' })
+  expect(await ui.find({ type: 'Text', text: /inventory: .*env\.get is not allowed here/ })).toBeDefined()
+  await ui.unmount()
+})

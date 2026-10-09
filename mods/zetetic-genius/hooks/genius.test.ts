@@ -55,7 +55,7 @@ test('the installed plugin path comes from installed_plugins.json, never a versi
   })
   expect(installPathOf(json, 'zetetic-team-subagents@zetetic-marketplace')).toBe('/p/2.41.0')
   expect(installPathOf(json, 'other@m')).toBe(undefined)
-  expect(installPathOf('not json', 'other@m')).toBe(undefined)
+  expect(() => installPathOf('not json', 'other@m')).toThrow(/installed_plugins\.json is not valid JSON/)
 })
 
 test('a pattern file gives its sections, its identity opening and its own effort', () => {

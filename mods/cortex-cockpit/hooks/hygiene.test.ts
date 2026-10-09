@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { parseOwnership, parsePorcelain, shortPath, testProcesses, worktrees } from './hygiene'
+import { parseOwnership, parsePorcelain, psRefusal, shortPath, testProcesses, worktrees } from './hygiene'
 
 const PORCELAIN = `worktree /r
 HEAD aaaa
@@ -42,7 +42,7 @@ test('worktrees are checked against the rule and the registry', () => {
   })
   expect(w[2]?.isInsideRepoRule).toBe(false)
   expect(w[2]?.isRegistered).toBe(false)
-  expect(parseOwnership('nope')).toBe(undefined)
+  expect(w[1]?.isRegistered).toBe(true)
 })
 
 test('test runners are picked out of ps, grep lines and the header are not', () => {
@@ -61,4 +61,17 @@ test('paths are shortened under the repo', () => {
   expect(shortPath('/r/.claude/worktrees/a', '/r')).toBe('.claude/worktrees/a')
   expect(shortPath('/r', '/r')).toBe('.')
   expect(shortPath('/tmp/x', '/r')).toBe('/tmp/x')
+})
+
+test('a registry that is not the JSON object disk_hygiene writes is an error, not an empty registry', () => {
+  expect(() => parseOwnership('nope')).toThrow(/ownership\.json is not valid JSON/)
+  expect(() => parseOwnership('[]')).toThrow(/ownership\.json is not an object/)
+  expect(() => parseOwnership('null')).toThrow(/ownership\.json is not an object/)
+  expect(parseOwnership('{}')).toEqual({})
+})
+
+test('a ps that exits non-zero has no process table to read', () => {
+  expect(psRefusal({ exitCode: 0, stderr: '' })).toBe(null)
+  expect(psRefusal({ exitCode: 1, stderr: 'ps: illegal option -- e\nusage' })).toBe('ps exit 1: ps: illegal option -- e\nusage')
+  expect(psRefusal({ exitCode: 127, stderr: '' })).toBe('ps exit 127: no output')
 })

@@ -45,3 +45,35 @@ test('git worktree add is refused outside <repo>/.claude/worktrees/', () => {
   const codex = judgeCall('Bash', { command: 'git worktree add /r/.Codex/worktrees/a' })
   expect(codex.allow).toBe(true)
 })
+
+// The audit (M5): the patterns are written with `/`, so a backslash path slipped past the wiki
+// rule and a worktree inside the repo was judged outside it.
+test('a Windows spelling of a protected path is refused like the POSIX one', () => {
+  expect(judgePath('C:\\r\\docs\\adr\\ADR-1060-refuse-a-decision.md').allow).toBe(false)
+  expect(judgePath('wiki\\adr\\cortex\\1060-refuse.md').allow).toBe(false)
+  expect(judgePath('C:\\r\\wiki\\specs\\a.md').allow).toBe(false)
+  expect(judgePath('C:\\r\\wiki\\README.md').allow).toBe(true)
+  expect(judgePath('C:\\r\\docs\\adr\\README.md').allow).toBe(true)
+  const refused = judgePath('C:\\r\\docs\\adr\\ADR-1060-x.md')
+  expect(!refused.allow && refused.reason).toContain('C:\\r\\docs\\adr\\ADR-1060-x.md')
+  expect(judgeCall('Edit', { file_path: 'C:\\r\\wiki\\lessons\\l.md' }).allow).toBe(false)
+  expect(judgeCall('Write', { file_path: 'C:\\r\\src\\main.ts' }).allow).toBe(true)
+  expect(judgeCall('NotebookEdit', { notebook_path: 'wiki\\adr\\n.md' }).allow).toBe(false)
+})
+
+test('a shell command that writes a Windows-spelled protected path is refused', () => {
+  expect(judgeCall('Bash', { command: 'echo hi > docs\\adr\\ADR-1060-x.md' }).allow).toBe(false)
+  expect(judgeCall('Bash', { command: 'type a.md > wiki\\adr\\cortex\\1060-x.md' }).allow).toBe(false)
+  expect(judgeCall('Bash', { command: 'type docs\\adr\\ADR-1060-x.md' }).allow).toBe(true)
+})
+
+test('a worktree inside <repo>\\.claude\\worktrees\\ is allowed, one outside is refused with the path as typed', () => {
+  const inside = 'C:\\Users\\t\\repo\\.claude\\worktrees\\x'
+  expect(worktreeAddPath(`git worktree add ${inside}`)).toBe(inside)
+  expect(judgeCall('Bash', { command: `git worktree add -b f ${inside} main` }).allow).toBe(true)
+  expect(judgeCall('Bash', { command: 'git worktree add -b f C:\\Users\\t\\repo\\.Codex\\worktrees\\x' }).allow).toBe(true)
+  const outside = judgeCall('Bash', { command: 'git worktree add -b f C:\\temp\\wt main' })
+  expect(outside.allow).toBe(false)
+  expect(!outside.allow && outside.rule).toBe('worktree-inside-repo')
+  expect(!outside.allow && outside.reason).toContain('C:\\temp\\wt')
+})
