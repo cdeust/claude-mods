@@ -326,6 +326,36 @@ test('10 or fewer open PRs cost no count call', async ($, on) => {
   await ui.unmount()
 })
 
+test('exactly 10 open PRs cost no count call and read "10 open PRs"', async ($, on) => {
+  const argvs: string[][] = []
+  const ui = await refreshed($, on, { run: (argv) => (argvs.push(argv), argv[1] === 'pr' ? okRun(prRows(10)) : healthy(argv)) })
+  expect(await ui.find({ type: 'Text', text: /^10 open PRs · 1 open issues/ })).toBeDefined()
+  expect(argvs.some((a) => a[1] === 'api')).toBe(false)
+  await ui.unmount()
+})
+
+test('exactly 11 open PRs with a count of 11 read "10 of 11", counting OPEN pull requests of that repository', async ($, on) => {
+  const argvs: string[][] = []
+  const ui = await refreshed($, on, {
+    run: (argv) => {
+      argvs.push(argv)
+      if (argv[1] === 'pr') return okRun(prRows(11))
+      if (argv[1] === 'api') return okRun('{"data":{"repository":{"pullRequests":{"totalCount":11}}}}')
+      return healthy(argv)
+    },
+  })
+  expect(await ui.find({ type: 'Text', text: /10 of 11 open PRs · 1 open issues/ })).toBeDefined()
+  const api = argvs.find((a) => a[1] === 'api') ?? []
+  const prList = argvs.find((a) => a[1] === 'pr') ?? []
+  const repo = prList[prList.indexOf('--repo') + 1] ?? ''
+  const [owner, name] = repo.split('/')
+  expect(repo).toMatch(/^[^/]+\/[^/]+$/)
+  expect(api.join(' ')).toContain('pullRequests(states:OPEN)')
+  expect(api).toContain(`owner=${owner}`)
+  expect(api).toContain(`name=${name}`)
+  await ui.unmount()
+})
+
 test('a PR count that fails is named, never a bare "10 open PRs"', async ($, on) => {
   const ui = await refreshed($, on, {
     run: (argv) => (argv[1] === 'pr' ? okRun(prRows(11)) : argv[1] === 'api' ? { exitCode: 1, stdout: '', stderr: 'graphql: bad gateway' } : healthy(argv)),

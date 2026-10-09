@@ -1,6 +1,6 @@
 {
   "name": "zetetic-genius",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Grades every request before its turn starts (task class → effort rung, in one low-effort completion) and routes it to the genius reasoning patterns and problem-shaped skills whose trigger it matches, from the installed zetetic-team-subagents index; under enforce, the matched pattern's workflow rides beside the prompt.",
   "types": "./types/index.d.ts",
   "userConfig": {

@@ -12,6 +12,7 @@ import {
   parsePrCount,
   parsePrList,
   PR_LIMIT,
+  prCountArgv,
   prListArgv,
   prsLabel,
   repoOfRemote,
@@ -170,4 +171,15 @@ test('the review prompt names the repo, the PR and the standing rules', () => {
   expect(text).toContain('head sha')
   expect(text).toContain('merge-gate.py with --repo')
   expect(text).toContain('Never merge, close or push from a mod')
+})
+
+test('the PR count query is OPEN pull requests, and owner and name travel as raw strings (-f, never -F)', () => {
+  const argv = prCountArgv('cdeust/2024')
+  expect(argv.slice(0, 3)).toEqual(['gh', 'api', 'graphql'])
+  expect(argv.join(' ')).toContain('pullRequests(states:OPEN)')
+  expect(argv).toContain('owner=cdeust')
+  expect(argv).toContain('name=2024')
+  expect(argv).not.toContain('-F')
+  expect(argv[argv.indexOf('owner=cdeust') - 1]).toBe('-f')
+  expect(argv[argv.indexOf('name=2024') - 1]).toBe('-f')
 })

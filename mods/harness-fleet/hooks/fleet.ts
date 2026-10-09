@@ -231,7 +231,7 @@ export const prListArgv = (repo: string): string[] => [
 export const prCountArgv = (repo: string): string[] => {
   const [owner = '', name = ''] = repo.split('/')
   return [
-    'gh', 'api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-f',
+    'gh', 'api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', // -f keeps a name like 2024 or true a string; -F would convert it
     'query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN){totalCount}}}',
   ]
 }

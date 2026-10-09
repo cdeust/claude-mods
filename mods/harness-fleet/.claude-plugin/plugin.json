@@ -1,6 +1,6 @@
 {
   "name": "harness-fleet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The owner's interface to the plugin fleet: /fleet shows each owned plugin's installed and offered version, the repository's open PRs with their CI state and its open issues (defects first, feature requests set apart), and the session's harness signals. The mod only reads (gh pr list, gh issue list, git remote): every outward action starts with a button the owner presses (Review a PR, Take a defect, Assess a feature request), which puts a prompt in front of the model, which then acts under the standing rules.",
   "types": "./types/index.d.ts",
   "dependencies": ["cortex-guard", "zetetic-genius", "zetetic-autopilot"],
