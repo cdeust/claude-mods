@@ -9,12 +9,16 @@ import {
   type Lessons,
   draftIssuePrompt,
   fleetRows,
+  type ManifestRead,
+  PR_LIMIT,
   issueListArgv,
   parseInstalled,
   parseIssues,
   parseMarketplaces,
   parseOffered,
+  parsePrCount,
   parsePrList,
+  prCountArgv,
   prListArgv,
   remoteArgv,
   repoOfRemote,
@@ -24,6 +28,8 @@ import {
 import { FleetView } from './fleetview'
 
 const PANE = 'harness-fleet'
+const REASON_CAP = 120 // source: the cut the pane already applied to a gh error line
+const why = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 140)
 const GH_TIMEOUT_MS = 20_000 // source: own choice, gh answers in 1–3 s; a stalled call must not hold the pane
 
 const fleet = atom({ plugin: 'harness-fleet', key: 'fleet' } as const, {
@@ -65,16 +71,17 @@ async function lessonsOf($: EngineInterface): Promise<Lessons> {
 }
 
 // The inventory is local: the engine's records and each owned marketplace's manifest. Rejects
-// when a record cannot be read.
+// when a record cannot be read or is not the JSON the engine writes; a manifest that cannot be
+// read is carried on its marketplace's row, as the reason its offered versions are unknown.
 async function buildInventory($: EngineInterface, owner: string): Promise<RepoRow[]> {
   const installed = parseInstalled(await $.fs.read(await expandHome($, INSTALLED_PLUGINS_PATH)))
   const marketplaces = parseMarketplaces(await $.fs.read(await expandHome($, KNOWN_MARKETPLACES_PATH)))
-  const offered: Record<string, Record<string, string>> = {}
+  const offered: Record<string, ManifestRead> = {}
   for (const m of marketplaces) {
     try {
-      offered[m.name] = parseOffered(await $.fs.read(`${m.installLocation}/${MARKETPLACE_MANIFEST}`))
-    } catch {
-      offered[m.name] = {}
+      offered[m.name] = { offered: parseOffered(await $.fs.read(`${m.installLocation}/${MARKETPLACE_MANIFEST}`)) }
+    } catch (error) {
+      offered[m.name] = { error: why(error) }
     }
   }
   return fleetRows(installed, marketplaces, offered, owner)
@@ -85,31 +92,75 @@ async function loadInventory($: EngineInterface, owner: string): Promise<void> {
     const repos = await buildInventory($, owner)
     await update($, fleet, (f) => ({ ...f, repos, inventoryError: null }))
   } catch (error) {
-    await update($, fleet, (f) => ({ ...f, inventoryError: String(error).slice(0, 140) }))
+    await update($, fleet, (f) => ({ ...f, inventoryError: why(error) }))
   }
 }
 
+type Ran = { exitCode: number; stdout: string; stderr: string }
+// One read-only command: what it answered, or the reason it did not (a refusal, a timeout, a
+// missing binary all reject the engine's call).
+type Call = { ran: Ran } | { failed: string }
+
+async function run($: EngineInterface, argv: string[]): Promise<Call> {
+  try {
+    return { ran: await $.process.run(argv, { timeoutMs: GH_TIMEOUT_MS }) }
+  } catch (error) {
+    return { failed: `could not run ${argv.slice(0, 5).join(' ')}: ${why(error)}` }
+  }
+}
+
+// The reason a call gave no answer worth parsing: it did not run, or it exited non-zero.
+const refusal = (c: Call): string | null =>
+  'failed' in c ? c.failed : c.ran.exitCode === 0 ? null : c.ran.stderr.trim().slice(0, REASON_CAP) || `gh exit ${c.ran.exitCode}`
+
+// The parser's own words when gh answered with something that is not the list it was asked for.
+const parsed = <T,>(c: Call, parse: (stdout: string) => T): { value: T } | { failed: string } => {
+  if ('failed' in c) return c
+  const r = refusal(c)
+  if (r !== null) return { failed: r }
+  try {
+    return { value: parse(c.ran.stdout) }
+  } catch (error) {
+    return { failed: why(error) }
+  }
+}
+
+// The exact number of open PRs, asked only when the list came back truncated.
+async function countPrs($: EngineInterface, repo: string): Promise<{ total: number } | { failed: string }> {
+  const got = parsed(await run($, prCountArgv(repo)), parsePrCount)
+  return 'value' in got ? { total: got.value } : got
+}
+
 // One repository's remote reading: open PRs with their CI, the open issue count. Read-only gh.
+// Every failure lands on this repository's row (error for the PR list, issuesError for the issue
+// list, prTotalError for the count), so one refused call never takes the other rows with it.
 async function readRepo($: EngineInterface, r: RepoRow): Promise<RepoRow> {
   const readAt = await $.clock.now()
   let repo = r.repo
   if (repo === null && r.local !== null) {
-    const remote = await $.process.run(remoteArgv(r.local), { timeoutMs: GH_TIMEOUT_MS })
-    repo = remote.exitCode === 0 ? repoOfRemote(remote.stdout) : null
+    const remote = await run($, remoteArgv(r.local))
+    const failed = refusal(remote)
+    if (failed !== null) return { ...r, readAt, error: failed }
+    repo = 'ran' in remote ? repoOfRemote(remote.ran.stdout) : null
   }
   if (repo === null) return { ...r, readAt, error: r.local === null ? 'no repository' : 'no GitHub remote' }
-  const [prs, issues] = await Promise.all([
-    $.process.run(prListArgv(repo), { timeoutMs: GH_TIMEOUT_MS }),
-    $.process.run(issueListArgv(repo), { timeoutMs: GH_TIMEOUT_MS }),
-  ])
-  if (prs.exitCode !== 0) return { ...r, repo, readAt, error: prs.stderr.trim().slice(0, 120) || `gh exit ${prs.exitCode}` }
+  const [prCall, issueCall] = await Promise.all([run($, prListArgv(repo)), run($, issueListArgv(repo))])
+  const issues = parsed(issueCall, parseIssues)
+  const issuesRead = { issues: 'value' in issues ? issues.value : null, issuesError: 'failed' in issues ? issues.failed : null }
+  const list = parsed(prCall, parsePrList)
+  if ('failed' in list) return { ...r, repo, readAt, error: list.failed, ...issuesRead }
+  const prs = list.value.slice(0, PR_LIMIT)
+  if (list.value.length <= PR_LIMIT) return { ...r, repo, readAt, error: null, prs, prTotal: prs.length, prTotalError: null, ...issuesRead }
+  const count = await countPrs($, repo)
   return {
     ...r,
     repo,
     readAt,
     error: null,
-    prs: parsePrList(prs.stdout),
-    issues: issues.exitCode === 0 ? parseIssues(issues.stdout) : null,
+    prs,
+    prTotal: 'total' in count ? count.total : null,
+    prTotalError: 'failed' in count ? count.failed : null,
+    ...issuesRead,
   }
 }
 
@@ -128,11 +179,15 @@ async function refreshRemote($: EngineInterface, owner: string): Promise<void> {
     try {
       inventory = await buildInventory($, owner)
     } catch (error) {
-      await update($, fleet, (f) => ({ ...f, inventoryError: String(error).slice(0, 140) }))
+      await update($, fleet, (f) => ({ ...f, inventoryError: why(error) }))
       return
     }
     const repos = await Promise.all(inventory.map((r) => readRepo($, r)))
     await update($, fleet, (f) => ({ ...f, repos, inventoryError: null, readAt: repos[0]?.readAt ?? f.readAt }))
+  } catch (error) {
+    // Nothing above should reject (each repository carries its own error); if the engine itself
+    // does, the pane says so instead of keeping "remote: not read yet" for ever.
+    await update($, fleet, (f) => ({ ...f, inventoryError: `refresh failed: ${why(error)}` }))
   } finally {
     await update($, fleet, (f) => ({ ...f, isRefreshing: false }))
   }

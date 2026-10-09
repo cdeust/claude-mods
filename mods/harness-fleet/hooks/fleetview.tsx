@@ -1,7 +1,7 @@
 import type { Elements } from 'claude-code'
 
-import type { CiState, FleetState, IssueRow, PrRow, RepoRow } from '../types'
-import { ISSUE_LIMIT, type Lessons, issueKind } from './fleet'
+import type { CiState, FleetState, IssueRow, PluginRow, PrRow, RepoRow } from '../types'
+import { ISSUE_LIMIT, type Lessons, issueKind, prsLabel } from './fleet'
 
 export type Ui = Elements['terminal']
 
@@ -61,11 +61,16 @@ const IssueLine = (ui: Ui, repo: string, issue: IssueRow, now: number, onTake: F
   )
 }
 
+// An unreadable manifest makes the offered version unknown, which is not the same as a plugin its
+// marketplace does not list.
+const offeredLabel = (r: RepoRow, p: PluginRow): string =>
+  r.manifestError !== null ? ' · offered unknown' : p.offered === null ? '' : p.isBehind ? ` → ${p.offered} offered` : ' · current'
+
 const RepoBlock = (ui: Ui, r: RepoRow, now: number, onReview: FleetData['onReview'], onTake: FleetData['onTake']) => {
   const { Box, Text } = ui
   const title = r.repo ?? r.local ?? r.marketplace
   const plugins = r.plugins
-    .map((p) => `${p.name} ${p.installed}${p.offered === null ? '' : p.isBehind ? ` → ${p.offered} offered` : ' · current'}`)
+    .map((p) => `${p.name} ${p.installed}${offeredLabel(r, p)}`)
     .join(' · ')
   return (
     <Box flexDirection="column">
@@ -74,11 +79,13 @@ const RepoBlock = (ui: Ui, r: RepoRow, now: number, onReview: FleetData['onRevie
         {plugins}
         {r.marketplaceUpdatedAt === null ? '' : ` · marketplace read ${ageLabel(r.marketplaceUpdatedAt, now)}`}
       </Text>
+      {r.manifestError !== null && <Text color="red">manifest: {r.manifestError}</Text>}
       {r.error !== null && <Text color="red">gh: {r.error}</Text>}
+      {r.issuesError !== null && <Text color="red">gh issues: {r.issuesError}</Text>}
       {r.repo !== null && r.readAt !== null && (
         // A failed PR read carries an error and no list: say "no reading", never "0 open PRs".
         <Text dimColor>
-          {r.error !== null ? 'PRs: no reading' : `${r.prs.length} open PR${r.prs.length === 1 ? '' : 's'}`} ·{' '}
+          {prsLabel(r)} ·{' '}
           {r.issues === null ? 'issues: no reading' : `${r.issues.length >= ISSUE_LIMIT ? `${ISSUE_LIMIT}+` : r.issues.length} open issues`}
         </Text>
       )}
@@ -108,7 +115,8 @@ export const FleetView = (ui: Ui, d: FleetData) => {
       </Box>
       {f.inventoryError !== null && <Text color="red">inventory: {f.inventoryError}</Text>}
       {f.repos.length === 0 ? (
-        <Text dimColor>no owned plugin found in installed_plugins.json</Text>
+        // With an inventory error the red line above is the answer; "none found" would read as a clean machine.
+        f.inventoryError === null && <Text dimColor>no owned plugin found in installed_plugins.json</Text>
       ) : (
         f.repos.map((r) => RepoBlock(ui, r, d.now, d.onReview, d.onTake))
       )}

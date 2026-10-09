@@ -9,7 +9,11 @@ import {
   parseIssues,
   parseMarketplaces,
   parseOffered,
+  parsePrCount,
   parsePrList,
+  PR_LIMIT,
+  prListArgv,
+  prsLabel,
   repoOfRemote,
   reviewPrompt,
   takeIssuePrompt,
@@ -53,13 +57,48 @@ test('versions compare field by field', () => {
 })
 
 test('only the owner\'s marketplaces and local directories make the fleet, grouped by marketplace', () => {
-  const rows = fleetRows(parseInstalled(INSTALLED), parseMarketplaces(MARKETPLACES), { 'cortex-plugins': parseOffered(CORTEX_MANIFEST) }, 'cdeust')
+  const rows = fleetRows(parseInstalled(INSTALLED), parseMarketplaces(MARKETPLACES), { 'cortex-plugins': { offered: parseOffered(CORTEX_MANIFEST) } }, 'cdeust')
   expect(rows.map((r) => r.marketplace)).toEqual(['cortex-plugins', 'spec-marketplace'])
   const cortex = rows[0]
   expect(cortex?.repo).toBe('cdeust/cortex')
   expect(cortex?.plugins.map((p) => `${p.name}:${p.isBehind}`)).toEqual(['hypermnesia-mcp:true', 'hypermnesia-mcp-viz:false'])
   expect(rows[1]?.local).toBe('/dev/spec')
   expect(rows[1]?.plugins[0]?.offered).toBe(null)
+  expect(rows[1]?.manifestError).toBe(null)
+})
+
+test('a marketplace whose manifest could not be read carries the reason on its row, never an empty offer', () => {
+  const rows = fleetRows(parseInstalled(INSTALLED), parseMarketplaces(MARKETPLACES), { 'cortex-plugins': { error: 'ENOENT: no such file' } }, 'cdeust')
+  expect(rows[0]?.manifestError).toBe('ENOENT: no such file')
+  expect(rows[0]?.plugins.map((p) => p.offered)).toEqual([null, null])
+})
+
+// The audit (3.3) read these from code: parseJson returned undefined on bad JSON and every parser
+// then returned an empty list, the wording of a clean empty machine.
+test('a record that is not the JSON the engine writes is an error that names it, never an empty list', () => {
+  expect(() => parseInstalled('{not json')).toThrow(/installed_plugins\.json is not valid JSON/)
+  expect(() => parseInstalled('[]')).toThrow(/installed_plugins\.json has no "plugins" object/)
+  expect(() => parseInstalled(JSON.stringify({ plugins: { 'a@b': 'x' } }))).toThrow(/installed_plugins\.json: "a@b" is not a list/)
+  expect(parseInstalled(JSON.stringify({ plugins: {} }))).toEqual([])
+  expect(() => parseMarketplaces('')).toThrow(/known_marketplaces\.json is not valid JSON/)
+  expect(() => parseMarketplaces('[]')).toThrow(/known_marketplaces\.json is not an object/)
+  expect(parseMarketplaces('{}')).toEqual([])
+  expect(() => parseOffered('<html>')).toThrow(/marketplace\.json is not valid JSON/)
+  expect(() => parseOffered('{}')).toThrow(/marketplace\.json has no "plugins" list/)
+  expect(parseOffered('{"plugins":[]}')).toEqual({})
+})
+
+test('PRs: the list reads one past the cap so truncation is known, and the pane says what it shows', () => {
+  expect(prListArgv('a/b')).toContain(String(PR_LIMIT + 1))
+  const row = { prs: Array.from({ length: PR_LIMIT }, (_, i) => ({ number: i })) as never[], error: null, prTotal: 40, prTotalError: null }
+  expect(prsLabel(row)).toBe('10 of 40 open PRs')
+  expect(prsLabel({ ...row, prs: row.prs.slice(0, 1), prTotal: 1 })).toBe('1 open PR')
+  expect(prsLabel({ ...row, prs: [], prTotal: 0 })).toBe('0 open PRs')
+  expect(prsLabel({ ...row, prTotal: null, prTotalError: 'graphql: 502' })).toBe('10 open PRs shown, total not read (graphql: 502)')
+  expect(prsLabel({ ...row, error: 'boom', prTotal: null })).toBe('PRs: no reading')
+  expect(parsePrCount('{"data":{"repository":{"pullRequests":{"totalCount":40}}}}')).toBe(40)
+  expect(() => parsePrCount('{"data":null}')).toThrow(/totalCount/)
+  expect(() => parsePrCount('x')).toThrow(/not valid JSON/)
 })
 
 test('a GitHub remote url yields owner/name', () => {
@@ -89,7 +128,8 @@ test('gh JSON becomes PR rows and issue rows', () => {
     ]),
   )
   expect(prs.map((p) => `${p.number}:${p.ci}`)).toEqual(['670:failure', '651:success'])
-  expect(parsePrList('not json')).toEqual([])
+  expect(() => parsePrList('not json')).toThrow(/gh pr list output is not valid JSON/)
+  expect(() => parsePrList('{}')).toThrow(/gh pr list output is not a list/)
   const issues = parseIssues(
     JSON.stringify([
       { number: 667, title: 'SessionEnd dream cycle bypasses the launcher', labels: [], createdAt: '2026-10-06T10:00:00Z', url: 'u1', comments: [] },
@@ -98,7 +138,8 @@ test('gh JSON becomes PR rows and issue rows', () => {
     ]),
   )
   expect(issues?.map((i) => `${i.number}:${i.labels.join('+')}:${i.comments}`)).toEqual(['667::0', '359:enhancement:1'])
-  expect(parseIssues('x')).toBe(null)
+  expect(() => parseIssues('x')).toThrow(/gh issue list output is not valid JSON/)
+  expect(() => parseIssues('{}')).toThrow(/gh issue list output is not a list/)
   expect(parseIssues('[]')).toEqual([])
 })
 
