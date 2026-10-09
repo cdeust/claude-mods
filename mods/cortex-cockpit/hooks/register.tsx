@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
 import type { ContextHealth, GeniusState, PolicyState, Refusal } from './deps'
 import { OWNERSHIP_PATH, parseOwnership, testProcesses, worktrees } from './hygiene'
+import { type Machine, runChecks } from './machinecheck'
 import { begin, emptyTally, finish, group, isCortexTool, parseStats, shortTool } from './model'
 import { bump, emptyStages, stageOf } from './pipeline'
 import { inputGist, outputText, parseRecall } from './recall'
@@ -121,6 +122,25 @@ async function refreshHygiene($: EngineInterface): Promise<void> {
   await update($, hygiene, () => snapshot)
 }
 
+// What /cortex check may read: each read is spelled here, where the engine follows `$`. One
+// state key per mod this mod depends on, as its contract declares it.
+const machineOf = ($: EngineInterface): Machine => ({
+  home: () => $.env.get('HOME'),
+  config: () => $.config.list(),
+  commands: async () => (await $.command.list()).map((c) => c.name),
+  state: async (mod) => {
+    if (mod === 'cortex-guard') return (await $.state.get({ plugin: 'cortex-guard', key: 'refusals' })).value
+    if (mod === 'zetetic-genius') return (await $.state.get({ plugin: 'zetetic-genius', key: 'state' })).value
+
+    return (await $.state.get({ plugin: 'zetetic-autopilot', key: 'policy' })).value
+  },
+  run: (argv, timeoutMs) => $.process.run(argv, timeoutMs === undefined ? undefined : { timeoutMs }),
+  stat: (path) => $.fs.stat(path),
+  read: (path) => $.fs.read(path),
+  memoryStats: (name) => $.mcp.call(name, 'memory_stats'),
+  now: () => $.clock.now(),
+})
+
 async function consolidateNow($: EngineInterface): Promise<void> {
   $.ui.toast('consolidate: running')
   try {
@@ -139,7 +159,7 @@ export const register: Register = (on, options) => {
     void refreshStats($)
     void refreshHygiene($)
     try {
-      await $.command.register({ name: 'cortex', description: 'Open the Cortex cockpit pane', immediate: true })
+      await $.command.register({ name: 'cortex', description: 'Open the Cortex cockpit pane; /cortex check tests what the six mods need of this machine', argumentHint: 'check', immediate: true })
     } catch (error) {
       $.ui.toast(`/cortex is taken by another plugin: ${String(error).slice(0, 80)}`)
     }
@@ -147,7 +167,8 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'cortex' }, async ($) => {
+  on('command.run', { command: 'cortex' }, async ($, e) => {
+    if ((e.args ?? '').trim() === 'check') return { text: await runChecks(machineOf($), { server, surface: String(options.surface ?? 'ink') }) }
     await $.ui.open({ id: PANE, title: 'Cortex' })
     void refreshStats($)
     void refreshHygiene($)
