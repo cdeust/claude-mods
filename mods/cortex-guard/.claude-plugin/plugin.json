@@ -1,14 +1,14 @@
 {
   "name": "cortex-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Two rules no settings hook enforces, refused at the tool call: wiki pages and their generated ADR mirrors are written only through the Cortex wiki tool, and every git worktree lives at <repo>/.claude/worktrees/<name>/ (one created there is registered with disk_hygiene.py).",
   "types": "./types/index.d.ts",
   "userConfig": {
     "hygiene_script": {
       "type": "string",
       "title": "disk_hygiene.py path",
-      "description": "The registered cleanup procedure (CLAUDE.md). A worktree created with git worktree add is registered through it; empty disables the registration.",
-      "default": "/Users/cdeust/Developments/disk-hygiene/disk_hygiene.py"
+      "description": "The registered cleanup procedure (CLAUDE.md). A worktree created with git worktree add is registered through it; `~/` is the home of the user running the session; empty disables the registration; a file that is not there is said once per session.",
+      "default": "~/Developments/disk-hygiene/disk_hygiene.py"
     }
   },
   "author": {

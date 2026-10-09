@@ -1,6 +1,6 @@
 {
   "name": "cortex-cockpit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The harness cockpit, a viewer: Cortex memory health and grooming, the context window against the Stop guard's thresholds (from zetetic-autopilot), the spec-to-code pipeline as observed, worktree and test-process hygiene, the autopilot's and genius router's decisions, and the guard's refusals. /cortex opens the pane.",
   "types": "./types/index.d.ts",
   "dependencies": ["cortex-guard", "zetetic-autopilot", "zetetic-genius"],
