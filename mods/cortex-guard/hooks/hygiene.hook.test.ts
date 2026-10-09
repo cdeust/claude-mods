@@ -15,12 +15,14 @@ const later = (globalThis as unknown as { setTimeout: (run: () => void, ms: numb
 type Seen = { toasts: string[]; argvs: string[][]; stats: string[]; nextToast: () => Promise<string> }
 
 // `home` answers HOME alone; the other variables the mod asks for are unset.
-const stubs = (on: Parameters<TestBody>[1], home: string | undefined, scriptStat: unknown): Seen => {
+const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown): Seen => {
   const seen: Seen = { toasts: [], argvs: [], stats: [], nextToast: () => Promise.resolve('') }
   let waiting: ((text: string) => void) | undefined
   seen.nextToast = () => new Promise((resolve) => (waiting = resolve))
   mock.clock(on, { now: 1_000_000 })
-  on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? home : undefined) as never }))
+  on('env.get', ($, e) =>
+    typeof home === 'object' ? home : { value: ((e as { name?: string }).name === 'HOME' ? home : undefined) as never },
+  )
   on('session.id', () => ({ value: 'test-session' }))
   on('fs.stat', ($, e) => {
     seen.stats.push(e.path)
@@ -170,6 +172,13 @@ test('without HOME or USERPROFILE the toast says why the script has no place', a
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
   expect(await done).toMatch(/hygiene script not found at ~\/Developments\/disk-hygiene\/disk_hygiene\.py; worktrees are not registered \(~\/Developments\/disk-hygiene\/disk_hygiene\.py has no place: neither HOME nor USERPROFILE is set/)
+})
+
+test('an environment the sandbox refuses to read is the reason the script has no place', async ($, on) => {
+  const seen = stubs(on, { deny: 'env access is not allowed' }, { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  const done = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  expect(await done).toMatch(/worktrees are not registered \(the environment is unreadable: .*env access is not allowed/)
 })
 
 test('an explicitly empty option disables registration with no toast and no lookup', { options: { hygiene_script: '' } }, async ($, on) => {

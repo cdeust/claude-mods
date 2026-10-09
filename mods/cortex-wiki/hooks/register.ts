@@ -23,7 +23,13 @@ export const register: Register = (on) => {
     const source = toPandocSource(await $.fs.read(target.path))
     const built = await $.process.run(pandocArgv('-', out), { stdin: source, timeoutMs: TEX_TIMEOUT_MS })
     if (built.exitCode !== 0) return { text: `TeX build failed:\n${built.stderr.slice(0, 600)}` }
-    await $.process.run(['open', out])
+    // The viewer's exit status is read: "opened" is said only for an `open` that exited 0.
+    try {
+      const opened = await $.process.run(['open', out])
+      if (opened.exitCode !== 0) return { text: `Compiled to ${out} but open failed (exit ${opened.exitCode}): ${opened.stderr.slice(0, 160)}` }
+    } catch (error) {
+      return { text: `Compiled to ${out} but open could not run: ${(error instanceof Error ? error.message : String(error)).slice(0, 160)}` }
+    }
 
     return { text: `Compiled and opened ${out}` }
   })

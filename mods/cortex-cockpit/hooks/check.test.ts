@@ -279,9 +279,19 @@ test('with no HOME, USERPROFILE or CLAUDE_CONFIG_DIR the checks that need a plac
   expect(lineOf(text, 'fleet manifests')).toMatch(/^n\/a/)
 })
 
-test('a config directory that is a file, or one the machine refuses to stat, is a failure', async ($, on) => {
+test('a config directory that is a file is a failure', async ($, on) => {
   install(on, { configDir: 'file' })
   expect(lineOf(await check($), 'config directory')).toBe(`FAIL  config directory (fleet records): ${CONFIG_DIR} is not a directory (file)`)
+})
+
+test('a config directory the machine refuses to stat is a failure with the refusal', async ($, on) => {
+  install(on, { configDir: { deny: 'EACCES: permission denied, stat' } })
+  expect(lineOf(await check($), 'config directory')).toMatch(new RegExp(`^FAIL {2}config directory \\(fleet records\\): ${CONFIG_DIR} \\(from HOME or USERPROFILE \\+ /.claude\\): .*EACCES`))
+})
+
+test('gh auth that exits 0 without saying who is logged in reports its first line, nothing more', async ($, on) => {
+  install(on, { auth: { exitCode: 0, stdout: 'github.com\n  - Active account: true\n', stderr: '' } })
+  expect(lineOf(await check($), 'gh auth status')).toBe('ok    gh auth status (harness-fleet): github.com')
 })
 
 test('gh not logged in is a failure with gh\'s first line, cut at 160 characters', async ($, on) => {

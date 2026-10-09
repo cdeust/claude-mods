@@ -207,6 +207,9 @@ type World = {
   reads?: string[]
   // env.get rejects with this instead of answering.
   envDeny?: string
+  // clock.now rejects once, on the first call after the three inventory files were read: the call
+  // readRepo makes first, so the rejection reaches the refresh itself.
+  clockDenyOnce?: string
 }
 
 const ISSUES_OK = '[{"number":1,"title":"t","labels":[],"createdAt":"2026-10-01T00:00:00Z","url":"u","comments":[]}]'
@@ -220,7 +223,18 @@ const PANE_PROPS = { title: 'Fleet', isFocused: true, bodyColumns: 100, placemen
 // Mounts the pane over a fake machine and presses Refresh. Every engine call the mod makes lands
 // on this world: env by name, files by path suffix, processes by argv.
 async function refreshed($: Engine, on: On, w: World) {
-  mock.clock(on, { now: Date.parse('2026-10-08T00:00:00Z') })
+  let files = 0
+  let hasDenied = false
+  if (w.clockDenyOnce === undefined) mock.clock(on, { now: Date.parse('2026-10-08T00:00:00Z') })
+  else {
+    on('clock.now', () => {
+      if (files >= 3 && !hasDenied) {
+        hasDenied = true
+        return { deny: w.clockDenyOnce ?? '' }
+      }
+      return { value: Date.parse('2026-10-08T00:00:00Z') }
+    })
+  }
   const env = w.env ?? { HOME: '/home/t' }
   on('env.get', ($$, e) =>
     w.envDeny === undefined ? { value: env[String((e as { name?: string }).name ?? '')] as never } : { deny: w.envDeny },
@@ -228,6 +242,7 @@ async function refreshed($: Engine, on: On, w: World) {
   on('fs.read', ($$, e) => {
     const path = String((e as { path?: string }).path ?? '')
     w.reads?.push(path)
+    files += 1
     const hit = Object.entries({ 'installed_plugins.json': INSTALLED, 'known_marketplaces.json': MARKETPLACES, 'marketplace.json': MANIFEST, ...w.files }).find(([suffix]) => path.endsWith(suffix))
     if (hit === undefined) return { deny: `no such file in the test: ${path}` }
     return typeof hit[1] === 'string' ? { value: hit[1] } : hit[1]
@@ -406,5 +421,57 @@ test('with no HOME, USERPROFILE or CLAUDE_CONFIG_DIR the inventory error says so
 test('an environment the sandbox refuses to read is an inventory error with the refusal', async ($, on) => {
   const ui = await refreshed($, on, { envDeny: 'env.get is not allowed here' })
   expect(await ui.find({ type: 'Text', text: /inventory: .*env\.get is not allowed here/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a refresh that fails outside any one repository says so on the pane and ends', async ($, on) => {
+  const ui = await refreshed($, on, { clockDenyOnce: 'clock refused' })
+  expect(await ui.find({ type: 'Text', text: /inventory: refresh failed: .*clock refused/ })).toBeDefined()
+  expect(await ui.find({ key: 'refresh' })).toBeDefined()
+  await ui.unmount()
+})
+
+const DIRECTORY = {
+  installed: JSON.stringify({ plugins: { 'a@mp-dir': [{ version: '1.0.0' }] } }),
+  marketplaces: JSON.stringify({ 'mp-dir': { source: { source: 'directory', path: '/dev/x' }, installLocation: '/dev/x' } }),
+}
+const directoryFiles = { 'installed_plugins.json': DIRECTORY.installed, 'known_marketplaces.json': DIRECTORY.marketplaces, 'marketplace.json': '{"plugins":[]}' }
+
+test('a directory marketplace whose git remote cannot be read shows git\'s reason, not "no GitHub remote"', async ($, on) => {
+  const ui = await refreshed($, on, {
+    files: directoryFiles,
+    run: (argv) => (argv[0] === 'git' ? { exitCode: 128, stdout: '', stderr: 'fatal: detected dubious ownership in repository at /dev/x' } : healthy(argv)),
+  })
+  expect(await ui.find({ type: 'Text', text: /gh: fatal: detected dubious ownership in repository/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /no GitHub remote/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a git the machine will not start is the reason on the directory marketplace row', async ($, on) => {
+  const ui = await refreshed($, on, {
+    files: directoryFiles,
+    run: (argv) => (argv[0] === 'git' ? { deny: 'spawn git EPERM' } : healthy(argv)),
+  })
+  expect(await ui.find({ type: 'Text', text: /gh: could not run git -C \/dev\/x remote get-url: .*EPERM/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a directory marketplace whose remote is not on GitHub says that', async ($, on) => {
+  const ui = await refreshed($, on, {
+    files: directoryFiles,
+    run: (argv) => (argv[0] === 'git' ? okRun('https://gitlab.com/x/y.git\n') : healthy(argv)),
+  })
+  expect(await ui.find({ type: 'Text', text: /gh: no GitHub remote/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a directory marketplace on GitHub is read through its remote', async ($, on) => {
+  const argvs: string[][] = []
+  const ui = await refreshed($, on, {
+    files: directoryFiles,
+    run: (argv) => (argvs.push(argv), argv[0] === 'git' ? okRun('git@github.com:cdeust/x.git\n') : healthy(argv)),
+  })
+  expect(await ui.find({ type: 'Text', text: /#670 deps: bump multidict/ })).toBeDefined()
+  expect(argvs.some((a) => a.includes('cdeust/x'))).toBe(true)
   await ui.unmount()
 })
