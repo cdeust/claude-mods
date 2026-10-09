@@ -31,10 +31,15 @@ const FLEET_FILES = ['~/.claude/plugins/installed_plugins.json', '~/.claude/plug
 type Ran = { exitCode: number; stdout: string; stderr: string }
 type McpResult = { content: readonly { type: string; text?: string }[]; isError: boolean; structuredContent?: unknown }
 
+// One slash command as the engine lists it: its name, where it comes from (`builtin`, `plugin`,
+// `user`, `mcp`) and, for a plugin's, the name of the plugin that registered it (absent when the
+// engine does not know).
+export type CommandRow = { name: string; source: string; plugin?: string }
+
 export type Machine = {
   home: () => Promise<string | undefined>
   config: () => Promise<readonly ConfigRow[]>
-  commands: () => Promise<readonly string[]>
+  commands: () => Promise<readonly CommandRow[]>
   // The value under one mod's declared state key; `undefined` when never written. Rejects when
   // the mod is not loaded.
   state: (mod: 'cortex-guard' | 'zetetic-genius' | 'zetetic-autopilot') => Promise<unknown>
@@ -56,7 +61,11 @@ async function configRows(m: Machine): Promise<{ rows: readonly ConfigRow[] } | 
 // Which mods answer. cortex-guard, zetetic-genius and zetetic-autopilot are dependencies of this
 // mod, and the engine leaves a mod disabled when a dependency is missing, so they are loaded
 // whenever this check runs; their state is read for what it says. cortex-wiki and harness-fleet
-// are loaded when the command they register is in the engine's list. A state key that was never
+// are loaded when the command they register is in the engine's list AND the plugin that registered
+// it is that mod: a user's own `wiki.md`, an MCP prompt or another plugin's command of the same
+// name says nothing about the mod. A directory-loaded mod reports its bare manifest name in
+// `plugin` (measured: `--plugin-dir` gives "cortex-wiki" and "harness-fleet"); a `name@source` id
+// of the same name is read as the same plugin. A state key that was never
 // written reads `undefined` for a loaded mod and for an absent one alike, so it proves nothing
 // about loading.
 const DEPENDENCIES = ['cortex-guard', 'zetetic-genius', 'zetetic-autopilot'] as const
@@ -64,8 +73,21 @@ type Dependency = (typeof DEPENDENCIES)[number]
 const isDependency = (mod: string): mod is Dependency => (DEPENDENCIES as readonly string[]).includes(mod)
 const COMMAND_OF: Readonly<Record<string, string>> = { 'cortex-wiki': 'wiki', 'harness-fleet': 'fleet' }
 
+// The line for a mod known by the command it registers.
+function checkRegistered(mod: string, command: string, commands: readonly CommandRow[], commandsError: string): CheckLine {
+  const named = commands.filter((c) => c.name === command)
+  const own = named.find((c) => c.source === 'plugin' && c.plugin !== undefined && (c.plugin === mod || c.plugin.startsWith(`${mod}@`)))
+  if (own !== undefined) return line('ok', `mod ${mod}`, `loaded, /${command} is registered by plugin ${own.plugin}`)
+  if (named.length === 0) return line('FAIL', `mod ${mod}`, `not loaded: /${command} is not registered${commandsError}`)
+  const unknown = named.find((c) => c.source === 'plugin' && c.plugin === undefined)
+  if (unknown !== undefined) return line('n/a', `mod ${mod}`, `/${command} is a plugin's command but the engine does not say which plugin, so loading is not proven`)
+  const who = named.map((c) => (c.source === 'plugin' ? `plugin ${c.plugin}` : c.source)).join(', ')
+
+  return line('FAIL', `mod ${mod}`, `not loaded: /${command} exists but is registered by ${who}, not by ${mod}`)
+}
+
 async function checkMods(m: Machine): Promise<{ lines: CheckLine[]; states: Record<string, unknown> }> {
-  let commands: readonly string[] = []
+  let commands: readonly CommandRow[] = []
   let commandsError = ''
   try {
     commands = await m.commands()
@@ -77,11 +99,7 @@ async function checkMods(m: Machine): Promise<{ lines: CheckLine[]; states: Reco
   for (const mod of MODS) {
     const command = COMMAND_OF[mod]
     if (command !== undefined) {
-      lines.push(
-        commands.includes(command)
-          ? line('ok', `mod ${mod}`, `loaded, /${command} is registered`)
-          : line('FAIL', `mod ${mod}`, `not loaded: /${command} is not registered${commandsError}`),
-      )
+      lines.push(checkRegistered(mod, command, commands, commandsError))
     } else if (mod === 'cortex-cockpit') {
       lines.push(line('ok', `mod ${mod}`, 'loaded, this check runs in it'))
     } else if (isDependency(mod)) {

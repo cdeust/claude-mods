@@ -17,10 +17,11 @@ Claude Code mods for the ai-architect.tools harness, one concern per mod, state 
 Each mod is validated, tested and type-checked on its own:
 
 ```sh
-cd mods/<mod> && claude plugin validate . && claude plugin test && npx -y -p typescript tsc -p .
+cd mods/<mod> && claude plugin validate . && claude plugin test && npx -y -p typescript tsc -p . --noEmit
 ```
 
-`tsc` needs the engine to have loaded the mod once (it lays `.claude-plugin/types/`). For hot
+`tsc` needs the engine to have loaded the mod once (it lays `.claude-plugin/types/`); keep `--noEmit`, since a plain `tsc -p .` writes `.js`
+files beside the sources. For hot
 reload in a session, link the mod into that session's `~/.claude/dev-mods/<session>/` folder;
 the engine watches the folder a link names.
 
@@ -58,9 +59,16 @@ claude \
 # or one variable, colon separated
 CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/cortex-cockpit:$MODS/harness-fleet claude
 
-# an alias in the shell profile
-alias claude-mods='CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/cortex-cockpit:$MODS/harness-fleet claude'
+# an alias in the shell profile: it sets MODS itself, because the alias body is single-quoted and
+# is expanded each time it runs, not when the profile is read
+alias claude-mods='MODS=/path/to/claude-mods/mods; CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/cortex-cockpit:$MODS/harness-fleet claude'
 ```
+
+Which form to prefer: an interactive session may ask for a login when `CLAUDE_CONFIG_DIR` points at
+an empty directory (seen once in an isolated directory, where headless `claude -p` did not ask).
+On the machine's own configuration directory, which is already logged in, that does not apply;
+use the repeated `--plugin-dir` or the alias there, and keep an isolated `CLAUDE_CONFIG_DIR`
+for tests only.
 
 `claude plugin list` shows them under "Session-only plugins" with `Status: loaded`.
 
@@ -76,9 +84,9 @@ What then must hold:
 
 | Mod | Option | Default | Notes |
 |---|---|---|---|
-| `cortex-guard` | `hygiene_script` | `~/Developments/disk-hygiene/disk_hygiene.py` | `~/` is the home of the user running the session, read at runtime. When the file is not there, one toast per session says `hygiene script not found at <path>; worktrees are not registered`; an empty value disables the registration without a toast |
+| `cortex-guard` | `hygiene_script` | `~/Developments/disk-hygiene/disk_hygiene.py` | `~/` is the home of the user running the session, read at runtime. When the file is not there, one toast per session says `hygiene script not found at <path>; worktrees are not registered`; an empty value disables the registration without a toast. A `python3` that fails to start gets one toast naming the cause, and no further worktree is registered for the session (no retry) |
 | `zetetic-genius` | `mode`, `classifier_model` | `observe`, `haiku` | the grade is one low-effort completion on the `haiku` alias |
-| `zetetic-autopilot` | `policy_mode` | `enforce` | |
+| `zetetic-autopilot` | `policy_mode`, `quota_pressure_percent`, `result_cap_chars` | `enforce`, `80`, `16000` | |
 | `cortex-cockpit` | `surface`, `cortex_server` | `ink`, `plugin_hypermnesia-mcp_cortex` | the server name as `/mcp` lists it |
 | `harness-fleet` | `github_owner`, `refresh_on_start` | `cdeust`, `true` | reads `gh pr list`, `gh issue list` and `git remote` |
 
@@ -87,7 +95,10 @@ What then must hold:
   (fleet), `pandoc` and `xelatex` (wiki), and the model aliases (genius, autopilot).
 
 `/cortex check` tests each of these on the machine where it runs and prints one line per check,
-`ok`, `FAIL` or `n/a`. A refusal from the sandbox reaches the line as the first 160 characters of
+`ok`, `FAIL` or `n/a`. `cortex-wiki` and `harness-fleet` count as loaded only when the command
+they register (`/wiki`, `/fleet`) was registered by that plugin; a user's own `wiki.md`, an MCP
+prompt or another plugin's command of the same name prints `FAIL`, and a plugin command whose
+plugin the engine does not name prints `n/a`. A refusal from the sandbox reaches the line as the first 160 characters of
 its own text, so it can be pasted back. It only reads: `python3 --version`, `gh --version`,
 `gh api rate_limit`, `git remote`, the two fleet files, `memory_stats` on the Cortex server.
 
@@ -102,7 +113,9 @@ holding `{}` and an isolated `CLAUDE_CONFIG_DIR`, loading all six by `CLAUDE_COD
 all six as `loaded` and leaves `settings.json` at `{}`; `cortex-cockpit` or `zetetic-autopilot`
 loaded alone is `disabled` with the dependency error above; `/cortex check` run headless
 (`claude -p "/cortex check"`) answers one line per check, and reports `harness-fleet` and
-`cortex-wiki` as not loaded when only the other four are.
+`cortex-wiki` as not loaded when only the other four are, and with user commands `wiki.md` and
+`fleet.md` present it still reports them not loaded (the engine reports a directory-loaded mod's
+command with `source: plugin` and `plugin` set to the bare manifest name).
 
 Not measured: the managed-settings lock itself (it could not be reproduced), whether a company
 policy accepts `--plugin-dir`, any refusal of a real sandbox (blocked network, denied `exec`,

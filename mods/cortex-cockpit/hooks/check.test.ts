@@ -10,14 +10,16 @@ type Answer<T> = T | { deny: string }
 type World = {
   python?: Answer<{ exitCode: number; stdout: string; stderr: string }>
   gh?: Answer<{ exitCode: number; stdout: string; stderr: string }>
-  script?: 'file' | { deny: string }
+  script?: 'file' | 'directory' | { deny: string }
   files?: Record<string, string | { deny: string }>
   memoryStats?: Answer<{ content: { type: 'text'; text: string }[]; isError: boolean }>
   config?: Answer<{ key: string; value: unknown; isLocked: boolean }[]>
-  commands?: string[]
+  commands?: { name: string; source: string; plugin?: string }[]
   stateRefusal?: string
   // Leave state to the engine, which keeps the cockpit's own atoms truthfully.
   isStateReal?: boolean
+  // Every process.run event the check made, as the engine delivered it (argv and init).
+  runs?: { argv: string[]; timeoutMs?: number }[]
 }
 
 const STATS = JSON.stringify({
@@ -48,15 +50,22 @@ const ROWS = [
   { key: 'harness-fleet.github_owner', value: 'cdeust', isLocked: true },
 ]
 
+const OWN_COMMANDS = [
+  { name: 'cortex', source: 'plugin', plugin: 'cortex-cockpit' },
+  { name: 'wiki', source: 'plugin', plugin: 'cortex-wiki' },
+  { name: 'fleet', source: 'plugin', plugin: 'harness-fleet' },
+]
+
 const wrap = (answer: unknown): never => ((answer as { deny?: string }).deny !== undefined ? answer : { value: answer }) as never
 
 const install = (on: Parameters<TestBody>[1], world: World): void => {
   mock.clock(on, { now: 1_000_000 })
   on('env.get', () => ({ value: HOME }))
   on('config.list', () => wrap(world.config ?? ROWS))
-  on('command.list', () => ({ value: (world.commands ?? ['cortex', 'wiki', 'fleet']).map((name) => ({ name })) }) as never)
+  on('command.list', () => ({ value: (world.commands ?? OWN_COMMANDS).map((c) => ({ description: '', ...c })) }) as never)
   on('process.run', ($, e) => {
     const argv = (e as { argv: string[] }).argv
+    world.runs?.push({ argv, timeoutMs: (e as { init?: { timeoutMs?: number } }).init?.timeoutMs })
     if (argv[0] === 'python3') return wrap(world.python ?? OK)
     if (argv[0] === 'gh' && argv[1] === 'api') return wrap(world.gh ?? RATE)
 
@@ -66,7 +75,7 @@ const install = (on: Parameters<TestBody>[1], world: World): void => {
     if (e.path !== SCRIPT) return { deny: `no stat in the test: ${e.path}` }
     const script = world.script ?? 'file'
 
-    return script === 'file' ? ({ value: { kind: 'file', size: 1, mtimeMs: 0 } } as never) : script
+    return typeof script === 'string' ? ({ value: { kind: script, size: 1, mtimeMs: 0 } } as never) : script
   })
   on('fs.read', ($, e) => {
     const file = (world.files ?? {})[e.path] ?? '{}'
@@ -144,6 +153,19 @@ test('with no readable hygiene option the default location is checked and said s
   expect(lineOf(await check($), 'hygiene script')).toBe(`ok    hygiene script (cortex-guard): ${SCRIPT} exists (option not readable here, so its default location is checked)`)
 })
 
+test('a hygiene path that is a directory, not a file, is a failure', async ($, on) => {
+  install(on, { script: 'directory' })
+  expect(lineOf(await check($), 'hygiene script')).toBe(`FAIL  hygiene script (cortex-guard): ${SCRIPT} is not a file (directory)`)
+})
+
+test('the gh quota call carries the 15 s timeout, so a sandbox that drops packets answers a line', async ($, on) => {
+  const runs: { argv: string[]; timeoutMs?: number }[] = []
+  install(on, { runs })
+  await check($)
+  expect(runs.find((r) => r.argv[0] === 'gh' && r.argv[1] === 'api')?.timeoutMs).toBe(15_000)
+  expect(runs.find((r) => r.argv[0] === 'gh' && r.argv[1] === '--version')?.timeoutMs).toBeUndefined()
+})
+
 test('an MCP server that answers with an error shows the server text', async ($, on) => {
   install(on, { memoryStats: { content: [{ type: 'text', text: 'server not connected: plugin_hypermnesia-mcp_cortex' }], isError: true } })
   expect(lineOf(await check($), 'Cortex MCP server')).toBe('FAIL  Cortex MCP server plugin_hypermnesia-mcp_cortex: memory_stats: server not connected: plugin_hypermnesia-mcp_cortex')
@@ -162,11 +184,46 @@ test('the files the fleet reads: a refused read shows the refusal, a readable on
 })
 
 test('a mod whose command is not registered reads as not loaded', async ($, on) => {
-  install(on, { commands: ['cortex'] })
+  install(on, { commands: [OWN_COMMANDS[0] as (typeof OWN_COMMANDS)[0]] })
   const text = await check($)
   expect(lineOf(text, 'mod harness-fleet')).toBe('FAIL  mod harness-fleet: not loaded: /fleet is not registered')
   expect(lineOf(text, 'mod cortex-wiki')).toBe('FAIL  mod cortex-wiki: not loaded: /wiki is not registered')
   expect(lineOf(text, 'mod cortex-cockpit')).toMatch(/^ok {4}mod cortex-cockpit: loaded/)
+})
+
+// Decoys: the name is registered, but not by the mod. Before the fix these printed `ok`.
+test('a user command, an MCP prompt or another plugin named like the mod is not the mod', async ($, on) => {
+  install(on, {
+    commands: [
+      OWN_COMMANDS[0] as (typeof OWN_COMMANDS)[0],
+      { name: 'wiki', source: 'user' },
+      { name: 'fleet', source: 'plugin', plugin: 'some-other-plugin' },
+    ],
+  })
+  const text = await check($)
+  expect(lineOf(text, 'mod cortex-wiki')).toBe('FAIL  mod cortex-wiki: not loaded: /wiki exists but is registered by user, not by cortex-wiki')
+  expect(lineOf(text, 'mod harness-fleet')).toBe('FAIL  mod harness-fleet: not loaded: /fleet exists but is registered by plugin some-other-plugin, not by harness-fleet')
+})
+
+test('an MCP prompt named like the mod is not the mod', async ($, on) => {
+  install(on, { commands: [{ name: 'cortex', source: 'plugin', plugin: 'cortex-cockpit' }, { name: 'wiki', source: 'mcp' }, { name: 'fleet', source: 'builtin' }] })
+  const text = await check($)
+  expect(lineOf(text, 'mod cortex-wiki')).toMatch(/^FAIL {2}.*registered by mcp, not by cortex-wiki/)
+  expect(lineOf(text, 'mod harness-fleet')).toMatch(/^FAIL {2}.*registered by builtin, not by harness-fleet/)
+})
+
+test('a plugin command whose plugin the engine does not name is n/a, never ok', async ($, on) => {
+  install(on, { commands: [{ name: 'cortex', source: 'plugin', plugin: 'cortex-cockpit' }, { name: 'wiki', source: 'plugin' }, { name: 'fleet', source: 'plugin' }] })
+  const text = await check($)
+  expect(lineOf(text, 'mod cortex-wiki')).toMatch(/^n\/a {3}mod cortex-wiki: \/wiki is a plugin's command but the engine does not say which plugin/)
+  expect(lineOf(text, 'mod harness-fleet')).toMatch(/^n\/a {3}mod harness-fleet: /)
+})
+
+test('the plugin that registered the command, bare or as a name@source id, proves the mod', async ($, on) => {
+  install(on, { commands: [{ name: 'wiki', source: 'plugin', plugin: 'cortex-wiki' }, { name: 'fleet', source: 'plugin', plugin: 'harness-fleet@inline' }] })
+  const text = await check($)
+  expect(lineOf(text, 'mod cortex-wiki')).toBe('ok    mod cortex-wiki: loaded, /wiki is registered by plugin cortex-wiki')
+  expect(lineOf(text, 'mod harness-fleet')).toBe('ok    mod harness-fleet: loaded, /fleet is registered by plugin harness-fleet@inline')
 })
 
 test('a state key the engine refuses to read shows the refusal', async ($, on) => {

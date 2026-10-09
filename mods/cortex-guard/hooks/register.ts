@@ -11,8 +11,8 @@ const refusals = atom({ plugin: 'cortex-guard', key: 'refusals' } as const, [] a
 
 // Module state: where the repo is and which script registers a worktree. A hot reload runs
 // session.start again, so all of it is set afresh. `script` is the option as configured (`~/` is
-// the running user's home, computed per machine); `missingSaid` keeps the "not found" toast to one
-// per session.
+// the running user's home, computed per machine); `missingSaid` keeps the "not found" toast, and the
+// "python3 could not run" toast, to one per session and stops further attempts after either.
 let repo = ''
 let script = ''
 let missingSaid = false
@@ -84,7 +84,10 @@ async function registerWorktree($: EngineInterface, path: string): Promise<void>
         : `worktree NOT registered (${ran.stderr.slice(0, REASON_CAP)})`,
     )
   } catch (error) {
-    $.ui.toast(`worktree NOT registered (python3 could not run: ${why(error)})`)
+    // A python3 that cannot start will not start for the next worktree either: say it once, with
+    // the cause, and stop trying for the session (no retry, no fallback).
+    missingSaid = true
+    $.ui.toast(`worktree NOT registered (python3 could not run: ${why(error)}); no further worktree is registered this session`)
   }
 }
 

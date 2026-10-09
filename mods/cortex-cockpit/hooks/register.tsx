@@ -127,7 +127,7 @@ async function refreshHygiene($: EngineInterface): Promise<void> {
 const machineOf = ($: EngineInterface): Machine => ({
   home: () => $.env.get('HOME'),
   config: () => $.config.list(),
-  commands: async () => (await $.command.list()).map((c) => c.name),
+  commands: async () => (await $.command.list()).map((c) => ({ name: c.name, source: c.source, plugin: c.plugin })),
   state: async (mod) => {
     if (mod === 'cortex-guard') return (await $.state.get({ plugin: 'cortex-guard', key: 'refusals' })).value
     if (mod === 'zetetic-genius') return (await $.state.get({ plugin: 'zetetic-genius', key: 'state' })).value

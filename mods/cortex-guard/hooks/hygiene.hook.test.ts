@@ -81,7 +81,24 @@ test('a python3 that cannot start is shown, not swallowed', async ($, on) => {
   on('process.run', () => ({ deny: 'sandbox: exec of python3 is not permitted' }))
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
-  expect(await done).toMatch(/^worktree NOT registered \(python3 could not run: .*not permitted/)
+  expect(await done).toMatch(/^worktree NOT registered \(python3 could not run: .*not permitted.*\); no further worktree is registered this session$/)
+})
+
+test('a python3 that cannot start is said once and tried once for the session, not once per worktree', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', ($$, e) => {
+    seen.argvs.push((e as { argv: string[] }).argv)
+    return { deny: 'sandbox: exec of python3 is not permitted' }
+  })
+  const first = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  await first
+  // A second worktree: every step is an already-resolved promise, so one turn of the event loop
+  // lets a registration that did run reach its toast (a yield, not a wait on the clock).
+  expect((await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g /r/.claude/worktrees/g main' })).result).toBe('ran')
+  await new Promise<void>((resolve) => later(resolve, 0))
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.argvs).toHaveLength(1)
 })
 
 test('without HOME the toast says why the script has no place', async ($, on) => {
