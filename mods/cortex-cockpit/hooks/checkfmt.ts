@@ -1,5 +1,4 @@
-// The pure side of /cortex check: the line a check yields, how it is cut and printed, where `~/`
-// lands. No `$` here: the engine follows `$` only inside the module that spells it (check.ts).
+// The pure side of /cortex check: the line a check yields, how it is cut and printed. No `$` here: the engine follows `$` only inside the module that spells it (check.ts).
 
 export const TEXT_CAP = 160 // source: the owner's instruction, a refusal is shown by its first 160 characters
 export const MODS = ['cortex-guard', 'cortex-wiki', 'zetetic-genius', 'zetetic-autopilot', 'cortex-cockpit', 'harness-fleet'] as const
@@ -18,9 +17,6 @@ export const line = (status: Status, name: string, detail: string): CheckLine =>
 
 export const renderLines = (lines: readonly CheckLine[]): string =>
   lines.map((l) => `${l.status.padEnd(4)}  ${l.name}: ${l.detail}`).join('\n')
-
-export const expandHome = (home: string | undefined, path: string): string | undefined =>
-  !path.startsWith('~/') ? path : home === undefined || home === '' ? undefined : `${home}/${path.slice(2)}`
 
 // What a mod states about its own options in the state it publishes: the value it runs with, as
 // its contract declares it (zetetic-genius `state`, zetetic-autopilot `policy`). A mod that

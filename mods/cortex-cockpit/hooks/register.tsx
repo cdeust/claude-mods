@@ -2,8 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
+import { placePath } from './paths'
 import type { ContextHealth, GeniusState, PolicyState, Refusal } from './deps'
-import { OWNERSHIP_PATH, parseOwnership, testProcesses, worktrees } from './hygiene'
+import { OWNERSHIP_PATH, type Ownership, parseOwnership, psRefusal, testProcesses, worktrees } from './hygiene'
 import { type Machine, runChecks } from './machinecheck'
 import { begin, emptyTally, finish, group, isCortexTool, parseStats, shortTool } from './model'
 import { bump, emptyStages, stageOf } from './pipeline'
@@ -34,8 +35,18 @@ const surfaceOf = (value: unknown): Surface => (value === 'paper' ? 'paper' : 'i
 let repo = ''
 let server = 'plugin_hypermnesia-mcp_cortex'
 
-const expandHome = async ($: EngineInterface, path: string): Promise<string> =>
-  path.startsWith('~/') ? `${(await $.env.get('HOME')) ?? ''}/${path.slice(2)}` : path
+// Where a `~/` path lands on this machine: HOME, else USERPROFILE, and CLAUDE_CONFIG_DIR for what lives
+// in the engine's config directory (paths.ts). No home to place it is an error with that reason.
+async function expandHome($: EngineInterface, path: string): Promise<string> {
+  if (!path.startsWith('~/')) return path
+  const placed = placePath(
+    { home: await $.env.get('HOME'), userProfile: await $.env.get('USERPROFILE'), configDir: await $.env.get('CLAUDE_CONFIG_DIR') },
+    path,
+  )
+  if ('reason' in placed) throw new Error(placed.reason)
+
+  return placed.path
+}
 
 // The other mods' state, as their contracts declare it (plugin.json `dependencies`); a mod not
 // loaded reads as undefined. The references are literals here, as the validator lists them.
@@ -95,29 +106,56 @@ async function refreshStats($: EngineInterface, attempt = 0): Promise<void> {
   if (wait !== undefined) $.clock.after(wait, () => refreshStats($, attempt + 1))
 }
 
+// The worktree registry disk_hygiene.py keeps. A file that is not there is an empty registry (nothing
+// was ever registered); a file that is there and cannot be read, or is not the object it writes, is
+// an error carrying the reason.
+async function readRegistry($: EngineInterface): Promise<{ ownership: Ownership | undefined; error: string | null }> {
+  try {
+    const path = await expandHome($, OWNERSHIP_PATH)
+    if (!(await $.fs.exists(path))) return { ownership: undefined, error: null }
+
+    return { ownership: parseOwnership(await $.fs.read(path)), error: null }
+  } catch (error) {
+    return { ownership: undefined, error: cut(error) }
+  }
+}
+
+// The test runners among the running processes; a ps that cannot start or exits non-zero is an
+// error carrying the reason (Windows has no ps), never "no test runner running".
+async function readProcesses($: EngineInterface): Promise<{ rows: HygieneSnapshot['testProcesses']; error: string | null }> {
+  try {
+    const ps = await $.process.run(['ps', '-eo', 'pid,etime,command'])
+    const refusal = psRefusal(ps)
+
+    return refusal === null ? { rows: testProcesses(ps.stdout), error: null } : { rows: [], error: refusal }
+  } catch (error) {
+    return { rows: [], error: `ps could not run: ${cut(error)}` }
+  }
+}
+
+const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
+
 async function refreshHygiene($: EngineInterface): Promise<void> {
   const readAt = await $.clock.now()
   let snapshot: HygieneSnapshot
   try {
     const list = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { cwd: repo })
-    let ownership: string | undefined
-    try {
-      ownership = await $.fs.read(await expandHome($, OWNERSHIP_PATH))
-    } catch {
-      ownership = undefined
+    if (list.exitCode !== 0) {
+      snapshot = { worktrees: [], testProcesses: [], processesError: null, ownershipError: null, error: list.stderr.slice(0, 120), readAt }
+    } else {
+      const registry = await readRegistry($)
+      const procs = await readProcesses($)
+      snapshot = {
+        worktrees: worktrees(list.stdout, registry.ownership),
+        testProcesses: procs.rows,
+        processesError: procs.error,
+        ownershipError: registry.error,
+        error: null,
+        readAt,
+      }
     }
-    const ps = await $.process.run(['ps', '-eo', 'pid,etime,command'])
-    snapshot =
-      list.exitCode === 0
-        ? {
-            worktrees: worktrees(list.stdout, ownership === undefined ? undefined : parseOwnership(ownership)),
-            testProcesses: testProcesses(ps.stdout),
-            error: null,
-            readAt,
-          }
-        : { worktrees: [], testProcesses: [], error: list.stderr.slice(0, 120), readAt }
   } catch (error) {
-    snapshot = { worktrees: [], testProcesses: [], error: String(error).slice(0, 120), readAt }
+    snapshot = { worktrees: [], testProcesses: [], processesError: null, ownershipError: null, error: cut(error), readAt }
   }
   await update($, hygiene, () => snapshot)
 }
@@ -125,7 +163,11 @@ async function refreshHygiene($: EngineInterface): Promise<void> {
 // What /cortex check may read: each read is spelled here, where the engine follows `$`. One
 // state key per mod this mod depends on, as its contract declares it.
 const machineOf = ($: EngineInterface): Machine => ({
-  home: () => $.env.get('HOME'),
+  vars: async () => ({
+    home: await $.env.get('HOME'),
+    userProfile: await $.env.get('USERPROFILE'),
+    configDir: await $.env.get('CLAUDE_CONFIG_DIR'),
+  }),
   config: () => $.config.list(),
   commands: async () => (await $.command.list()).map((c) => ({ name: c.name, source: c.source, plugin: c.plugin })),
   state: async (mod) => {

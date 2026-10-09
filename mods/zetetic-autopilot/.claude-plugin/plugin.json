@@ -1,6 +1,6 @@
 {
   "name": "zetetic-autopilot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the tool loop steps down the ladder; subagents run on the family their type and the turn's class call for (haiku, sonnet, opus, fable); under quota or context pressure everything goes one notch down and long streaming tool results keep head and tail. Starts in enforce; observe logs the decisions without applying them.",
   "types": "./types/index.d.ts",
   "dependencies": ["zetetic-genius"],

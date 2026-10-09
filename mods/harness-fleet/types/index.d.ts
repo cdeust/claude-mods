@@ -34,10 +34,18 @@ export type RepoRow = {
   local: string | null
   marketplace: string
   marketplaceUpdatedAt: string | null
+  // why the marketplace's manifest could not be read; the offered versions are then unknown, not absent.
+  manifestError: string | null
   plugins: PluginRow[]
+  // the newest open PRs, ten at most.
   prs: PrRow[]
+  // the exact number of open PRs; null while unread, and when the list was cut at ten and the count failed.
+  prTotal: number | null
+  prTotalError: string | null
   // the open issues, newest 100 at most; null when the gh reading failed (never an empty list).
   issues: IssueRow[] | null
+  issuesError: string | null
+  // why the PR list could not be read; the pane then says "no reading", never an empty list.
   error: string | null
   readAt: number | null
 }

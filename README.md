@@ -25,6 +25,16 @@ files beside the sources. For hot
 reload in a session, link the mod into that session's `~/.claude/dev-mods/<session>/` folder;
 the engine watches the folder a link names.
 
+A mod cannot import a file from another mod (the engine refuses it: "outside the plugin's folder"),
+so the few small pure files several mods need are copied into each of them: `hooks/paths.ts`
+(where `~/` lands: HOME, else USERPROFILE, `CLAUDE_CONFIG_DIR` for `~/.claude`) in five mods, and
+`hooks/rules.ts` (the worktree roots, the python names) in `cortex-guard` and `cortex-cockpit`,
+each with its test. After editing one, copy it over the others; this fails when a copy differs:
+
+```sh
+sh scripts/check-shared.sh
+```
+
 ## Installing
 
 `.claude-plugin/marketplace.json` lists each mod as `"source": "./mods/<mod>"`, so the repository

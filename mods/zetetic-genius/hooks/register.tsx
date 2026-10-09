@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Classified, GeniusDecision, GeniusState } from '../types'
+import { placePath } from './paths'
 import {
   SHAPES_PATH,
   SHAPE_SKILL_PREFIX,
@@ -49,8 +50,18 @@ let skills: Shape[] = []
 let genius: GeniusRow[] = []
 let geniusDir: string | null = null
 
-const expandHome = async ($: EngineInterface, path: string): Promise<string> =>
-  path.startsWith('~/') ? `${(await $.env.get('HOME')) ?? ''}/${path.slice(2)}` : path
+// Where a `~/` path lands on this machine: HOME, else USERPROFILE, and CLAUDE_CONFIG_DIR for what lives
+// in the engine's config directory (paths.ts). No home to place it is an error with that reason.
+async function expandHome($: EngineInterface, path: string): Promise<string> {
+  if (!path.startsWith('~/')) return path
+  const placed = placePath(
+    { home: await $.env.get('HOME'), userProfile: await $.env.get('USERPROFILE'), configDir: await $.env.get('CLAUDE_CONFIG_DIR') },
+    path,
+  )
+  if ('reason' in placed) throw new Error(placed.reason)
+
+  return placed.path
+}
 
 const fail = async ($: EngineInterface, what: string, error: unknown): Promise<void> => {
   await update($, state, (s) => ({ ...s, classifierError: `${what}: ${String(error).slice(0, 100)}` }))

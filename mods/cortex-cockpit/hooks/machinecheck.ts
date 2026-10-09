@@ -17,16 +17,17 @@ import {
   checkModels,
   checkOptions,
   cut,
-  expandHome,
   firstLine,
   line,
   renderLines,
   why,
 } from './checkfmt'
+import { checkFleetRecords, checkGhAuth, checkPs } from './fleetcheck'
 import { parseStats } from './model'
+import { type PathVars, placePath } from './paths'
+import { PYTHON_CANDIDATES } from './rules'
 
 const GH_TIMEOUT_MS = 15_000 // source: own choice, a sandbox that drops packets must answer a line, not hang the command
-const FLEET_FILES = ['~/.claude/plugins/installed_plugins.json', '~/.claude/plugins/known_marketplaces.json'] // source: harness-fleet hooks/fleet.ts
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 type McpResult = { content: readonly { type: string; text?: string }[]; isError: boolean; structuredContent?: unknown }
@@ -37,7 +38,8 @@ type McpResult = { content: readonly { type: string; text?: string }[]; isError:
 export type CommandRow = { name: string; source: string; plugin?: string }
 
 export type Machine = {
-  home: () => Promise<string | undefined>
+  // HOME, USERPROFILE and CLAUDE_CONFIG_DIR as the engine reports them; paths.ts places `~/` from them.
+  vars: () => Promise<PathVars>
   config: () => Promise<readonly ConfigRow[]>
   commands: () => Promise<readonly CommandRow[]>
   // The value under one mod's declared state key; `undefined` when never written. Rejects when
@@ -131,8 +133,9 @@ async function checkHygiene(m: Machine, rows: readonly ConfigRow[] | undefined):
   const option = typeof set === 'string' ? set : GUARD_DEFAULT_SCRIPT
   const basis = typeof set === 'string' ? '' : ' (option not readable here, so its default location is checked)'
   if (option === '') return line('n/a', name, 'option is empty: worktree registration is disabled on purpose')
-  const path = expandHome(await m.home(), option)
-  if (path === undefined) return line('FAIL', name, `cannot place ${option}: HOME is not set`)
+  const placed = placePath(await m.vars(), option)
+  if ('reason' in placed) return line('FAIL', name, `cannot place ${option}: ${placed.reason}`)
+  const path = placed.path
   try {
     const stat = await m.stat(path)
     return stat.kind === 'file' ? line('ok', name, `${path} exists${basis}`) : line('FAIL', name, `${path} is not a file (${stat.kind})${basis}`)
@@ -164,30 +167,34 @@ async function checkRateLimit(m: Machine): Promise<CheckLine> {
 
       return line('ok', name, `api.github.com answers, core ${core.remaining}/${core.limit} left`)
     } catch {
-      return line('ok', name, `exit 0, ${firstLine(ran.stdout) || 'no JSON read'}`)
+      // Exit 0 with anything but the rate_limit document proves no reach to the API: a proxy's page, an empty body.
+      return line('FAIL', name, `exit 0 but the answer is not the rate_limit JSON: ${firstLine(ran.stdout) || 'empty output'}`)
     }
   } catch (error) {
     return line('FAIL', name, `could not run: ${why(error)}`)
   }
 }
 
-async function checkFleetFiles(m: Machine): Promise<CheckLine[]> {
-  const home = await m.home()
-  const out: CheckLine[] = []
-  for (const file of FLEET_FILES) {
-    const path = expandHome(home, file)
-    if (path === undefined) {
-      out.push(line('FAIL', `fleet file ${file}`, 'HOME is not set'))
-      continue
-    }
+// The python cortex-guard runs the hygiene script with: the first of PYTHON_CANDIDATES that starts and
+// exits 0 on --version (the order the mod tries them in). One that exits non-zero or cannot start is
+// reported beside the one that answered; none answering is a failure, never a pass.
+async function checkPython(m: Machine): Promise<CheckLine> {
+  const name = 'python (cortex-guard)'
+  const tried: string[] = []
+  for (const candidate of PYTHON_CANDIDATES) {
     try {
-      const text = await m.read(path)
-      out.push(line('ok', `fleet file ${file}`, `readable, ${text.length} characters`))
+      const ran = await m.run([candidate, '--version'])
+      if (ran.exitCode === 0) {
+        const before = tried.length === 0 ? '' : `; before it ${tried.join('; ')}`
+
+        return line('ok', name, `${candidate} answers: ${firstLine(ran.stdout) || firstLine(ran.stderr) || 'exit 0'} (tried in order ${PYTHON_CANDIDATES.join(', ')}${before})`)
+      }
+      tried.push(`${candidate}: exit ${ran.exitCode}: ${firstLine(ran.stderr) || firstLine(ran.stdout) || 'no output'}`)
     } catch (error) {
-      out.push(line('FAIL', `fleet file ${file}`, why(error)))
+      tried.push(`${candidate}: could not start: ${why(error)}`)
     }
   }
-  return out
+  return line('FAIL', name, `none of ${PYTHON_CANDIDATES.join(', ')} started: ${tried.join('; ')}`)
 }
 
 export async function runChecks(m: Machine, own: Own): Promise<string> {
@@ -197,13 +204,15 @@ export async function runChecks(m: Machine, own: Own): Promise<string> {
   const lines: CheckLine[] = [
     ...mods.lines,
     ...checkOptions(rows, 'error' in listed ? listed.error : undefined, own, mods.states),
-    await checkCommand(m, 'python3 (cortex-guard)', ['python3', '--version']),
+    await checkPython(m),
     await checkHygiene(m, rows),
     await checkCortex(m, own.server),
     await checkCommand(m, 'gh --version', ['gh', '--version']),
+    await checkGhAuth(m),
     await checkRateLimit(m),
     await checkCommand(m, 'git remote (harness-fleet)', ['git', 'remote']),
-    ...(await checkFleetFiles(m)),
+    ...(await checkFleetRecords(m, rows)),
+    await checkPs(m),
     await checkCommand(m, 'pandoc (cortex-wiki)', ['pandoc', '--version']),
     await checkCommand(m, 'xelatex (cortex-wiki)', ['xelatex', '--version']),
     checkModels(rows, mods.states),

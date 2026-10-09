@@ -21,30 +21,39 @@ export type Marketplace = {
   lastUpdated: string | null
 }
 
-const parseJson = (text: string): unknown => {
+// A reading that cannot be trusted is an error that names its source, never an empty list: an
+// empty list is what a clean machine reads like.
+const parseJson = (what: string, text: string): unknown => {
   try {
     return JSON.parse(text)
-  } catch {
-    return undefined
+  } catch (error) {
+    throw new Error(`${what} is not valid JSON (${error instanceof Error ? error.message : String(error)})`.slice(0, 160))
   }
 }
 
+const isObject = (d: unknown): d is Record<string, unknown> => d !== null && typeof d === 'object' && !Array.isArray(d)
+
 export const parseInstalled = (json: string): Installed[] => {
-  const d = parseJson(json) as { plugins?: Record<string, { version?: unknown }[]> } | undefined
-  return Object.entries(d?.plugins ?? {}).flatMap(([key, entries]) => {
+  const what = 'installed_plugins.json'
+  const d = parseJson(what, json)
+  if (!isObject(d) || !isObject(d.plugins)) throw new Error(`${what} has no "plugins" object`)
+  return Object.entries(d.plugins).flatMap(([key, entries]) => {
+    if (!Array.isArray(entries)) throw new Error(`${what}: "${key}" is not a list`)
     const at = key.lastIndexOf('@')
-    const version = entries[0]?.version
+    const version = (entries[0] as { version?: unknown } | undefined)?.version
     if (at <= 0 || typeof version !== 'string') return []
     return [{ name: key.slice(0, at), marketplace: key.slice(at + 1), version }]
   })
 }
 
+type MarketplaceRecord = { source?: { source?: string; repo?: string; path?: string }; installLocation?: string; lastUpdated?: string }
+
 export const parseMarketplaces = (json: string): Marketplace[] => {
-  const d = parseJson(json) as
-    | Record<string, { source?: { source?: string; repo?: string; path?: string }; installLocation?: string; lastUpdated?: string }>
-    | undefined
-  return Object.entries(d ?? {}).flatMap(([name, m]) => {
-    if (typeof m.installLocation !== 'string') return []
+  const what = 'known_marketplaces.json'
+  const d = parseJson(what, json)
+  if (!isObject(d)) throw new Error(`${what} is not an object`)
+  return Object.entries(d as Record<string, MarketplaceRecord>).flatMap(([name, m]) => {
+    if (!isObject(m) || typeof m.installLocation !== 'string') return []
     const src = m.source ?? {}
     return [
       {
@@ -60,9 +69,12 @@ export const parseMarketplaces = (json: string): Marketplace[] => {
 
 // plugin name → the version the marketplace offers.
 export const parseOffered = (manifestJson: string): Record<string, string> => {
-  const d = parseJson(manifestJson) as { plugins?: { name?: unknown; version?: unknown }[] } | undefined
+  const what = 'marketplace.json'
+  const d = parseJson(what, manifestJson)
+  if (!isObject(d) || !Array.isArray(d.plugins)) throw new Error(`${what} has no "plugins" list`)
   const out: Record<string, string> = {}
-  for (const p of d?.plugins ?? []) if (typeof p.name === 'string' && typeof p.version === 'string') out[p.name] = p.version
+  for (const p of d.plugins as { name?: unknown; version?: unknown }[])
+    if (typeof p?.name === 'string' && typeof p.version === 'string') out[p.name] = p.version
   return out
 }
 
@@ -84,19 +96,24 @@ export const isBehind = (installed: string, offered: string | null): boolean => 
 export const isOwned = (m: Marketplace, owner: string): boolean =>
   m.path !== null || (m.repo !== null && m.repo.toLowerCase().startsWith(`${owner.toLowerCase()}/`))
 
+// What reading a marketplace's manifest gave: the offered versions, or why there are none.
+export type ManifestRead = { offered: Record<string, string> } | { error: string }
+
 export const fleetRows = (
   installed: readonly Installed[],
   marketplaces: readonly Marketplace[],
-  offered: Readonly<Record<string, Record<string, string>>>,
+  offered: Readonly<Record<string, ManifestRead>>,
   owner: string,
 ): RepoRow[] =>
   marketplaces
     .filter((m) => isOwned(m, owner))
     .map((m) => {
+      const read = offered[m.name]
+      const versions = read !== undefined && 'offered' in read ? read.offered : {}
       const plugins: PluginRow[] = installed
         .filter((p) => p.marketplace === m.name)
         .map((p) => {
-          const off = offered[m.name]?.[p.name] ?? null
+          const off = versions[p.name] ?? null
           return { name: p.name, installed: p.version, offered: off, isBehind: isBehind(p.version, off) }
         })
       return {
@@ -104,9 +121,13 @@ export const fleetRows = (
         local: m.path,
         marketplace: m.name,
         marketplaceUpdatedAt: m.lastUpdated,
+        manifestError: read !== undefined && 'error' in read ? read.error : null,
         plugins,
         prs: [],
+        prTotal: null,
+        prTotalError: null,
         issues: null,
+        issuesError: null,
         error: null,
         readAt: null,
       }
@@ -151,8 +172,8 @@ export const ciOf = (rollup: readonly Rollup[]): CiState => {
 }
 
 export const parsePrList = (json: string): PrRow[] => {
-  const d = parseJson(json)
-  if (!Array.isArray(d)) return []
+  const d = parseJson('gh pr list output', json)
+  if (!Array.isArray(d)) throw new Error('gh pr list output is not a list')
   return d.flatMap((p: Record<string, unknown>) =>
     typeof p.number === 'number' && typeof p.title === 'string'
       ? [
@@ -169,9 +190,9 @@ export const parsePrList = (json: string): PrRow[] => {
   )
 }
 
-export const parseIssues = (json: string): IssueRow[] | null => {
-  const d = parseJson(json)
-  if (!Array.isArray(d)) return null
+export const parseIssues = (json: string): IssueRow[] => {
+  const d = parseJson('gh issue list output', json)
+  if (!Array.isArray(d)) throw new Error('gh issue list output is not a list')
   return d.flatMap((i: Record<string, unknown>) =>
     typeof i.number === 'number' && typeof i.title === 'string'
       ? [
@@ -201,13 +222,39 @@ export const PR_LIMIT = 10 // source: own choice, the newest open PRs a pane row
 export const ISSUE_LIMIT = 100 // source: own choice, past it the count reads "100+"
 export const prListArgv = (repo: string): string[] => [
   'gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--json',
-  'number,title,isDraft,updatedAt,url,statusCheckRollup', '--limit', String(PR_LIMIT),
+  'number,title,isDraft,updatedAt,url,statusCheckRollup', '--limit', String(PR_LIMIT + 1),
 ]
+// source: GitHub GraphQL `Repository.pullRequests(states: OPEN) { totalCount }`, the exact count;
+// read on cdeust/Cortex with `gh api graphql` (2026-10-10). Asked only when the list above came
+// back with more than PR_LIMIT rows (it reads PR_LIMIT + 1), so a repository under the cap costs
+// no extra call.
+export const prCountArgv = (repo: string): string[] => {
+  const [owner = '', name = ''] = repo.split('/')
+  return [
+    'gh', 'api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', // -f keeps a name like 2024 or true a string; -F would convert it
+    'query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN){totalCount}}}',
+  ]
+}
+export const parsePrCount = (json: string): number => {
+  const d = parseJson('gh api graphql output', json) as { data?: { repository?: { pullRequests?: { totalCount?: unknown } } } }
+  const n = d?.data?.repository?.pullRequests?.totalCount
+  if (typeof n !== 'number') throw new Error('gh api graphql output has no pullRequests.totalCount')
+  return n
+}
 export const issueListArgv = (repo: string): string[] => [
   'gh', 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,labels,createdAt,url,comments',
   '--limit', String(ISSUE_LIMIT),
 ]
 export const remoteArgv = (local: string): string[] => ['git', '-C', local, 'remote', 'get-url', 'origin']
+
+// What the pane says of a repository's open PRs: how many it shows against how many exist, and
+// when the total could not be read, that.
+export const prsLabel = (r: Pick<RepoRow, 'prs' | 'error' | 'prTotal' | 'prTotalError'>): string => {
+  const plural = (n: number): string => `${n} open PR${n === 1 ? '' : 's'}`
+  if (r.error !== null) return 'PRs: no reading'
+  if (r.prTotal === null) return `${plural(r.prs.length)} shown, total not read (${r.prTotalError ?? 'no reason given'})`
+  return r.prTotal > r.prs.length ? `${r.prs.length} of ${r.prTotal} open PRs` : plural(r.prTotal)
+}
 
 // What a Button puts in front of the model. The rules named are the owner's standing ones: the
 // lead posts the verdict as a standalone comment with the head sha on line 2; a merge goes

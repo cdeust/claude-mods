@@ -14,12 +14,15 @@ const later = (globalThis as unknown as { setTimeout: (run: () => void, ms: numb
 
 type Seen = { toasts: string[]; argvs: string[][]; stats: string[]; nextToast: () => Promise<string> }
 
-const stubs = (on: Parameters<TestBody>[1], home: string | undefined, scriptStat: unknown): Seen => {
+// `home` answers HOME alone; the other variables the mod asks for are unset.
+const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown): Seen => {
   const seen: Seen = { toasts: [], argvs: [], stats: [], nextToast: () => Promise.resolve('') }
   let waiting: ((text: string) => void) | undefined
   seen.nextToast = () => new Promise((resolve) => (waiting = resolve))
   mock.clock(on, { now: 1_000_000 })
-  on('env.get', () => ({ value: home }))
+  on('env.get', ($, e) =>
+    typeof home === 'object' ? home : { value: ((e as { name?: string }).name === 'HOME' ? home : undefined) as never },
+  )
   on('session.id', () => ({ value: 'test-session' }))
   on('fs.stat', ($, e) => {
     seen.stats.push(e.path)
@@ -55,6 +58,9 @@ test('the default script is placed under the running user home, and a missing fi
   expect(seen.argvs).toEqual([])
 })
 
+// What the script was run with: the `--version` probes that resolve python are not it.
+const scriptRuns = (seen: Seen): string[][] => seen.argvs.filter((argv) => argv[1] !== '--version')
+
 test('the script that exists is run with python3 and the registration is toasted', async ($, on) => {
   const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
   on('process.run', ($$, e) => {
@@ -64,27 +70,71 @@ test('the script that exists is run with python3 and the registration is toasted
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
   expect(await done).toBe('worktree registered: /r/.claude/worktrees/f')
-  expect(seen.argvs[0]?.slice(0, 2)).toEqual(['python3', SCRIPT])
-  expect(seen.argvs[0]).toContain('register-worktree')
+  expect(scriptRuns(seen)[0]?.slice(0, 2)).toEqual(['python3', SCRIPT])
+  expect(scriptRuns(seen)[0]).toContain('register-worktree')
 })
 
 test('a script that fails shows its stderr', async ($, on) => {
   const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
-  on('process.run', () => ({ value: { exitCode: 2, stdout: '', stderr: 'sandbox: write denied' } as never }))
+  on('process.run', ($$, e) =>
+    (e as { argv: string[] }).argv[1] === '--version'
+      ? { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+      : { value: { exitCode: 2, stdout: '', stderr: 'sandbox: write denied' } as never },
+  )
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
   expect(await done).toBe('worktree NOT registered (sandbox: write denied)')
 })
 
-test('a python3 that cannot start is shown, not swallowed', async ($, on) => {
+test('a machine where no python starts is told every reason, in the order tried', async ($, on) => {
   const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
-  on('process.run', () => ({ deny: 'sandbox: exec of python3 is not permitted' }))
+  on('process.run', () => ({ deny: 'sandbox: exec of python is not permitted' }))
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
-  expect(await done).toMatch(/^worktree NOT registered \(python3 could not run: .*not permitted.*\); no further worktree is registered this session$/)
+  expect(await done).toMatch(
+    /^worktree NOT registered \(no python could run: python3: could not start \(.*not permitted.*\); python: could not start \(.*\); py: could not start \(.*\)\); no further worktree is registered this session$/,
+  )
 })
 
-test('a python3 that cannot start is said once and tried once for the session, not once per worktree', async ($, on) => {
+// A Windows machine: python3 is the Store alias (exit 9009 with a message), python is absent, py is the launcher.
+test('python3 that exits non-zero and python that is absent leave py, which then runs the script', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', ($$, e) => {
+    const argv = (e as { argv: string[] }).argv
+    seen.argvs.push(argv)
+    if (argv[0] === 'python3') return { value: { exitCode: 9009, stdout: '', stderr: 'Python was not found' } as never }
+    if (argv[0] === 'python') return { deny: 'spawn python ENOENT' }
+    return { value: { exitCode: 0, stdout: argv[1] === '--version' ? 'Python 3.12.1' : '', stderr: '' } as never }
+  })
+  const done = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  expect(await done).toBe('worktree registered: /r/.claude/worktrees/f')
+  expect(seen.argvs.slice(0, 3)).toEqual([['python3', '--version'], ['python', '--version'], ['py', '--version']])
+  expect(scriptRuns(seen)[0]?.slice(0, 2)).toEqual(['py', SCRIPT])
+})
+
+test('python3 exiting non-zero is not python: with nothing else the failure is reported, never passed', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', () => ({ value: { exitCode: 9009, stdout: '', stderr: 'Python was not found' } as never }))
+  const done = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  expect(await done).toBe(
+    'worktree NOT registered (no python could run: python3: exit 9009; python: exit 9009; py: exit 9009); no further worktree is registered this session',
+  )
+})
+
+test('a script that python starts but cannot run is shown with the interpreter that tried', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', ($$, e) => {
+    const argv = (e as { argv: string[] }).argv
+    return argv[1] === '--version' ? ({ value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }) : { deny: 'sandbox: exec of the script is not permitted' }
+  })
+  const done = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  expect(await done).toMatch(/^worktree NOT registered \(python3 could not run the script: .*not permitted.*\); no further worktree is registered this session$/)
+})
+
+test('a python that cannot start is said once and tried once for the session, not once per worktree', async ($, on) => {
   const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
   on('process.run', ($$, e) => {
     seen.argvs.push((e as { argv: string[] }).argv)
@@ -98,14 +148,37 @@ test('a python3 that cannot start is said once and tried once for the session, n
   expect((await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g /r/.claude/worktrees/g main' })).result).toBe('ran')
   await new Promise<void>((resolve) => later(resolve, 0))
   expect(seen.toasts).toHaveLength(1)
-  expect(seen.argvs).toHaveLength(1)
+  expect(seen.argvs.map((argv) => argv[0])).toEqual(['python3', 'python', 'py'])
 })
 
-test('without HOME the toast says why the script has no place', async ($, on) => {
+test('python is resolved once per session: a second worktree runs the script without probing again', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', ($$, e) => {
+    seen.argvs.push((e as { argv: string[] }).argv)
+    return { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+  })
+  const first = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  await first
+  const second = seen.nextToast()
+  await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g /r/.claude/worktrees/g main' })
+  await second
+  expect(seen.argvs.filter((argv) => argv[1] === '--version')).toHaveLength(1)
+  expect(scriptRuns(seen)).toHaveLength(2)
+})
+
+test('without HOME or USERPROFILE the toast says why the script has no place', async ($, on) => {
   const seen = stubs(on, undefined, { value: { kind: 'file', size: 1, mtimeMs: 0 } })
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
-  expect(await done).toMatch(/hygiene script not found at ~\/Developments\/disk-hygiene\/disk_hygiene\.py; worktrees are not registered \(HOME is not set/)
+  expect(await done).toMatch(/hygiene script not found at ~\/Developments\/disk-hygiene\/disk_hygiene\.py; worktrees are not registered \(~\/Developments\/disk-hygiene\/disk_hygiene\.py has no place: neither HOME nor USERPROFILE is set/)
+})
+
+test('an environment the sandbox refuses to read is the reason the script has no place', async ($, on) => {
+  const seen = stubs(on, { deny: 'env access is not allowed' }, { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  const done = seen.nextToast()
+  await $.tool.call({ ...ADD })
+  expect(await done).toMatch(/worktrees are not registered \(the environment is unreadable: .*env access is not allowed/)
 })
 
 test('an explicitly empty option disables registration with no toast and no lookup', { options: { hygiene_script: '' } }, async ($, on) => {
@@ -124,5 +197,5 @@ test('an absolute path in the option is used as given', { options: { hygiene_scr
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
   await done
-  expect(seen.argvs[0]?.[1]).toBe('/opt/h.py')
+  expect(scriptRuns(seen)[0]?.[1]).toBe('/opt/h.py')
 })

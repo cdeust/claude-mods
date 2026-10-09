@@ -64,6 +64,10 @@ export type Worktree = {
 export type HygieneSnapshot = {
   worktrees: Worktree[]
   testProcesses: { pid: number; elapsed: string; command: string }[]
+  // why the process table could not be read; the list above is then unknown, not empty.
+  processesError: string | null
+  // why the worktree registry could not be read; "not registered" is then unknown, not true.
+  ownershipError: string | null
   error: string | null
   readAt: number
 }

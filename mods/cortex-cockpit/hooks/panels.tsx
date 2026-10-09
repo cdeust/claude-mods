@@ -105,22 +105,26 @@ export const HygienePanel = (
   if (snap.error !== null)
     return <Text color={tone(surface, 'danger')}>hygiene: blocked, {snap.error}</Text>
   const extra = snap.worktrees.filter((w) => !w.isMain)
+  const isRegistryRead = snap.ownershipError === null
   return (
     <Box flexDirection="column">
       {extra.length === 0 && <Text dimColor>no worktree beside the main checkout</Text>}
+      {!isRegistryRead && <Text color={tone(surface, 'danger')}>registry: no reading, {snap.ownershipError}</Text>}
       {extra.map((w) => {
-        const bad = !w.isInsideRepoRule || !w.isRegistered
+        const bad = !w.isInsideRepoRule || (isRegistryRead && !w.isRegistered)
         return (
           <Text color={bad ? tone(surface, 'danger') : undefined}>
             {bad ? '✗' : '●'} {shortPath(w.path, repo)}
             {w.branch === null ? '' : ` · ${w.branch.replace('refs/heads/', '')}`}
             {w.isInsideRepoRule ? '' : ' · outside <repo>/.claude/worktrees/'}
-            {w.isRegistered ? ` · ${w.owner ?? 'owner unknown'}` : ' · not registered with disk_hygiene'}
+            {!isRegistryRead ? ' · registry not read' : w.isRegistered ? ` · ${w.owner ?? 'owner unknown'}` : ' · not registered with disk_hygiene'}
             {w.pr === null ? '' : ` · ${w.pr}`}
           </Text>
         )
       })}
-      {snap.testProcesses.length === 0 ? (
+      {snap.processesError !== null ? (
+        <Text color={tone(surface, 'danger')}>test runners: no reading, {snap.processesError}</Text>
+      ) : snap.testProcesses.length === 0 ? (
         <Text dimColor>no test runner running</Text>
       ) : (
         snap.testProcesses.map((p) => (

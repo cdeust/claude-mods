@@ -15,8 +15,8 @@ export const matchThresholds = (fileText: string, model: string): Thresholds | u
   let parsed: ThresholdsFile
   try {
     parsed = JSON.parse(fileText) as ThresholdsFile
-  } catch {
-    return undefined
+  } catch (error) {
+    throw new Error(`ctxguard-thresholds.json is not valid JSON (${error instanceof Error ? error.message : String(error)})`.slice(0, 160))
   }
   const m = model.toLowerCase()
   const hit = (parsed.models ?? []).find((row) => m.includes(row.match.toLowerCase()))

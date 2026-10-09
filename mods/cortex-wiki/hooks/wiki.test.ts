@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { diagramCount, pandocArgv, toPandocSource, wikiTarget } from './wiki'
 
@@ -27,4 +28,34 @@ test('only wiki markdown pages are accepted', () => {
   expect(wikiTarget('README.md').ok).toBe(false)
   expect(wikiTarget('wiki/../etc/x.md').ok).toBe(false)
   expect(wikiTarget('  ').ok).toBe(false)
+})
+
+// The command through the engine: pandoc builds, then `open` shows the PDF. "Opened" is said only
+// for an open that exited 0.
+type Answer = { exitCode: number; stdout: string; stderr: string } | { deny: string }
+const run = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], open: Answer): Promise<string> => {
+  on('env.get', () => ({ value: '/tmp/t' }))
+  on('fs.read', () => ({ value: '# page\n' }))
+  on('process.run', (_$, e) => {
+    const answer: Answer = (e as { argv: string[] }).argv[0] === 'open' ? open : { exitCode: 0, stdout: '', stderr: '' }
+
+    return 'deny' in answer ? answer : { value: answer as never }
+  })
+  const done = await $.command.run({ command: 'wiki', args: 'wiki/adr/x.md', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never)
+
+  return done.text ?? ''
+}
+
+test('open exiting 0 is "Compiled and opened"', async ($, on) => {
+  expect(await run($, on, { exitCode: 0, stdout: '', stderr: '' })).toBe('Compiled and opened /tmp/t/cortex-wiki-wiki-adr-x-md.pdf')
+})
+
+test('an open that exits non-zero is not reported as opened', async ($, on) => {
+  const text = await run($, on, { exitCode: 1, stdout: '', stderr: 'The file /tmp/t/x.pdf does not exist.' })
+  expect(text).toBe('Compiled to /tmp/t/cortex-wiki-wiki-adr-x-md.pdf but open failed (exit 1): The file /tmp/t/x.pdf does not exist.')
+})
+
+test('an open the machine will not start (Linux, Windows) is not reported as opened', async ($, on) => {
+  const text = await run($, on, { deny: 'spawn open ENOENT' })
+  expect(text).toMatch(/^Compiled to \/tmp\/t\/cortex-wiki-wiki-adr-x-md\.pdf but open could not run: .*ENOENT/)
 })

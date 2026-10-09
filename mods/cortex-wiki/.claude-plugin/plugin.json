@@ -1,6 +1,6 @@
 {
   "name": "cortex-wiki",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "/wiki <wiki/**.md>: compile a Cortex wiki page (Markdown with ```tikz blocks) to PDF through pandoc and xelatex, and open it.",
   "author": {
     "name": "cdeust"
