@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { FleetState, PrRow, RepoRow } from '../types'
+import type { FleetState, IssueRow, PrRow, RepoRow } from '../types'
 import {
   INSTALLED_PLUGINS_PATH,
   KNOWN_MARKETPLACES_PATH,
@@ -11,7 +11,7 @@ import {
   fleetRows,
   issueListArgv,
   parseInstalled,
-  parseIssueCount,
+  parseIssues,
   parseMarketplaces,
   parseOffered,
   parsePrList,
@@ -19,6 +19,7 @@ import {
   remoteArgv,
   repoOfRemote,
   reviewPrompt,
+  takeIssuePrompt,
 } from './fleet'
 import { FleetView } from './fleetview'
 
@@ -108,7 +109,7 @@ async function readRepo($: EngineInterface, r: RepoRow): Promise<RepoRow> {
     readAt,
     error: null,
     prs: parsePrList(prs.stdout),
-    openIssues: issues.exitCode === 0 ? parseIssueCount(issues.stdout) : null,
+    issues: issues.exitCode === 0 ? parseIssues(issues.stdout) : null,
   }
 }
 
@@ -172,6 +173,7 @@ export const register: Register = (on, options) => {
       now: await $.clock.now(),
       onRefresh: () => void refreshRemote($, owner),
       onReview: (repo: string, pr: PrRow) => void $.prompt.submit({ text: reviewPrompt(repo, pr) }),
+      onTake: (repo: string, issue: IssueRow) => void $.prompt.submit({ text: takeIssuePrompt(repo, issue) }),
       onDraftIssue: () =>
         void (async () => {
           const f = await read($, fleet)

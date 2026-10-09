@@ -37,7 +37,7 @@ test(
   on('process.run', ($$, e) => {
     const argv = (e as { argv: string[] }).argv
     argvs.push(argv)
-    const out = argv[1] === 'pr' ? PRS : argv[1] === 'issue' ? '[{"number":1}]' : ''
+    const out = argv[1] === 'pr' ? PRS : argv[1] === 'issue' ? '[{"number":1,"title":"t","labels":[],"createdAt":"2026-10-01T00:00:00Z","url":"u","comments":[]}]' : ''
     return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
   })
   on('state.get', ($$, e, next) =>
@@ -64,7 +64,7 @@ test('Refresh rebuilds the inventory without a session.start, as after a /clear'
   })
   on('process.run', ($$, e) => {
     const argv = (e as { argv: string[] }).argv
-    const out = argv[1] === 'pr' ? PRS : argv[1] === 'issue' ? '[{"number":1}]' : ''
+    const out = argv[1] === 'pr' ? PRS : argv[1] === 'issue' ? '[{"number":1,"title":"t","labels":[],"createdAt":"2026-10-01T00:00:00Z","url":"u","comments":[]}]' : ''
     return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
   })
   on('state.get', ($$, e, next) =>
@@ -104,7 +104,7 @@ test('a failed PR read says "PRs: no reading", never "0 open PRs"', async ($, on
             marketplaceUpdatedAt: '2026-09-09T20:59:09Z',
             plugins: [{ name: 'ai-architect-mcp-spec', installed: '0.8.0', offered: '0.8.0', isBehind: false }],
             prs: [],
-            openIssues: null,
+            issues: null,
             error: 'Post "https://api.github.com/graphql": EOF',
             readAt: Date.parse('2026-10-07T23:59:00Z'),
           },
@@ -112,6 +112,7 @@ test('a failed PR read says "PRs: no reading", never "0 open PRs"', async ($, on
       },
       onRefresh: () => {},
       onReview: () => {},
+      onTake: () => {},
       onDraftIssue: () => {},
     }),
   )
@@ -147,7 +148,10 @@ test('the fleet pane validates and shows versions, CI and the lessons on termina
             marketplaceUpdatedAt: '2026-09-22T22:53:29Z',
             plugins: [{ name: 'hypermnesia-mcp', installed: '4.23.4', offered: '4.24.0', isBehind: true }],
             prs: [{ number: 670, title: 'deps: bump multidict', isDraft: false, updatedAt: '2026-10-07T18:26:33Z', url: 'u', ci: 'failure' }],
-            openIssues: 10,
+            issues: [
+              { number: 667, title: 'SessionEnd dream cycle bypasses the launcher', labels: [], createdAt: '2026-10-06T10:00:00Z', comments: 0, url: 'u1' },
+              { number: 359, title: 'feat(wiki): incremental regeneration', labels: ['enhancement'], createdAt: '2026-08-06T10:00:00Z', comments: 1, url: 'u2' },
+            ],
             error: null,
             readAt: Date.parse('2026-10-07T23:59:00Z'),
           },
@@ -155,6 +159,7 @@ test('the fleet pane validates and shows versions, CI and the lessons on termina
       },
       onRefresh: () => {},
       onReview: () => {},
+      onTake: () => {},
       onDraftIssue: () => {},
     }),
   )
@@ -168,9 +173,13 @@ test('the fleet pane validates and shows versions, CI and the lessons on termina
     })
     expect(await ui.find({ type: 'Text', text: /hypermnesia-mcp 4\.23\.4 → 4\.24\.0 offered/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /#670 deps: bump multidict · CI failure/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /1 open PR · 10 open issues/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 open PR · 2 open issues/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /2 guard refusals · 0 classifier errors · 1 stuck escalations/ })).toBeDefined()
     expect(await ui.find({ key: 'review-cdeust/cortex-670' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /#667 \[defect\] SessionEnd dream cycle bypasses the launcher/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /#359 \[feature\] feat\(wiki\): incremental regeneration/ })).toBeDefined()
+    expect(await ui.find({ key: 'take-cdeust/cortex-667' })).toBeDefined()
+    expect(await ui.find({ key: 'take-cdeust/cortex-359' })).toBeDefined()
     expect(await ui.find({ key: 'draft-issue' })).toBeDefined()
     await ui.unmount()
   }

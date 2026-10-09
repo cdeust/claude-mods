@@ -5,12 +5,14 @@ import {
   fleetRows,
   isBehind,
   parseInstalled,
-  parseIssueCount,
+  issueKind,
+  parseIssues,
   parseMarketplaces,
   parseOffered,
   parsePrList,
   repoOfRemote,
   reviewPrompt,
+  takeIssuePrompt,
 } from './fleet'
 
 const INSTALLED = JSON.stringify({
@@ -79,7 +81,7 @@ test('CI reads failure over anything, pending while a run is open, success only 
   expect(ciOf([{ __typename: 'StatusContext', state: 'ERROR' }])).toBe('failure')
 })
 
-test('gh JSON becomes PR rows and an issue count', () => {
+test('gh JSON becomes PR rows and issue rows', () => {
   const prs = parsePrList(
     JSON.stringify([
       { number: 670, title: 'deps: bump multidict', isDraft: false, updatedAt: '2026-10-07T18:26:33Z', url: 'u', statusCheckRollup: [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'FAILURE' }] },
@@ -88,8 +90,37 @@ test('gh JSON becomes PR rows and an issue count', () => {
   )
   expect(prs.map((p) => `${p.number}:${p.ci}`)).toEqual(['670:failure', '651:success'])
   expect(parsePrList('not json')).toEqual([])
-  expect(parseIssueCount('[{"number":1},{"number":2}]')).toBe(2)
-  expect(parseIssueCount('x')).toBe(null)
+  const issues = parseIssues(
+    JSON.stringify([
+      { number: 667, title: 'SessionEnd dream cycle bypasses the launcher', labels: [], createdAt: '2026-10-06T10:00:00Z', url: 'u1', comments: [] },
+      { number: 359, title: 'feat(wiki): incremental regeneration', labels: [{ name: 'enhancement' }], createdAt: '2026-08-06T10:00:00Z', url: 'u2', comments: [{ body: 'x' }] },
+      { title: 'no number: dropped' },
+    ]),
+  )
+  expect(issues?.map((i) => `${i.number}:${i.labels.join('+')}:${i.comments}`)).toEqual(['667::0', '359:enhancement:1'])
+  expect(parseIssues('x')).toBe(null)
+  expect(parseIssues('[]')).toEqual([])
+})
+
+test('a label that names a request routes an issue to an assessment, anything else to a fix', () => {
+  expect(issueKind([])).toBe('defect')
+  expect(issueKind(['bug'])).toBe('defect')
+  expect(issueKind(['Enhancement'])).toBe('feature')
+  expect(issueKind(['bug', 'question'])).toBe('feature')
+})
+
+test('the take-issue prompt asks for a fix under the standing rules, or for the owner\'s decision on a feature', () => {
+  const defect = takeIssuePrompt('cdeust/Cortex', { number: 667, title: 'SessionEnd dream cycle bypasses the launcher', labels: ['bug'], createdAt: '', comments: 2, url: '' })
+  expect(defect).toContain('Take issue #667 of cdeust/Cortex')
+  expect(defect).toContain('fails before the fix')
+  expect(defect).toContain('registered with disk-hygiene')
+  expect(defect).toContain('merge-gate.py with --repo')
+  expect(defect).toContain('Never close an issue without evidence')
+  const feature = takeIssuePrompt('cdeust/Cortex', { number: 359, title: 'feat(wiki): incremental regeneration', labels: ['enhancement'], createdAt: '', comments: 0, url: '' })
+  expect(feature).toContain('is a feature request')
+  expect(feature).toContain("owner's decision")
+  expect(feature).toContain('before writing any code')
+  expect(feature).not.toContain('registered with disk-hygiene')
 })
 
 test('the review prompt names the repo, the PR and the standing rules', () => {

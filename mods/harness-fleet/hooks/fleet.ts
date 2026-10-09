@@ -1,7 +1,7 @@
 // Pure side of the fleet: the engine's plugin records, the marketplaces' manifests and gh's JSON
 // become rows; the prompts a Button puts in front of the model are composed here.
 
-import type { CiState, PluginRow, PrRow, RepoRow } from '../types'
+import type { CiState, IssueRow, PluginRow, PrRow, RepoRow } from '../types'
 
 // source: ~/.claude/plugins/installed_plugins.json and known_marketplaces.json, the engine's
 // records (read 2026-10-08): plugins["<name>@<marketplace>"][0].{version, installPath};
@@ -106,7 +106,7 @@ export const fleetRows = (
         marketplaceUpdatedAt: m.lastUpdated,
         plugins,
         prs: [],
-        openIssues: null,
+        issues: null,
         error: null,
         readAt: null,
       }
@@ -169,10 +169,32 @@ export const parsePrList = (json: string): PrRow[] => {
   )
 }
 
-export const parseIssueCount = (json: string): number | null => {
+export const parseIssues = (json: string): IssueRow[] | null => {
   const d = parseJson(json)
-  return Array.isArray(d) ? d.length : null
+  if (!Array.isArray(d)) return null
+  return d.flatMap((i: Record<string, unknown>) =>
+    typeof i.number === 'number' && typeof i.title === 'string'
+      ? [
+          {
+            number: i.number,
+            title: i.title,
+            labels: Array.isArray(i.labels) ? i.labels.flatMap((l: { name?: unknown }) => (typeof l.name === 'string' ? [l.name] : [])) : [],
+            createdAt: typeof i.createdAt === 'string' ? i.createdAt : '',
+            comments: Array.isArray(i.comments) ? i.comments.length : 0,
+            url: typeof i.url === 'string' ? i.url : '',
+          },
+        ]
+      : [],
+  )
 }
+
+// source: the owner's standing rule (model-behavior.md): repair work is taken and finished
+// without asking; only adding a feature needs the owner's arbitration. A label that names a
+// request (not a defect) therefore routes the issue to an assessment, never to a fix.
+const FEATURE_LABELS = new Set(['enhancement', 'feature', 'feature request', 'question', 'proposal'])
+export type IssueKind = 'defect' | 'feature'
+export const issueKind = (labels: readonly string[]): IssueKind =>
+  labels.some((l) => FEATURE_LABELS.has(l.toLowerCase())) ? 'feature' : 'defect'
 
 // The read-only gh and git calls the mod makes; nothing here writes anywhere.
 export const PR_LIMIT = 10 // source: own choice, the newest open PRs a pane row can carry
@@ -182,7 +204,8 @@ export const prListArgv = (repo: string): string[] => [
   'number,title,isDraft,updatedAt,url,statusCheckRollup', '--limit', String(PR_LIMIT),
 ]
 export const issueListArgv = (repo: string): string[] => [
-  'gh', 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number', '--limit', String(ISSUE_LIMIT),
+  'gh', 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number,title,labels,createdAt,url,comments',
+  '--limit', String(ISSUE_LIMIT),
 ]
 export const remoteArgv = (local: string): string[] => ['git', '-C', local, 'remote', 'get-url', 'origin']
 
@@ -195,6 +218,19 @@ export const reviewPrompt = (repo: string, pr: PrRow): string =>
     'Read the diff and the CI logs for any red check. Post the review verdict as the lead: a standalone `gh pr comment` whose line 2 is the head sha.',
     'Merge only through merge-gate.py with --repo, and only when CI is green and the verdict is posted. Never merge, close or push from a mod.',
   ].join(' ')
+
+export const takeIssuePrompt = (repo: string, issue: IssueRow): string =>
+  issueKind(issue.labels) === 'feature'
+    ? [
+        `Issue #${issue.number} of ${repo} ("${issue.title}") is a feature request.`,
+        "Adding a feature needs the owner's decision: read the issue and its comments, then state in three sentences what it would change, what it costs and the alternative, and wait for the owner's answer before writing any code.",
+      ].join(' ')
+    : [
+        `Take issue #${issue.number} of ${repo} ("${issue.title}", ${issue.labels.length === 0 ? 'no label' : issue.labels.join(', ')}, ${issue.comments} comment${issue.comments === 1 ? '' : 's'}).`,
+        'Read the issue and its comments, reproduce the defect on current main with a test that fails before the fix, fix the root cause in a worktree under <repo>/.claude/worktrees/ registered with disk-hygiene, run the gates exactly as CI runs them, and open a PR that closes it.',
+        'Have the PR reviewed independently and merge only through merge-gate.py with --repo, once CI is green and the verdict is posted.',
+        'Never close an issue without evidence: if the defect cannot be reproduced, say so with the commands run and ask the reporter on the issue.',
+      ].join(' ')
 
 export type Lessons = { refusals: number; classifierErrors: number; stuckEscalations: number; leanCuts: number }
 

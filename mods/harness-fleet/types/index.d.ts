@@ -18,6 +18,15 @@ export type PrRow = {
   ci: CiState
 }
 
+export type IssueRow = {
+  number: number
+  title: string
+  labels: string[]
+  createdAt: string
+  comments: number
+  url: string
+}
+
 export type RepoRow = {
   // owner/name on GitHub; null until a local marketplace's remote is resolved.
   repo: string | null
@@ -27,7 +36,8 @@ export type RepoRow = {
   marketplaceUpdatedAt: string | null
   plugins: PluginRow[]
   prs: PrRow[]
-  openIssues: number | null
+  // the open issues, newest 100 at most; null when the gh reading failed (never an empty list).
+  issues: IssueRow[] | null
   error: string | null
   readAt: number | null
 }

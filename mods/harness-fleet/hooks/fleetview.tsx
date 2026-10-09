@@ -1,7 +1,7 @@
 import type { Elements } from 'claude-code'
 
-import type { CiState, FleetState, PrRow, RepoRow } from '../types'
-import type { Lessons } from './fleet'
+import type { CiState, FleetState, IssueRow, PrRow, RepoRow } from '../types'
+import { ISSUE_LIMIT, type Lessons, issueKind } from './fleet'
 
 export type Ui = Elements['terminal']
 
@@ -11,6 +11,7 @@ export type FleetData = {
   now: number
   onRefresh: () => void
   onReview: (repo: string, pr: PrRow) => void
+  onTake: (repo: string, issue: IssueRow) => void
   onDraftIssue: () => void
 }
 
@@ -37,7 +38,30 @@ const PrLine = (ui: Ui, repo: string, pr: PrRow, now: number, onReview: FleetDat
   )
 }
 
-const RepoBlock = (ui: Ui, r: RepoRow, now: number, onReview: FleetData['onReview']) => {
+const ISSUE_ROWS = 5 // source: own choice, the oldest open issues a pane row can carry
+
+// Defects first, each group oldest first: the owner's rule is that repair work is taken and
+// finished, so what is waiting longest and is not a feature request leads.
+const issueOrder = (a: IssueRow, b: IssueRow): number => {
+  const k = Number(issueKind(a.labels) === 'feature') - Number(issueKind(b.labels) === 'feature')
+  return k !== 0 ? k : a.createdAt.localeCompare(b.createdAt)
+}
+
+const IssueLine = (ui: Ui, repo: string, issue: IssueRow, now: number, onTake: FleetData['onTake']) => {
+  const { Box, Button, Text } = ui
+  const isFeature = issueKind(issue.labels) === 'feature'
+  return (
+    <Box gap={1}>
+      <Text dimColor={isFeature}>
+        #{issue.number} [{isFeature ? 'feature' : 'defect'}] {issue.title.slice(0, 60)} · {ageLabel(issue.createdAt, now)} ·{' '}
+        {issue.comments} comment{issue.comments === 1 ? '' : 's'}
+      </Text>
+      <Button key={`take-${repo}-${issue.number}`} label={isFeature ? 'Assess' : 'Take'} onPress={() => onTake(repo, issue)} />
+    </Box>
+  )
+}
+
+const RepoBlock = (ui: Ui, r: RepoRow, now: number, onReview: FleetData['onReview'], onTake: FleetData['onTake']) => {
   const { Box, Text } = ui
   const title = r.repo ?? r.local ?? r.marketplace
   const plugins = r.plugins
@@ -55,10 +79,16 @@ const RepoBlock = (ui: Ui, r: RepoRow, now: number, onReview: FleetData['onRevie
         // A failed PR read carries an error and no list: say "no reading", never "0 open PRs".
         <Text dimColor>
           {r.error !== null ? 'PRs: no reading' : `${r.prs.length} open PR${r.prs.length === 1 ? '' : 's'}`} ·{' '}
-          {r.openIssues === null ? 'issues: no reading' : `${r.openIssues >= 100 ? '100+' : r.openIssues} open issues`}
+          {r.issues === null ? 'issues: no reading' : `${r.issues.length >= ISSUE_LIMIT ? `${ISSUE_LIMIT}+` : r.issues.length} open issues`}
         </Text>
       )}
       {r.repo !== null && r.prs.map((pr) => PrLine(ui, r.repo ?? '', pr, now, onReview))}
+      {r.repo !== null &&
+        r.issues !== null &&
+        [...r.issues].sort(issueOrder).slice(0, ISSUE_ROWS).map((i) => IssueLine(ui, r.repo ?? '', i, now, onTake))}
+      {r.repo !== null && r.issues !== null && r.issues.length > ISSUE_ROWS && (
+        <Text dimColor>+{r.issues.length - ISSUE_ROWS} more issues</Text>
+      )}
     </Box>
   )
 }
@@ -80,7 +110,7 @@ export const FleetView = (ui: Ui, d: FleetData) => {
       {f.repos.length === 0 ? (
         <Text dimColor>no owned plugin found in installed_plugins.json</Text>
       ) : (
-        f.repos.map((r) => RepoBlock(ui, r, d.now, d.onReview))
+        f.repos.map((r) => RepoBlock(ui, r, d.now, d.onReview, d.onTake))
       )}
       <Box flexDirection="column">
         <Text bold dimColor>

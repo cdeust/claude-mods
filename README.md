@@ -10,7 +10,7 @@ Claude Code mods for the ai-architect.tools harness, one concern per mod, state 
 | `zetetic-genius` | `state`: the request grade (task class → effort), the genius patterns and skills it matches | nothing |
 | `zetetic-autopilot` | `context`, `policy`: effort ladder, model routing, pressure, lean results | `zetetic-genius` |
 | `cortex-cockpit` | `stats`, `ledger`, `tally`, `stages`, `hygiene`; the `/cortex` pane draws the rest | the three above |
-| `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, issue counts; `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
+| `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
 
 ## Developing
 
