@@ -1,0 +1,19 @@
+{
+  "name": "claude-mods-codex",
+  "owner": {
+    "name": "cdeust"
+  },
+  "plugins": [
+    {
+      "name": "claude-mods",
+      "source": {
+        "source": "local",
+        "path": "./codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      }
+    }
+  ]
+}
