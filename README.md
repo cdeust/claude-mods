@@ -1,6 +1,7 @@
 # claude-mods
 
-Claude Code mods for the ai-architect.tools harness, one concern per mod, state shared through
+Claude Code mods and a separate [Codex adapter](codex/README.md) for the ai-architect.tools harness.
+The Claude mods keep one concern per mod, state shared through
 `dependencies`:
 
 | Mod | Owns | Depends on |

@@ -1,0 +1,12 @@
+{
+  "name": "claude-mods-development",
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build:codex": "node scripts/build-codex.mjs",
+    "check:codex": "node scripts/build-codex.mjs --check",
+    "test:codex": "node --test codex/tests/*.test.mjs"
+  }
+}

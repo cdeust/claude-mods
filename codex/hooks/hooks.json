@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "node \"${PLUGIN_ROOT}/runtime/hook.mjs\" SessionStart"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "node \"${PLUGIN_ROOT}/runtime/hook.mjs\" UserPromptSubmit"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "node \"${PLUGIN_ROOT}/runtime/hook.mjs\" PreToolUse"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "node \"${PLUGIN_ROOT}/runtime/hook.mjs\" PostToolUse"}]}]
+  }
+}
