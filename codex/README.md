@@ -33,7 +33,7 @@ node /absolute/plugin/path/commands/mods.mjs fleet cdeust/claude-mods
 node /absolute/plugin/path/commands/mods.mjs wiki wiki/specs/example.md /tmp/example.pdf
 ```
 
-The guard is a workflow guard, not a filesystem security boundary. Shell protection is best effort; arbitrary scripts, interpreter code and dynamic shell expressions are not a complete mediated filesystem. Native Codex permissions remain responsible for access control. Worktree commands whose destination cannot be established are refused. Shell commands do not gain approval merely by passing this plugin.
+The guard is a workflow guard, not a filesystem security boundary. Shell protection is best effort; arbitrary scripts, interpreter code and dynamic shell expressions are not a complete mediated filesystem. Native Codex permissions remain responsible for access control. Worktree additions must use explicit `git -C /absolute/repository worktree add ...`. Native shell hook inputs omit the execution tool’s workdir, so a session directory alone cannot establish the repository. Commands whose repository or destination cannot be established are refused. Shell commands do not gain approval merely by passing this plugin.
 
 Automatic worktree registration pairs native PreToolUse and PostToolUse calls by session and tool id. The target must be absent before execution, exclusively reserved by that call, then present in Git’s worktree registry with the same Git common-directory identity. Tool output is not ownership evidence. Missing proof produces a visible warning and requires manual registration.
 

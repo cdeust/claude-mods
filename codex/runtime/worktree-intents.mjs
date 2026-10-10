@@ -33,7 +33,7 @@ function requests(input) {
   const name = input.tool_name;
   if (typeof name !== 'string' || (!['Bash', 'exec_command', 'shell_command'].includes(name) && !name.endsWith('__exec_command'))) return [];
   const args = input.tool_input ?? {}, command = args.command ?? args.cmd;
-  return typeof command === 'string' ? worktreeRequest(command, args.workdir ?? args.cwd ?? input.cwd) : [];
+  return typeof command === 'string' ? worktreeRequest(command) : [];
 }
 function locations(input, request) {
   const root = join(dataDirectory(), 'worktree-intents');

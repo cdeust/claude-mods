@@ -24,7 +24,7 @@ This is the Claude engine’s own test runner. No new paid Claude completion or 
 ## Codex package and local workflows
 
 - `npm run check:codex`: generated modules match their TypeScript source exactly.
-- `npm run test:codex`: 15 tests pass: five public command subprocess tests and ten native-envelope hook subprocess tests. Initial command tests failed 5/5 before the CLI existed; initial runtime tests failed 3/3 before the hook existed.
+- `npm run test:codex`: 18 tests pass: five public command subprocess tests and thirteen native-envelope hook subprocess tests. Initial command tests failed 5/5 before the CLI existed; initial runtime tests failed 3/3 before the hook existed.
 - Actual `codex plugin marketplace add <repository>` and `codex plugin add claude-mods@claude-mods-codex --json` succeeded, in both an isolated CODEX_HOME and the normal configuration. Installed version: 0.1.0.
 - Native `/hooks` displayed four new hooks, attributed to `claude-mods@claude-mods-codex`, with the installed `runtime/hook.mjs` command. No hand-written trust hash.
 - Real wiki rendering through existing pandoc/xelatex exited 0 and produced a PDF from a wiki Markdown/TikZ source in a registered disposable test directory. No auto-open.
@@ -41,3 +41,9 @@ The native worktree probe exposed a contract mismatch: shell `tool_response` is 
 Final installed 0.1.1 worktree verification is recorded separately in the project evidence after publication and installation.
 
 Model routing remains advisory. Persistent cockpit UI, quota/usage telemetry and arbitrary result rewriting are unsupported by this adapter.
+
+## Review corrections in 0.1.2
+
+Two review reproductions are now regression cases. Native Bash envelopes omit execution workdir, so worktree additions require explicit absolute git -C instead of relying on the session directory. The shell lexer distinguishes operator tokens from quoted words and heredoc bodies before resolving file operands. Long script strings no longer reach lstat as filenames. Actual redirects and supported write commands remain guarded, including literal shell control/group prefixes and command/env wrappers.
+
+The runtime suite initially had10 passing and3 failing cases for these additions. All13 runtime cases now pass. Shared generated-source checks pass, and the original Claude mod sources/manifests remain unchanged. The lexer follows the installed bash(1) token recognition and here-document rules; it does not evaluate shell expansions. Unsupported dynamic guarded operands are refused.

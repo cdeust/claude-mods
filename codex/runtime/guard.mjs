@@ -2,6 +2,7 @@ import { realpathSync, lstatSync } from 'node:fs';
 import { resolve, dirname, basename, relative, isAbsolute, parse, join, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { judgePath } from '../shared/guard.mjs';
+import { shellTokens, shellWritePaths } from './shell.mjs';
 
 // New files inherit the physical identity of their nearest existing ancestor.
 export function physicalPath(path, cwd) {
@@ -37,59 +38,48 @@ function checkPath(path, cwd, directories = false) {
 // Literal shell words only: this is deliberately not a shell evaluator.
 // git(1), git-worktree(1) define the argv grammar. Compound/dynamic worktree
 // operations cannot establish ownership here and must be split by the caller.
-export function shellWords(command) {
-  const words = [];
-  let word = '', quote = '', started = false, dynamic = false;
-  const flush = () => { if (started) words.push(word); word = ''; started = false; };
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i];
-    if (quote === "'") { if (c === "'") quote = ''; else word += c; continue; }
-    if (c === '\\') {
-      if (i + 1 === command.length) throw new Error('Incomplete shell escape');
-      word += command[++i]; started = true; continue;
-    }
-    if (c === '$' || c === '`') dynamic = true;
-    if (quote === '"') { if (c === '"') quote = ''; else word += c; continue; }
-    if (c === "'" || c === '"') { quote = c; started = true; continue; }
-    if (/\s/.test(c)) { flush(); continue; }
-    if (/[;&|()<>]/.test(c)) { flush(); words.push(c); continue; }
-    word += c; started = true;
-  }
-  if (quote) throw new Error('Unclosed shell quote');
-  flush();
-  return { words, dynamic };
-}
 const gitValues = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
-export function worktreeRequest(command, cwd) {
+function gitOptions(words, at) {
+  let i = at + 1, gitCwd, relativeDirectory = false;
+  while (i < words.length && words[i].startsWith('-')) {
+    const flag = words[i++];
+    if (flag === '--') break;
+    if (flag === '-C' && !words[i]) throw new Error('git -C requires a directory');
+    if (flag === '-C' || (flag.startsWith('-C') && flag.length > 2)) {
+      const directory = flag === '-C' ? words[i++] : flag.slice(2);
+      relativeDirectory ||= !isAbsolute(directory);
+      gitCwd = directory;
+    } else if (gitValues.has(flag)) i++;
+  }
+  return { i, gitCwd, relativeDirectory };
+}
+function worktreePath(words, start) {
+  for (let i = start; i < words.length; i++) {
+    const arg = words[i];
+    if (arg === '--') return words[++i];
+    if (['-b', '-B', '--reason'].includes(arg)) { i++; continue; }
+    if (!arg.startsWith('-')) return arg;
+  }
+}
+export function worktreeRequest(command) {
   if (!command.includes('worktree') || !command.includes('add')) return [];
-  const { words, dynamic } = shellWords(command);
+  const tokens = shellTokens(command);
+  const words = tokens.map(token => token.value);
+  const dynamic = tokens.some(token => token.dynamic);
   const requests = [];
   for (let at = 0; at < words.length; at++) {
     if (basename(words[at]) !== 'git') continue;
-    let i = at + 1, gitCwd = cwd;
-    while (i < words.length && words[i].startsWith('-')) {
-      const flag = words[i++];
-      if (flag === '--') break;
-      if (flag === '-C') {
-        if (!words[i]) throw new Error('git -C requires a directory');
-        gitCwd = resolve(gitCwd, words[i++]);
-      } else if (flag.startsWith('-C') && flag.length > 2) gitCwd = resolve(gitCwd, flag.slice(2));
-      else if (gitValues.has(flag)) i++;
-    }
+    const { i, gitCwd, relativeDirectory } = gitOptions(words, at);
     if (words[i] !== 'worktree' || words[i + 1] !== 'add') continue;
-    if (dynamic || at !== 0 || words.some(w => [';', '&', '|', '(', ')', '<', '>'].includes(w)) || /\n/.test(command))
+    // Native Bash envelopes omit exec_command.workdir (Codex rust-v0.162.1
+    // core/src/tools/handlers/unified_exec/exec_command.rs:514-524). Session cwd
+    // cannot establish the executed repository, even for absolute target paths.
+    if (!gitCwd || relativeDirectory) throw new Error('Worktree operations require explicit absolute git -C <repository>.');
+    if (dynamic || at !== 0 || tokens.some(token => token.kind !== 'word'))
       throw new Error('Use one literal git worktree add command; expansion and compound commands cannot establish ownership.');
     if (words.slice(at + 1, i).some(w => w.startsWith('-c') || w.startsWith('--config-env') || w.startsWith('--git-dir') || w.startsWith('--work-tree')))
       throw new Error('Use git -C without repository/config overrides for worktree operations.');
-    i += 2;
-    let path;
-    for (; i < words.length; i++) {
-      const arg = words[i];
-      if (arg === '--') { path = words[++i]; break; }
-      if (['-b', '-B', '--reason'].includes(arg)) { i++; continue; }
-      if (arg.startsWith('-')) continue;
-      path = arg; break;
-    }
+    const path = worktreePath(words, i + 2);
     if (!path) throw new Error('git worktree add requires a literal path');
     const result = spawnSync('git', ['-C', gitCwd, 'worktree', 'list', '--porcelain', '-z'], { encoding: 'utf8' });
     if (result.status !== 0) throw new Error(`Cannot resolve git repository: ${result.stderr?.trim() || result.error?.message}`);
@@ -123,15 +113,11 @@ export function guard(input) {
   if (shellTool) {
     const command = args.command ?? args.cmd;
     if (typeof command !== 'string') throw new Error('Shell tool requires a command string');
-    // The existing Claude shell rule is best effort; direct tool paths are exact.
-    if (/(^|[\s;&|(])(sed\s+-i|tee|cp|mv|rm|truncate|dd|perl\s+-pi)\b|>>?\s*\S/.test(command)) {
-      const { words } = shellWords(command);
-      for (const word of words) {
-        if (!word || [';', '&', '|', '(', ')', '<', '>'].includes(word) || word.startsWith('-')) continue;
-        const verdict = checkPath(word, cwd, true); if (!verdict.allow) return verdict;
-      }
+    // Best effort over actual file operands; quoted script data is not a path.
+    for (const path of shellWritePaths(shellTokens(command))) {
+      const verdict = checkPath(path, cwd, true); if (!verdict.allow) return verdict;
     }
-    for (const request of worktreeRequest(command, cwd)) {
+    for (const request of worktreeRequest(command)) {
       if (!['.claude', '.Codex'].some(host => inside(request.path, resolve(request.repo, host, 'worktrees'))))
         return { allow: false, rule: 'worktree-inside-repo', reason: 'Worktrees must live below the real repository .claude/worktrees/ or .Codex/worktrees/ directory.' };
     }

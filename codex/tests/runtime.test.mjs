@@ -46,10 +46,10 @@ test('git -C worktree paths use target repository and resolve symlink ancestors'
  denied(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:'git worktree add /tmp/outside main'}}));
  const ok=call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:`git -C '${f.repo}' worktree add .Codex/worktrees/topic main`}});
  assert.equal(ok.hookSpecificOutput?.permissionDecision,undefined);
- const orphan=call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:'git worktree add --orphan .Codex/worktrees/newbranch'}});
+ const orphan=call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:`git -C '${f.repo}' worktree add --orphan .Codex/worktrees/newbranch`}});
  assert.equal(orphan.hookSpecificOutput?.permissionDecision,undefined);
  mkdirSync(join(f.repo,'.Codex'),{recursive:true}); symlinkSync(f.root,join(f.repo,'.Codex/worktrees'));
- denied(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:'git worktree add .Codex/worktrees/topic main'}}));
+ denied(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:`git -C '${f.repo}' worktree add .Codex/worktrees/topic main`}}));
  denied(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:'cd elsewhere && git worktree add .Codex/worktrees/topic main'}}));
 });
 test('session context is advisory; telemetry excludes prompts and results',t=>{
@@ -74,6 +74,52 @@ test('malformed inputs are denied without approval override and unsupported tool
  symlinkSync(join(f.repo,'wiki/adr/nested'),join(f.repo,'nested-alias'));
  denied(call(f,'PreToolUse',{tool_name:'Write',tool_input:{file_path:'nested-alias/../a.md'}}));
 });
+test('native Bash omission of workdir requires explicit absolute git -C',t=>{
+ const f=fixture(t);const repoB=join(f.root,'other-repo');
+ assert.equal(spawnSync('git',['init',repoB]).status,0);
+ // The host executes in repoB, but its native hook envelope only carries repoA.
+ const r=call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:`git worktree add '${f.repo}/.Codex/worktrees/wrong-repo' main`}});
+ denied(r);
+ assert.match(r.hookSpecificOutput.permissionDecisionReason,/absolute.*-C|-C.*absolute/);
+ denied(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:'git -C . worktree add .Codex/worktrees/relative main',workdir:repoB}}));
+});
+test('quoted script data and heredoc bodies never become filesystem operands',t=>{
+ const f=fixture(t);const data='x'.repeat(300)+' > wiki/adr/a.md';
+ const commands=[
+  `python3 -c 'print("${data}")'`,
+  `python3 - <<'PY'\nprint("${data}")\nPY\n`,
+  `python3 - <<PY\nprint("${data}")\nPY\n`,
+  `cat <<FIRST <<'SECOND'\n${data}\nFIRST\nrm wiki/adr/a.md\nSECOND\n`,
+  `cat <<-EOF\n\t${data}\n\tEOF\n`,
+  `printf '%s' '> wiki/adr/a.md' # rm wiki/adr/a.md\n`,
+  `git -C . log --grep='worktree add'`,
+  `node -e 'console.log("${data}")'`,
+  `printf '%s' "$(printf '%s' '${data}')"`,
+ ];
+ for(const command of commands) {
+  const syntax=spawnSync('/bin/bash',['-n'],{input:command,encoding:'utf8'});
+  assert.equal(syntax.status,0,syntax.stderr);
+  assert.deepEqual(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command}}),{},command);
+ }
+});
+test('actual redirections and file-writing operands remain guarded',t=>{
+ const f=fixture(t);
+ for(const command of [
+  "printf '%s' safe > wiki/adr/a.md",
+  "cat <<'EOF' > wiki/adr/a.md\nsafe\nEOF\n",
+  "cat <<'EOF'\nsafe\nEOF\nprintf safe >> wiki/adr/a.md\n",
+  "tee 'alias/adr/a.md'", "mv README.md wiki/adr/a.md", "cp README.md wiki/adr/a.md",
+  "sed -i '' 's/a/b/' wiki/adr/a.md", "perl -pi -e 's/a/b/' wiki/adr/a.md",
+  "sed -i --expression='s/a/b/' wiki/adr/a.md", "printf safe 2> wiki/adr/a.md",
+  "dd if=README.md of=wiki/adr/a.md", "printf safe >", "tee 'unfinished",
+  "if true; then rm wiki/adr/a.md; fi", "{ rm wiki/adr/a.md; }",
+  "command rm wiki/adr/a.md", "env rm wiki/adr/a.md",
+  "env -i command -p rm wiki/adr/a.md",
+  "while rm wiki/adr/a.md; do break; done", "until rm wiki/adr/a.md; do break; done",
+  "time rm wiki/adr/a.md", "time -p rm wiki/adr/a.md",
+ ]) denied(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command}}));
+ assert.deepEqual(call(f,'PreToolUse',{tool_name:'Bash',tool_input:{command:"cp wiki/adr/a.md README-copy.md"}}),{});
+});
 test('parallel hook processes preserve complete independent telemetry events',async t=>{
  const f=fixture(t);const turns=['one','two','three','four'];
  await Promise.all(turns.map(turn_id=>new Promise((resolve,reject)=>{
@@ -89,7 +135,7 @@ test('parallel hook processes preserve complete independent telemetry events',as
 test('real Git worktree creation registers from paired native hooks regardless of raw output',t=>{
  const f=fixture(t);
  const {env,receipt}=registrar(f);
- const payload={tool_name:'Bash',tool_use_id:'created-worktree',tool_input:{command:'git worktree add --orphan .Codex/worktrees/topic'}};
+ const payload={tool_name:'Bash',tool_use_id:'created-worktree',tool_input:{command:`git -C '${f.repo}' worktree add --orphan .Codex/worktrees/topic`}};
  assert.deepEqual(call(f,'PreToolUse',payload,env),{});
  addWorktree(f,'.Codex/worktrees/topic');
  assert.deepEqual(call(f,'PostToolUse',{...payload,tool_response:'Preparing worktree (new branch)'},env),{});
@@ -102,7 +148,7 @@ test('real Git worktree creation registers from paired native hooks regardless o
 });
 test('spoofed success and failed Git do not register an absent worktree',t=>{
  const f=fixture(t);const {env,receipt}=registrar(f);
- const payload={tool_name:'Bash',tool_use_id:'failed-worktree',tool_input:{command:'git worktree add .Codex/worktrees/failed missing-reference'}};
+ const payload={tool_name:'Bash',tool_use_id:'failed-worktree',tool_input:{command:`git -C '${f.repo}' worktree add .Codex/worktrees/failed missing-reference`}};
  assert.deepEqual(call(f,'PreToolUse',payload,env),{});
  const git=spawnSync('git',['worktree','add','.Codex/worktrees/failed','missing-reference'],{cwd:f.repo,encoding:'utf8'});
  assert.notEqual(git.status,0);
@@ -113,7 +159,7 @@ test('spoofed success and failed Git do not register an absent worktree',t=>{
 test('preexisting paths and unpaired native calls cannot claim ownership',t=>{
  const f=fixture(t);const {env,receipt}=registrar(f);
  addWorktree(f,'.Codex/worktrees/existing');
- const payload={tool_name:'Bash',tool_use_id:'existing-worktree',tool_input:{command:'git worktree add --orphan .Codex/worktrees/existing'}};
+ const payload={tool_name:'Bash',tool_use_id:'existing-worktree',tool_input:{command:`git -C '${f.repo}' worktree add --orphan .Codex/worktrees/existing`}};
  const pre=call(f,'PreToolUse',payload,env);
  assert.match(pre.hookSpecificOutput.additionalContext,/target existed before/);
  for(const tool_use_id of [payload.tool_use_id,'unpaired-call']) {
@@ -122,12 +168,12 @@ test('preexisting paths and unpaired native calls cannot claim ownership',t=>{
   assert.throws(()=>readFileSync(receipt));
  }
  mkdirSync(join(f.repo,'.Codex/worktrees/empty'));
- const empty=call(f,'PreToolUse',{...payload,tool_use_id:'empty-directory',tool_input:{command:'git worktree add --orphan .Codex/worktrees/empty'}},env);
+ const empty=call(f,'PreToolUse',{...payload,tool_use_id:'empty-directory',tool_input:{command:`git -C '${f.repo}' worktree add --orphan .Codex/worktrees/empty`}},env);
  assert.match(empty.hookSpecificOutput.additionalContext,/target existed before/);
 });
 test('replacing the Git common directory cannot transfer pending ownership to a new repository',t=>{
  const f=fixture(t);const {env,receipt}=registrar(f);
- const payload={tool_name:'Bash',tool_use_id:'repository-replaced',tool_input:{command:'git worktree add --orphan .Codex/worktrees/replaced'}};
+ const payload={tool_name:'Bash',tool_use_id:'repository-replaced',tool_input:{command:`git -C '${f.repo}' worktree add --orphan .Codex/worktrees/replaced`}};
  assert.deepEqual(call(f,'PreToolUse',payload,env),{});
  renameSync(join(f.repo,'.git'),join(f.repo,'.git-before'));
  assert.equal(spawnSync('git',['init',f.repo],{encoding:'utf8'}).status,0);
@@ -139,7 +185,7 @@ test('replacing the Git common directory cannot transfer pending ownership to a 
 });
 test('the target reservation excludes another session and registration errors remain visible',t=>{
  const f=fixture(t);const {env,receipt,script}=registrar(f);
- const first={tool_name:'Bash',tool_use_id:'reserved',tool_input:{command:'git worktree add --orphan .Codex/worktrees/reserved'}};
+ const first={tool_name:'Bash',tool_use_id:'reserved',tool_input:{command:`git -C '${f.repo}' worktree add --orphan .Codex/worktrees/reserved`}};
  assert.deepEqual(call(f,'PreToolUse',first,env),{});
  const other={...first,session_id:'other-session'};
  const excluded=call(f,'PreToolUse',other,env);
