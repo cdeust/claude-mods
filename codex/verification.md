@@ -24,14 +24,20 @@ This is the Claude engine’s own test runner. No new paid Claude completion or 
 ## Codex package and local workflows
 
 - `npm run check:codex`: generated modules match their TypeScript source exactly.
-- `npm run test:codex`: 11 tests pass: five public command subprocess tests and six native-envelope hook subprocess tests. Initial command tests failed 5/5 before the CLI existed; initial runtime tests failed 3/3 before the hook existed.
+- `npm run test:codex`: 15 tests pass: five public command subprocess tests and ten native-envelope hook subprocess tests. Initial command tests failed 5/5 before the CLI existed; initial runtime tests failed 3/3 before the hook existed.
 - Actual `codex plugin marketplace add <repository>` and `codex plugin add claude-mods@claude-mods-codex --json` succeeded, in both an isolated CODEX_HOME and the normal configuration. Installed version: 0.1.0.
 - Native `/hooks` displayed four new hooks, attributed to `claude-mods@claude-mods-codex`, with the installed `runtime/hook.mjs` command. No hand-written trust hash.
 - Real wiki rendering through existing pandoc/xelatex exited 0 and produced a PDF from a wiki Markdown/TikZ source in a registered disposable test directory. No auto-open.
 - Real fleet read returned GitHub PR/issue observations for cdeust/claude-mods. The pre-existing `session-optimizer-marketplace` manifest error stayed visible as a failed plugin catalog reading; it was not converted to an empty catalog or repaired by this change.
 
-## Native activation pending
+## Native activation
 
-Automatic approval review rejected pressing `t` to trust the new PreToolUse hook, because trust persistently enables plugin code outside the sandbox and requires explicit user authorization. No further trust action was attempted. All four hooks remain untrusted pending approval. Therefore no native SessionStart/UserPromptSubmit/PreToolUse/PostToolUse receipt is claimed. Subprocess tests do not establish native acceptance.
+The owner explicitly authorized trust of the four hooks on 2026-10-10. Each hook was inspected and trusted individually through native `/hooks`; no trust hash was edited.
 
-Worktree auto-registration recognizes structured numeric exit status only. An unknown host result produces an explicit “registration not verified” message; it must be tested against an actual successful native worktree operation after activation. Model routing remains advisory. Persistent cockpit UI, quota/usage telemetry and arbitrary result rewriting are unsupported by this adapter.
+Fresh Codex session `01a125d8-9e62-7bb1-a4ee-fac7b0df1f13` recorded SessionStart, UserPromptSubmit, PreToolUse and PostToolUse through installed version 0.1.0. A real `pwd` completed. A native `apply_patch` attempt to create `wiki/specs/codex-native-guard-probe.md` was denied by the wiki guard, and the file remained absent.
+
+The native worktree probe exposed a contract mismatch: shell `tool_response` is text, without a structured exit status. The installed client source confirms this representation in [Codex rust-v0.162.1 hooks tests](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/tests/suite/hooks.rs#L5453-L5461). Version 0.1.1 replaces status inspection with a paired native-call intent and real Git ownership verification. Regression tests exercise actual Git creation with textual output, failed creation with spoofed output, existing paths, unpaired results and competing calls.
+
+Final installed 0.1.1 worktree verification is recorded separately in the project evidence after publication and installation.
+
+Model routing remains advisory. Persistent cockpit UI, quota/usage telemetry and arbitrary result rewriting are unsupported by this adapter.

@@ -35,7 +35,7 @@ node /absolute/plugin/path/commands/mods.mjs wiki wiki/specs/example.md /tmp/exa
 
 The guard is a workflow guard, not a filesystem security boundary. Shell protection is best effort; arbitrary scripts, interpreter code and dynamic shell expressions are not a complete mediated filesystem. Native Codex permissions remain responsible for access control. Worktree commands whose destination cannot be established are refused. Shell commands do not gain approval merely by passing this plugin.
 
-Automatic worktree registration currently requires a structured numeric host exit status; unknown result shapes produce a visible registration warning and require manual registration. Native acceptance remains pending as described below.
+Automatic worktree registration pairs native PreToolUse and PostToolUse calls by session and tool id. The target must be absent before execution, exclusively reserved by that call, then present in Git’s worktree registry with the same Git common-directory identity. Tool output is not ownership evidence. Missing proof produces a visible warning and requires manual registration.
 
 The hygiene script is the existing `~/Developments/disk-hygiene/disk_hygiene.py`; its failure must be surfaced rather than treating the worktree as registered. No tool installation is performed.
 

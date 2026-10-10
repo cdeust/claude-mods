@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, mkdirSync, symlinkSync, readFileSync, writeFileSync, rmSync, readdirSync, realpathSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, symlinkSync, readFileSync, writeFileSync, rmSync, readdirSync, realpathSync, renameSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync, spawn} from 'node:child_process';
@@ -14,11 +14,23 @@ function fixture(t) {
  symlinkSync(join(repo,'wiki'),join(repo,'alias'));
  return {root,repo,data:join(root,'data')};
 }
+let nextTool = 0;
 function call(f,event,extra={},env={}) {
- const r=spawnSync(process.execPath,[runtime.pathname,event],{input:JSON.stringify({session_id:'native-test',cwd:f.repo,hook_event_name:event,...extra}),encoding:'utf8',env:{...process.env,PLUGIN_DATA:f.data,...env}});
+ const r=spawnSync(process.execPath,[runtime.pathname,event],{input:JSON.stringify({session_id:'native-test',tool_use_id:`tool-${nextTool++}`,cwd:f.repo,hook_event_name:event,...extra}),encoding:'utf8',env:{...process.env,PLUGIN_DATA:f.data,...env}});
  assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout);
 }
 function denied(r){assert.equal(r.hookSpecificOutput.permissionDecision,'deny');}
+function registrar(f) {
+ const home=join(f.root,'home');const script=join(home,'Developments/disk-hygiene/disk_hygiene.py');
+ mkdirSync(join(home,'Developments/disk-hygiene'),{recursive:true});
+ const receipt=join(f.root,'registration.json');
+ writeFileSync(script,`import json,sys\nfrom pathlib import Path\nassert len(list(Path(${JSON.stringify(join(f.data,'worktree-intents'))}).glob('*.reservation.json'))) == 1, 'reservation released before registration'\nPath(${JSON.stringify(receipt)}).write_text(json.dumps(sys.argv[1:]))\n`);
+ return {env:{HOME:home},receipt,script};
+}
+function addWorktree(f,path) {
+ const result=spawnSync('git',['worktree','add','--orphan',path],{cwd:f.repo,encoding:'utf8'});
+ assert.equal(result.status,0,result.stderr);
+}
 test('native hooks deny patch, normalized and symlink wiki paths; allow normal edits without approval override',t=>{
  const f=fixture(t);
  for(const file_path of ['wiki/adr/a.md','src/../wiki/adr/a.md','alias/adr/a.md']) denied(call(f,'PreToolUse',{tool_name:'Write',tool_input:{file_path}}));
@@ -74,23 +86,74 @@ test('parallel hook processes preserve complete independent telemetry events',as
  assert.deepEqual(records.map(record=>record.turn_id).sort(),turns.sort());
  assert.equal(records.every(record=>!('prompt' in record)),true);
 });
-test('worktree success registers only with explicit exit status and exposes registration failure',t=>{
+test('real Git worktree creation registers from paired native hooks regardless of raw output',t=>{
  const f=fixture(t);
- const home=join(f.root,'home');const script=join(home,'Developments/disk-hygiene/disk_hygiene.py');
- mkdirSync(join(home,'Developments/disk-hygiene'),{recursive:true});
- const receipt=join(f.root,'registration.json');
- writeFileSync(script,`import json,sys\nfrom pathlib import Path\nPath(${JSON.stringify(receipt)}).write_text(json.dumps(sys.argv[1:]))\n`);
- const payload={tool_name:'Bash',tool_input:{command:'git worktree add .Codex/worktrees/topic main'}};
- call(f,'PostToolUse',{...payload,tool_response:{exit_code:1}},{HOME:home});
+ const {env,receipt}=registrar(f);
+ const payload={tool_name:'Bash',tool_use_id:'created-worktree',tool_input:{command:'git worktree add --orphan .Codex/worktrees/topic'}};
+ assert.deepEqual(call(f,'PreToolUse',payload,env),{});
+ addWorktree(f,'.Codex/worktrees/topic');
+ assert.deepEqual(call(f,'PostToolUse',{...payload,tool_response:'Preparing worktree (new branch)'},env),{});
+ assert.deepEqual(JSON.parse(readFileSync(receipt,'utf8')),['--host','codex','--session','native-test','register-worktree','--repo',f.repo,'--path',join(f.repo,'.Codex/worktrees/topic')]);
+ assert.equal(readdirSync(join(f.data,'worktree-intents')).some(file=>file.endsWith('.reservation.json')),false);
+ rmSync(receipt);
+ const duplicate=call(f,'PostToolUse',{...payload,tool_response:'Preparing worktree (new branch)'},env);
+ assert.match(duplicate.hookSpecificOutput.additionalContext,/registration not verified/);
  assert.throws(()=>readFileSync(receipt));
- for(const tool_response of [undefined,{},'Process exited with code 0',{output:'Process exited with code 0'},{exit_code:'0'}]) {
-  const unverified=call(f,'PostToolUse',{...payload,tool_response},{HOME:home});
-  assert.match(unverified.hookSpecificOutput?.additionalContext??'',/registration not verified/);
+});
+test('spoofed success and failed Git do not register an absent worktree',t=>{
+ const f=fixture(t);const {env,receipt}=registrar(f);
+ const payload={tool_name:'Bash',tool_use_id:'failed-worktree',tool_input:{command:'git worktree add .Codex/worktrees/failed missing-reference'}};
+ assert.deepEqual(call(f,'PreToolUse',payload,env),{});
+ const git=spawnSync('git',['worktree','add','.Codex/worktrees/failed','missing-reference'],{cwd:f.repo,encoding:'utf8'});
+ assert.notEqual(git.status,0);
+ const result=call(f,'PostToolUse',{...payload,tool_response:'Process exited with code 0'},env);
+ assert.match(result.hookSpecificOutput.additionalContext,/no new registered worktree found/);
+ assert.throws(()=>readFileSync(receipt));
+});
+test('preexisting paths and unpaired native calls cannot claim ownership',t=>{
+ const f=fixture(t);const {env,receipt}=registrar(f);
+ addWorktree(f,'.Codex/worktrees/existing');
+ const payload={tool_name:'Bash',tool_use_id:'existing-worktree',tool_input:{command:'git worktree add --orphan .Codex/worktrees/existing'}};
+ const pre=call(f,'PreToolUse',payload,env);
+ assert.match(pre.hookSpecificOutput.additionalContext,/target existed before/);
+ for(const tool_use_id of [payload.tool_use_id,'unpaired-call']) {
+  const result=call(f,'PostToolUse',{...payload,tool_use_id,tool_response:{exit_code:0}},env);
+  assert.match(result.hookSpecificOutput.additionalContext,/no pending intent/);
   assert.throws(()=>readFileSync(receipt));
  }
- call(f,'PostToolUse',{...payload,tool_response:{exit_code:0}},{HOME:home});
- assert.deepEqual(JSON.parse(readFileSync(receipt,'utf8')),['--host','codex','--session','native-test','register-worktree','--repo',f.repo,'--path',join(f.repo,'.Codex/worktrees/topic')]);
+ mkdirSync(join(f.repo,'.Codex/worktrees/empty'));
+ const empty=call(f,'PreToolUse',{...payload,tool_use_id:'empty-directory',tool_input:{command:'git worktree add --orphan .Codex/worktrees/empty'}},env);
+ assert.match(empty.hookSpecificOutput.additionalContext,/target existed before/);
+});
+test('replacing the Git common directory cannot transfer pending ownership to a new repository',t=>{
+ const f=fixture(t);const {env,receipt}=registrar(f);
+ const payload={tool_name:'Bash',tool_use_id:'repository-replaced',tool_input:{command:'git worktree add --orphan .Codex/worktrees/replaced'}};
+ assert.deepEqual(call(f,'PreToolUse',payload,env),{});
+ renameSync(join(f.repo,'.git'),join(f.repo,'.git-before'));
+ assert.equal(spawnSync('git',['init',f.repo],{encoding:'utf8'}).status,0);
+ addWorktree(f,'.Codex/worktrees/replaced');
+ const result=call(f,'PostToolUse',{...payload,tool_response:'success'},env);
+ assert.match(result.hookSpecificOutput.additionalContext,/common-directory identity changed/);
+ assert.equal(readdirSync(join(f.data,'worktree-intents')).some(file=>file.endsWith('.reservation.json')),false);
+ assert.throws(()=>readFileSync(receipt));
+});
+test('the target reservation excludes another session and registration errors remain visible',t=>{
+ const f=fixture(t);const {env,receipt,script}=registrar(f);
+ const first={tool_name:'Bash',tool_use_id:'reserved',tool_input:{command:'git worktree add --orphan .Codex/worktrees/reserved'}};
+ assert.deepEqual(call(f,'PreToolUse',first,env),{});
+ const other={...first,session_id:'other-session'};
+ const excluded=call(f,'PreToolUse',other,env);
+ // Model the host boundary: a competing command would run only if not denied.
+ if(excluded.hookSpecificOutput?.permissionDecision!=='deny') addWorktree(f,'.Codex/worktrees/reserved');
+ denied(excluded);
+ assert.match(excluded.hookSpecificOutput.permissionDecisionReason,/already reserved/);
+ addWorktree(f,'.Codex/worktrees/reserved');
+ const unpaired=call(f,'PostToolUse',{...other,tool_response:'success'},env);
+ assert.match(unpaired.hookSpecificOutput.additionalContext,/no pending intent/);
+ assert.throws(()=>readFileSync(receipt));
  rmSync(script);
- const failure=call(f,'PostToolUse',{...payload,tool_response:{exit_code:0}},{HOME:home});
+ const failure=call(f,'PostToolUse',{...first,tool_response:'success'},env);
  assert.match(failure.hookSpecificOutput.additionalContext,/Worktree registration failed/);
+ assert.equal(readdirSync(join(f.data,'worktree-intents')).some(file=>file.endsWith('.reservation.json')),false);
+ assert.throws(()=>readFileSync(receipt));
 });

@@ -1,6 +1,6 @@
 {
   "name": "claude-mods",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cortex guards, session reports, wiki PDF, genius guidance and read-only fleet for Codex. Model routing is advisory.",
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
