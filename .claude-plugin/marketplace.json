@@ -7,6 +7,7 @@
     { "name": "zetetic-genius", "source": "./mods/zetetic-genius" },
     { "name": "zetetic-autopilot", "source": "./mods/zetetic-autopilot" },
     { "name": "cortex-cockpit", "source": "./mods/cortex-cockpit" },
-    { "name": "harness-fleet", "source": "./mods/harness-fleet" }
+    { "name": "harness-fleet", "source": "./mods/harness-fleet" },
+    { "name": "superpowers", "version": "7.0.0", "source": { "source": "github", "repo": "obra/superpowers", "ref": "v7.0.0", "sha": "bb92a77741419a4ab5f06e711a283343f1ada0c3" } }
   ]
 }
