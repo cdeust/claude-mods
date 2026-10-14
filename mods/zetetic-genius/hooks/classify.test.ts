@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  advisorContext,
   classifierSystem,
   effortForClass,
   isClassifiable,
@@ -94,4 +95,12 @@ test('the skill context names the skills to invoke first, and a request is known
   expect(sameRequest('abc', 'abc')).toBe(true)
   expect(sameRequest('a'.repeat(300), 'a'.repeat(200) + 'b'.repeat(100))).toBe(true)
   expect(sameRequest('abc', 'abd')).toBe(false)
+})
+
+test('the advisor line rides only with the grades that have a decision point', () => {
+  expect(advisorContext('analysis')).toMatch(/graded analysis\. Consult the advisor once after orientation/)
+  expect(advisorContext('critical')).toMatch(/before declaring done/)
+  expect(advisorContext('routine')).toBe(undefined)
+  expect(advisorContext('planned')).toBe(undefined)
+  expect(advisorContext('bugfix')).toBe(undefined)
 })

@@ -80,7 +80,8 @@ test('enforce: the popper workflow rides beside the prompt', { options: { mode: 
   stubs(on, GRADED, seen)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.prompt.submit({ ...PROMPT, text: 'Is the claim that the cache caused the speedup even testable?' } as never)
-  expect(seen.context?.length).toBe(1)
+  expect(seen.context?.length).toBe(2)
+  expect(seen.context?.[1]).toMatch(/graded critical\. Consult the advisor/)
   expect(seen.context?.[0]).toContain('apply the popper reasoning pattern')
   expect(seen.context?.[0]).toContain('1. Demarcation pass.')
   expect(seen.context?.[0]).toContain('/p/agents/genius/popper.md')
@@ -131,4 +132,21 @@ test('an installed_plugins.json that is not JSON is reported as that, not as "no
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   expect(seen.classifierError).toMatch(/installed_plugins\.json is not valid JSON/)
   expect(seen.classifierError).not.toMatch(/is not installed/)
+})
+
+test("a subagent's turn.start leaves the main request's grade bound to its turn", async ($, on) => {
+  const seen: Seen = { completions: 0 }
+  stubs(on, GRADED, seen)
+  let bound: { turnId: string | null } | null | undefined
+  on('state.set', ($$, e, next) => {
+    if ((e as { key?: string }).key === 'state') bound = (e as unknown as { value: { classified: { turnId: string | null } | null } }).value.classified
+    return next(e)
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const text = 'Is the claim that the cache caused the speedup even testable?'
+  await $.prompt.submit({ ...PROMPT, text } as never)
+  await $.turn.start({ turnId: 'main-1', text } as never)
+  expect(bound?.turnId).toBe('main-1')
+  await $.turn.start({ turnId: 'agent-1', text: 'Review calc.py in the current directory, read-only.' } as never)
+  expect(bound?.turnId).toBe('main-1')
 })

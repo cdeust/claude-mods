@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginState, Register } from 'claude-code'
+import type { AgentSpawnResult, EngineInterface, PluginState, Register, TurnStepChunk, TurnStepResult } from 'claude-code'
 
-import type { ContextHealth, PolicyDecision, PolicyState } from '../types'
+import type { ContextHealth, PhasesState, PolicyDecision, PolicyState } from '../types'
 import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, definitionPaths, parseDefinition } from './agents'
 import { placePath } from './paths'
+import { emptyPhases, finished, spawned, startTurn, stepPhase, stepped } from './phases'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
 import {
   CHARS_PER_TOKEN,
@@ -32,6 +33,8 @@ const policy = atom({ plugin: 'zetetic-autopilot', key: 'policy' } as const, {
   charsCut: 0,
   errorsInRow: 0,
 } as PolicyState)
+
+const phases = atom({ plugin: 'zetetic-autopilot', key: 'phases' } as const, emptyPhases() as PhasesState)
 
 // The classifier's verdict is zetetic-genius's state (a dependency): read, never written here.
 const geniusState = { plugin: 'zetetic-genius', key: 'state' } as const
@@ -162,6 +165,45 @@ async function refreshContext($: EngineInterface): Promise<void> {
   await update($, context, () => after)
 }
 
+// The step as it went out and what came back: its phase and its advisor calls, on its loop's row.
+async function* tracked(
+  $: EngineInterface,
+  sent: { turnId: string; index: number; model: string; effort?: string | number; agentId?: string },
+  stream: AsyncGenerator<TurnStepChunk, TurnStepResult>,
+): AsyncGenerator<TurnStepChunk, TurnStepResult> {
+  const r = yield* stream
+  const at = await $.clock.now()
+  const advisorCalls = (r.serverToolUses ?? []).filter((u) => u.name === 'advisor').length
+  // turn.start carries no loop id and fires for a subagent's turn too (measured 2026-10-14): main's
+  // row starts again at main's own first step of a new turn instead.
+  const isNewMainTurn = sent.agentId === undefined && (await read($, phases)).turnId !== sent.turnId
+  if (isNewMainTurn) await update($, phases, (s) => startTurn(s, sent.turnId, sent.model, at))
+  await update($, phases, (s) =>
+    stepped(s, {
+      loopId: sent.agentId ?? 'main',
+      model: r.usage?.model ?? sent.model,
+      effort: sent.effort === undefined ? null : String(sent.effort),
+      phase: stepPhase(r.toolUses, r.answer),
+      advisorCalls,
+      at,
+    }),
+  )
+  return r
+}
+
+// A started subagent gets its row: the model the engine resolved, the phase its type names.
+async function placed(
+  $: EngineInterface,
+  e: { subagentType: string; description: string },
+  r: AgentSpawnResult,
+): Promise<AgentSpawnResult> {
+  if (r.deny !== undefined || r.agentId === undefined) return r
+  const at = await $.clock.now()
+  const id = r.agentId
+  await update($, phases, (s) => spawned(s, { id, type: e.subagentType, description: e.description, model: r.model, at }))
+  return r
+}
+
 export const register: Register = (on, options) => {
   const mode: PolicyState['mode'] = options.policy_mode === 'enforce' ? 'enforce' : 'observe'
   const quotaPercent = Number(options.quota_pressure_percent ?? 80)
@@ -171,6 +213,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     definitions.clear()
+    await update($, phases, () => emptyPhases())
     await update($, policy, configured)
     await refreshContext($)
 
@@ -180,6 +223,7 @@ export const register: Register = (on, options) => {
   // /clear, /resume and /branch reset $.state and never fire session.start again.
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     definitions.clear()
+    await update($, phases, () => emptyPhases())
     await update($, policy, configured)
     await refreshContext($)
 
@@ -225,7 +269,7 @@ export const register: Register = (on, options) => {
       await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
     }
     const model = isMain ? mainModelFor(e.model, p.pressure) : undefined
-    if (target === have && model === undefined) return yield* next(e)
+    if (target === have && model === undefined) return yield* tracked($, e, next(e))
     const applied = p.mode === 'enforce'
     const at = await $.clock.now()
     const who = `${isMain ? 'main' : 'agent'} step ${e.index} (${e.model})`
@@ -237,25 +281,25 @@ export const register: Register = (on, options) => {
       await update($, policy, (s) =>
         decide(s, { at, kind: 'model', subject: 'main · quota pressure', from: e.model, to: model, applied }),
       )
-    if (!applied) return yield* next(e)
-    return yield* next({
-      ...e,
-      ...(target !== have ? { effort: target } : {}),
-      ...(model !== undefined ? { model } : {}),
-    })
+    if (!applied) return yield* tracked($, e, next(e))
+    const out = { ...e, ...(target !== have ? { effort: target } : {}), ...(model !== undefined ? { model } : {}) }
+    return yield* tracked($, out, next(out))
   })
 
   // Subagents: the model the call or the definition pinned stands, one notch down under pressure;
   // an inheriting type runs on the family its kind and the turn's class call for.
   on('agent.spawn', async ($, e, next) => {
     const p = await read($, policy)
+    // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
+    // command, a notification) routes without one, as turn.step does.
     const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
-    const cls = grade !== undefined && grade.turnId !== null ? grade.taskClass : undefined
+    const mainTurn = (await read($, phases)).turnId
+    const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurn ? grade.taskClass : undefined
     const found = e.model === undefined ? await definitionOf($, e.subagentType) : {}
     if ('unread' in found) await note($, `${e.subagentType} definition`, found.unread)
     const definition = 'unread' in found ? undefined : found
     const target = routeAgentModel(e.subagentType, e.model, definition, e.parentModel, p.pressure, cls)
-    if (target === undefined) return next(e)
+    if (target === undefined) return placed($, e, await next(e))
     const applied = p.mode === 'enforce'
     const d: PolicyDecision = {
       at: await $.clock.now(),
@@ -266,7 +310,7 @@ export const register: Register = (on, options) => {
       applied,
     }
     await update($, policy, (s) => decide(s, d))
-    return next(applied ? { ...e, model: target } : e)
+    return placed($, e, await next(applied ? { ...e, model: target } : e))
   })
 
   // The stuck signal: main's tool errors in a row, read by the next turn.step.
@@ -315,6 +359,8 @@ export const register: Register = (on, options) => {
   // The stuck counter is a turn's own; main's ends with its turn.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
+    const at = await $.clock.now()
+    await update($, phases, (s) => finished(s, e.agentId ?? 'main', at))
 
     return next(e)
   })

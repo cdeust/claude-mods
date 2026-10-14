@@ -119,6 +119,17 @@ export const toClassified = (c: Classification, text: string, startedAt: number,
   at: now,
 })
 
+// source: the Advisor tool's own instructions to the main model (call it before substantive work
+// and again before declaring done; on short reactive tasks it adds little after the first call).
+// The grades that are long enough to have a decision point and a completion worth checking:
+export const ADVISOR_CLASSES: readonly TaskClass[] = ['analysis', 'critical']
+
+// One line beside the prompt for those grades; the advisor is a server tool, nothing can gate it.
+export const advisorContext = (cls: TaskClass): string | undefined =>
+  ADVISOR_CLASSES.includes(cls)
+    ? `zetetic-genius: this request is graded ${cls}. Consult the advisor once after orientation and before the first edit, and once before declaring done; not between routine steps.`
+    : undefined
+
 // What the model reads beside the prompt when a skill fits: load it first.
 export const shapeContext = (ids: readonly string[]): string =>
   [

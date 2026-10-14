@@ -21,7 +21,7 @@ export type Classified = {
 
 export type GeniusDecision = {
   at: number
-  kind: 'shape' | 'genius'
+  kind: 'shape' | 'genius' | 'advisor'
   subject: string
   to: string
   applied: boolean

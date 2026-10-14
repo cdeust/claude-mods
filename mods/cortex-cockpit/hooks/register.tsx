@@ -3,10 +3,11 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
 import { placePath } from './paths'
-import type { ContextHealth, GeniusState, PolicyState, Refusal } from './deps'
+import type { ContextHealth, GeniusState, PhasesState, PolicyState, Refusal } from './deps'
 import { OWNERSHIP_PATH, type Ownership, parseOwnership, psRefusal, testProcesses, worktrees } from './hygiene'
 import { type Machine, runChecks } from './machinecheck'
 import { begin, emptyTally, finish, group, isCortexTool, parseStats, shortTool } from './model'
+import { bandText } from './phaseline'
 import { bump, emptyStages, stageOf } from './pipeline'
 import { inputGist, outputText, parseRecall } from './recall'
 import { RecallResultView, UseRowView } from './rows'
@@ -54,6 +55,7 @@ const GUARD_REFUSALS = { plugin: 'cortex-guard', key: 'refusals' } as const
 const AUTOPILOT_CONTEXT = { plugin: 'zetetic-autopilot', key: 'context' } as const
 const AUTOPILOT_POLICY = { plugin: 'zetetic-autopilot', key: 'policy' } as const
 const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
+const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
 
 async function peekRefusals($: EngineInterface): Promise<readonly Refusal[]> {
   try {
@@ -84,6 +86,16 @@ async function peekGenius($: EngineInterface): Promise<GeniusState | null> {
     return (await $.state.get(GENIUS_STATE)).value ?? null
   } catch {
     return null
+  }
+}
+
+// The phases are new in autopilot 0.3.0: an older autopilot leaves the value undefined, which is
+// "no phases", not a failure; a read that fails says so where the panel draws (issue #6).
+async function peekPhases($: EngineInterface): Promise<PhasesState | { error: string } | null> {
+  try {
+    return (await $.state.get(AUTOPILOT_PHASES)).value ?? null
+  } catch (error) {
+    return { error: cut(error) }
   }
 }
 
@@ -273,6 +285,7 @@ export const register: Register = (on, options) => {
       context: await peekContext($),
       policy: await peekPolicy($),
       genius: await peekGenius($),
+      phases: await peekPhases($),
       refusals: await peekRefusals($),
       onRefresh: () => {
         void refreshStats($)
@@ -317,6 +330,8 @@ export const register: Register = (on, options) => {
     const pressure = (await peekPolicy($))?.pressure ?? 'none'
     const calls = (await read($, ledger)).length
     const ctx = c === null || c.percent === null ? 'ctx: no reading' : `ctx ${c.percent} %`
+    const phases = await peekPhases($)
+    const where = phases === null || 'error' in phases ? undefined : bandText(phases)
     const mem = s === null ? 'stats blocked' : `${group(s.total_memories)} memories`
 
     return (
@@ -326,6 +341,7 @@ export const register: Register = (on, options) => {
           {pressure === 'none' ? '' : ` · pressure ${pressure}`}{' '}
         </Text>
         <Button key="open" label="Cockpit" onPress={() => void $.ui.open({ id: PANE, title: 'Cortex' })} />
+        {where === undefined ? null : <Text dimColor> {where}</Text>}
       </Box>
     )
   })
