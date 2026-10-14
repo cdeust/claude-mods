@@ -289,3 +289,39 @@ test('a recall ToolResult validates and keeps exact counts on every surface', as
     await ui.unmount()
   }
 })
+
+// Issue #6: a state read that rejects is not an empty state. Each reader of another mod's state
+// (refusals, context, policy, genius) names the failure where its panel draws; an unloaded mod
+// (value undefined) stays the quiet "not loaded" / "nothing refused" state.
+for (const [key, expected] of [
+  ['refusals', /refusals: unreadable, .*state store offline/],
+  ['context', /context: unreadable, .*state store offline/],
+  ['policy', /autopilot: unreadable, .*state store offline/],
+  ['state', /genius: unreadable, .*state store offline/],
+] as const) {
+  test(`a rejecting read of ${key} is drawn as unreadable, not as empty`, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    on('state.get', ($$, e, next) => {
+      const ref = e as { plugin?: string; key?: string }
+      if (ref.plugin === 'cortex-cockpit') return next(e)
+      if (ref.key === key) return { deny: 'state store offline' }
+      return { value: { value: undefined, version: 0 } as never }
+    })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'cortex-cockpit', surface, ...PANE })
+      expect(await ui.find({ type: 'Text', text: expected })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+}
+
+test('an unloaded guard still reads as nothing refused', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('state.get', ($$, e, next) =>
+    (e as { plugin?: string }).plugin === 'cortex-cockpit' ? next(e) : { value: { value: undefined, version: 0 } as never },
+  )
+  const ui = await $.ui.mount({ plugin: 'cortex-cockpit', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /no call refused this session/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /unreadable/ })).toBeUndefined()
+  await ui.unmount()
+})

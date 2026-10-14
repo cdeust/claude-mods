@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
 import { placePath } from './paths'
-import type { ContextHealth, GeniusState, InsightsState, PhasesState, PolicyState, Refusal } from './deps'
+import { type ContextHealth, type GeniusState, type InsightsState, type PhasesState, type PolicyState, type Refusal, type Unreadable, isUnreadable } from './deps'
 import { OWNERSHIP_PATH, type Ownership, parseOwnership, psRefusal, testProcesses, worktrees } from './hygiene'
 import { type Machine, runChecks } from './machinecheck'
 import { begin, emptyTally, finish, group, isCortexTool, parseStats, shortTool } from './model'
@@ -59,37 +59,20 @@ const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
 const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
 const INSIGHTS = { plugin: 'zetetic-insights', key: 'insights' } as const
 
-async function peekRefusals($: EngineInterface): Promise<readonly Refusal[]> {
+// A mod not loaded leaves its state undefined, a known state (the quiet default); a read that
+// rejects is another condition and comes back as `{ error }` for the panel to name (issue #6).
+async function peek<T>($: EngineInterface, read: () => Promise<T | undefined>, none: T): Promise<T | Unreadable> {
   try {
-    return (await $.state.get(GUARD_REFUSALS)).value ?? []
-  } catch {
-    return []
+    return (await read()) ?? none
+  } catch (error) {
+    return { error: cut(error) }
   }
 }
 
-async function peekContext($: EngineInterface): Promise<ContextHealth | null> {
-  try {
-    return (await $.state.get(AUTOPILOT_CONTEXT)).value ?? null
-  } catch {
-    return null
-  }
-}
-
-async function peekPolicy($: EngineInterface): Promise<PolicyState | null> {
-  try {
-    return (await $.state.get(AUTOPILOT_POLICY)).value ?? null
-  } catch {
-    return null
-  }
-}
-
-async function peekGenius($: EngineInterface): Promise<GeniusState | null> {
-  try {
-    return (await $.state.get(GENIUS_STATE)).value ?? null
-  } catch {
-    return null
-  }
-}
+const peekRefusals = ($: EngineInterface) => peek<readonly Refusal[]>($, async () => (await $.state.get(GUARD_REFUSALS)).value, [])
+const peekContext = ($: EngineInterface) => peek<ContextHealth | null>($, async () => (await $.state.get(AUTOPILOT_CONTEXT)).value, null)
+const peekPolicy = ($: EngineInterface) => peek<PolicyState | null>($, async () => (await $.state.get(AUTOPILOT_POLICY)).value, null)
+const peekGenius = ($: EngineInterface) => peek<GeniusState | null>($, async () => (await $.state.get(GENIUS_STATE)).value, null)
 
 // The phases are new in autopilot 0.3.0: an older autopilot leaves the value undefined, which is
 // "no phases", not a failure; a read that fails says so where the panel draws (issue #6).
@@ -346,10 +329,11 @@ export const register: Register = (on, options) => {
     const c = await peekContext($)
     if (e.props.hasSurvey || (s === null && failure === null && c === null)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const refused = (await peekRefusals($)).length
-    const pressure = (await peekPolicy($))?.pressure ?? 'none'
+    const refusals = await peekRefusals($)
+    const policyRead = await peekPolicy($)
+    const pressure = policyRead === null || isUnreadable(policyRead) ? 'none' : policyRead.pressure
     const calls = (await read($, ledger)).length
-    const ctx = c === null || c.percent === null ? 'ctx: no reading' : `ctx ${c.percent} %`
+    const ctx = isUnreadable(c) ? 'ctx: unreadable' : c === null || c.percent === null ? 'ctx: no reading' : `ctx ${c.percent} %`
     const phases = await peekPhases($)
     const where = phases === null || 'error' in phases ? undefined : bandText(phases)
     const mem = s === null ? 'stats blocked' : `${group(s.total_memories)} memories`
@@ -357,8 +341,8 @@ export const register: Register = (on, options) => {
     return (
       <Box>
         <Text color={s === null ? tone(surface, 'danger') : undefined} dimColor={s !== null}>
-          cortex · {ctx} · {mem} · {group(calls)} calls · {refused === 0 ? 'nothing refused' : `${group(refused)} refused`}
-          {pressure === 'none' ? '' : ` · pressure ${pressure}`}{' '}
+          cortex · {ctx} · {mem} · {group(calls)} calls · {isUnreadable(refusals) ? 'refusals unreadable' : refusals.length === 0 ? 'nothing refused' : `${group(refusals.length)} refused`}
+          {isUnreadable(policyRead) ? ' · policy unreadable' : pressure === 'none' ? '' : ` · pressure ${pressure}`}{' '}
         </Text>
         <Button key="open" label="Cockpit" onPress={() => void $.ui.open({ id: PANE, title: 'Cortex' })} />
         {where === undefined ? null : <Text dimColor> {where}</Text>}

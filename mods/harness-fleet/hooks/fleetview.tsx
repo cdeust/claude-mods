@@ -1,7 +1,7 @@
 import type { Elements } from 'claude-code'
 
 import type { CiState, FleetState, IssueRow, PluginRow, PrRow, RepoRow } from '../types'
-import { ISSUE_LIMIT, type Lessons, issueKind, prsLabel } from './fleet'
+import { ISSUE_LIMIT, type Lessons, issueKind, lessonsLine, prsLabel } from './fleet'
 
 export type Ui = Elements['terminal']
 
@@ -125,9 +125,11 @@ export const FleetView = (ui: Ui, d: FleetData) => {
           LESSONS
         </Text>
         <Text dimColor>
-          {l.refusals} guard refusals · {l.classifierErrors} classifier errors · {l.stuckEscalations} stuck escalations ·{' '}
-          {l.leanCuts} results cut
+          {lessonsLine(l)}
         </Text>
+        {l.unreadable.map((line) => (
+          <Text color="red">{line}</Text>
+        ))}
         <Button key="draft-issue" label="Draft issue" hotkey="i" onPress={d.onDraftIssue} />
       </Box>
       <Box gap={1}>

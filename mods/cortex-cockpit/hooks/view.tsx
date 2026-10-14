@@ -1,7 +1,7 @@
 import type { Elements, RenderChildren } from 'claude-code'
 
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
-import type { ContextHealth, GeniusState, InsightsState, PhasesState, PolicyState, Refusal } from './deps'
+import type { ContextHealth, GeniusState, InsightsState, PhasesState, PolicyState, Refusal, Unreadable } from './deps'
 import { ageLabel, cacheShare, countBy, group, heatCells } from './model'
 import { ContextPanel, HygienePanel, PipelinePanel, PolicyPanel, RefusalsPanel, clock } from './panels'
 import { type InsightsActions, InsightsPanel } from './insightsview'
@@ -19,14 +19,14 @@ export type CockpitData = {
   statsError: string | null
   ledger: readonly CortexEntry[]
   tally: TurnTally
-  context: ContextHealth | null
+  context: ContextHealth | Unreadable | null
   stages: Record<string, StageTally>
-  refusals: readonly Refusal[]
+  refusals: readonly Refusal[] | Unreadable
   hygiene: HygieneSnapshot | null
-  policy: PolicyState | null
-  genius: GeniusState | null
-  phases: PhasesState | { error: string } | null
-  insights?: InsightsState | { error: string } | null
+  policy: PolicyState | Unreadable | null
+  genius: GeniusState | Unreadable | null
+  phases: PhasesState | Unreadable | null
+  insights?: InsightsState | Unreadable | null
   insightsActions?: InsightsActions
   onRefresh: () => void
   onConsolidate: () => void

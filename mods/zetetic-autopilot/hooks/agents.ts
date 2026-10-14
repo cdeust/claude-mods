@@ -13,22 +13,64 @@ export const INHERITING_BUILT_INS: readonly string[] = ['Explore', 'Plan', 'gene
 
 export type Definition = { model?: string; effort?: string }
 
+// The folders from `dir` up to the filesystem root, nearest first; `/` and `\\` both separate.
+export const ancestors = (dir: string): string[] => {
+  const out: string[] = []
+  let current = dir.length > 1 ? dir.replace(/[\\/]+$/, '') : dir
+  for (;;) {
+    out.push(current)
+    const cut = Math.max(current.lastIndexOf('/'), current.lastIndexOf('\\'))
+    if (cut < 0) return out
+    if (cut === 0) return current === '/' ? out : [...out, '/']
+    current = current.slice(0, cut)
+  }
+}
+
+type Install = { scope?: unknown; projectPath?: unknown; installPath?: unknown }
+
+// source: Claude Code's settings precedence (local over project over user), applied to the scopes
+// `installed_plugins.json` records (`scope`: user, project, local; `projectPath` for the last two,
+// measured 2026-10-14 on ~/.claude/plugins/installed_plugins.json). The engine's own choice among
+// several entries is not documented in the mods reference: this order is the assumption (issue #11).
+const USER = 2
+const SCOPE_RANK: Record<string, number> = { local: 0, project: 1, user: USER }
+const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '')
+
+// The install path a session in `cwd` runs: among the entries whose scope covers the session (user
+// entries always, project and local ones when their `projectPath` is `cwd` or a folder above it) the
+// narrowest scope, then the first listed. An entry with no scope is the user's.
+export const activeInstallPath = (installs: readonly Install[], cwd: string): string | undefined => {
+  const here = new Set(ancestors(cwd).map(norm))
+  const covering: { path: string; rank: number }[] = []
+  for (const i of installs) {
+    if (typeof i.installPath !== 'string' || i.installPath === '') continue
+    const rank = typeof i.scope === 'string' ? (SCOPE_RANK[i.scope] ?? USER) : USER
+    if (rank !== USER && !(typeof i.projectPath === 'string' && here.has(norm(i.projectPath)))) continue
+    covering.push({ path: i.installPath, rank })
+  }
+  // Array.prototype.sort is stable: equal ranks keep their listed order.
+  return covering.sort((x, y) => x.rank - y.rank)[0]?.path
+}
+
 // The files that may define a type, in the engine's precedence: a plugin's `agents/<name>.md`
-// for `<plugin>:<name>` (`agents/<sub>/<name>.md` for `<plugin>:<sub>:<name>`), else the project's `.claude/agents/`, then the user's (`claudeDir`, the
+// for `<plugin>:<name>` (`agents/<sub>/<name>.md` for `<plugin>:<sub>:<name>`) from the install
+// that runs in `cwd`, else the project's `.claude/agents/` in each of `projectDirs` (the folders from
+// the working directory up to the repository root, nearest first), then the user's (`claudeDir`, the
 // engine's config directory: `~/.claude` or CLAUDE_CONFIG_DIR).
 export const definitionPaths = (
   type: string,
   installedPluginsJson: string | undefined,
   claudeDir: string,
   cwd: string,
+  projectDirs: readonly string[],
 ): string[] => {
   const colon = type.indexOf(':')
-  if (colon < 0) return [`${cwd}/.claude/agents/${type}.md`, `${claudeDir}/agents/${type}.md`]
+  if (colon < 0) return [...projectDirs.map((dir) => `${dir}/.claude/agents/${type}.md`), `${claudeDir}/agents/${type}.md`]
   const plugin = type.slice(0, colon)
   // `<plugin>:<sub>:<name>` is the plugin's agents/<sub>/<name>.md.
   const name = type.slice(colon + 1).split(':').join('/')
   if (installedPluginsJson === undefined) return []
-  let parsed: { plugins?: Record<string, { installPath?: unknown }[]> }
+  let parsed: { plugins?: Record<string, Install[]> }
   try {
     parsed = JSON.parse(installedPluginsJson) as typeof parsed
   } catch (error) {
@@ -37,8 +79,8 @@ export const definitionPaths = (
   }
   return Object.entries(parsed.plugins ?? {})
     .filter(([key]) => key.startsWith(`${plugin}@`))
-    .map(([, installs]) => installs[0]?.installPath)
-    .filter((p): p is string => typeof p === 'string' && p !== '')
+    .map(([, installs]) => activeInstallPath(installs, cwd))
+    .filter((p): p is string => p !== undefined)
     .map((root) => `${root}/agents/${name}.md`)
 }
 

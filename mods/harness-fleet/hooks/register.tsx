@@ -58,27 +58,32 @@ async function expandHome($: EngineInterface, path: string): Promise<string> {
   return placed.path
 }
 
+// The signals come from the other mods' state. A mod that is not loaded leaves its state undefined,
+// a known state counted as zero; a read that throws is "no reading" (null) with its reason, which
+// the pane shows beside the counts (issue #6).
 async function lessonsOf($: EngineInterface): Promise<Lessons> {
-  const l: Lessons = { refusals: 0, classifierErrors: 0, stuckEscalations: 0, leanCuts: 0 }
+  const l: Lessons = { refusals: null, classifierErrors: null, stuckEscalations: null, leanCuts: null, unreadable: [] }
+  const unreadable: string[] = []
+  const fail = (mod: string, error: unknown): void => void unreadable.push(`${mod}: unreadable, ${why(error)}`)
   try {
     l.refusals = ((await $.state.get(GUARD_REFUSALS)).value ?? []).length
-  } catch {
-    // the guard is not loaded: zero refusals seen
+  } catch (error) {
+    fail('cortex-guard', error)
   }
   try {
     const g = (await $.state.get(GENIUS_STATE)).value
     l.classifierErrors = g?.classifierError === null || g?.classifierError === undefined ? 0 : 1
-  } catch {
-    // the genius router is not loaded
+  } catch (error) {
+    fail('zetetic-genius', error)
   }
   try {
     const p = (await $.state.get(AUTOPILOT_POLICY)).value
     l.stuckEscalations = p?.decisions.filter((d) => d.kind === 'stuck').length ?? 0
     l.leanCuts = p?.decisions.filter((d) => d.kind === 'lean').length ?? 0
-  } catch {
-    // the autopilot is not loaded
+  } catch (error) {
+    fail('zetetic-autopilot', error)
   }
-  return l
+  return { ...l, unreadable }
 }
 
 // The inventory is local: the engine's records and each owned marketplace's manifest. Rejects

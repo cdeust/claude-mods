@@ -94,7 +94,7 @@ test('a failed PR read says "PRs: no reading", never "0 open PRs"', async ($, on
   on('ui.render', { component: 'Pane', requestId: 'failed-read' }, ($$, e) =>
     FleetView($$.ui.resolve(e) as never, {
       now: Date.parse('2026-10-08T00:00:00Z'),
-      lessons: { refusals: 0, classifierErrors: 0, stuckEscalations: 0, leanCuts: 0 },
+      lessons: { refusals: 0, classifierErrors: 0, stuckEscalations: 0, leanCuts: 0, unreadable: [] },
       fleet: {
         inventoryError: null,
         isRefreshing: false,
@@ -142,7 +142,7 @@ test('the fleet pane validates and shows versions, CI and the lessons on termina
   on('ui.render', { component: 'Pane', requestId: 'populated' }, ($$, e) =>
     FleetView($$.ui.resolve(e) as never, {
       now: Date.parse('2026-10-08T00:00:00Z'),
-      lessons: { refusals: 2, classifierErrors: 0, stuckEscalations: 1, leanCuts: 3 },
+      lessons: { refusals: 2, classifierErrors: 0, stuckEscalations: 1, leanCuts: 3, unreadable: [] },
       fleet: {
         inventoryError: null,
         isRefreshing: false,
@@ -503,5 +503,44 @@ test('a directory marketplace on GitHub is read through its remote', async ($, o
   })
   expect(await ui.find({ type: 'Text', text: /#670 deps: bump multidict/ })).toBeDefined()
   expect(argvs.some((a) => a.includes('cdeust/x'))).toBe(true)
+  await ui.unmount()
+})
+
+// Issue #6: a state read that rejects is not "zero". A mod that is not loaded leaves its state
+// undefined (a known state, counted as zero); a read that throws is "no reading", with the reason.
+const mountLessons = async ($: Engine, on: On, deny: string | undefined) => {
+  mock.clock(on, { now: Date.parse('2026-10-08T00:00:00Z') })
+  on('state.get', ($$, e, next) => {
+    const ref = e as { plugin?: string }
+    if (ref.plugin === 'harness-fleet') return next(e)
+    if (ref.plugin === deny) return { deny: 'state store offline' }
+    return { value: { value: undefined, version: 0 } as never }
+  })
+  return $.ui.mount({
+    plugin: 'harness-fleet',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'harness-fleet',
+    props: { title: 'Fleet', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+}
+
+for (const [plugin, label] of [
+  ['cortex-guard', /guard refusals: no reading/],
+  ['zetetic-genius', /classifier errors: no reading/],
+  ['zetetic-autopilot', /stuck escalations: no reading/],
+] as const) {
+  test(`a rejecting read of ${plugin} state is "no reading" in LESSONS, never zero`, async ($, on) => {
+    const ui = await mountLessons($, on, plugin)
+    expect(await ui.find({ type: 'Text', text: label })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: new RegExp(`${plugin}: unreadable, .*state store offline`) })).toBeDefined()
+    await ui.unmount()
+  })
+}
+
+test('mods that are not loaded count as zero in LESSONS, with nothing unreadable', async ($, on) => {
+  const ui = await mountLessons($, on, undefined)
+  expect(await ui.find({ type: 'Text', text: /0 guard refusals · 0 classifier errors · 0 stuck escalations · 0 results cut/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /unreadable/ })).toBeUndefined()
   await ui.unmount()
 })
