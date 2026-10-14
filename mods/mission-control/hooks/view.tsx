@@ -3,7 +3,7 @@
 
 import type { Elements } from 'claude-code'
 
-import { LABEL, delegationLines, familiesPresent, modelRows, paintCells, segmentWidths, shareText } from './cells'
+import { LABEL, delegationLines, familiesPresent, frictionLines, modelRows, paintCells, segmentWidths, shareText } from './cells'
 import { GRID, INK, INK_2, MUTED, familyColor, phaseColor } from './palette'
 import { MAX_IMAGE_COLUMNS } from './bitmap'
 import { curvePicture, lanesPicture } from './pixels'
@@ -90,6 +90,25 @@ const Delegations = (ui: Ui, scene: Scene) => {
   )
 }
 
+// FRICTIONS as text rows: the same rows as the cells' section; nothing when the insights sends none.
+const Frictions = (ui: Ui, scene: Scene, columns: number) => {
+  const { Box, Text } = ui
+  const lines = frictionLines(scene, columns)
+  if (lines.length === 0) return null
+  return (
+    <Box flexDirection="column">
+      <Text> </Text>
+      {lines.map((line) => (
+        <Text>
+          {line.map((p) => (
+            <Text color={hex(p.color)}>{p.text}</Text>
+          ))}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
 export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
   const { Box, Text, Image } = ui
   // Image boxes are 1 to 255 columns (ImageProps): a wider pane leaves the rest of the row empty.
@@ -132,6 +151,7 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
       {Models(ui, scene, columns)}
       <Text> </Text>
       {Delegations(ui, scene)}
+      {Frictions(ui, scene, columns)}
     </Box>
   )
 }

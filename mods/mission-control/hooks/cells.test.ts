@@ -54,6 +54,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
     models: { window: [], sessions: [] },
     delegations: null,
     mechanical: null,
+    frictions: null,
   }
   const marks = paintCells(crowded, 60).glyphRows()[3]!.trim()
   expect(marks).toBe('test                                    x7')
@@ -62,7 +63,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
 test('a long pause is cut from the axis: two bursts share the track, a dashed mark between them', () => {
   const seg = (t0: number, t1: number) => ({ phase: 'analysis' as const, effort: 'medium', t0, t1, steps: 1, errors: 0 })
   const lanes = [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 30_000), seg(630_000, 660_000)], advisor: [] }]
-  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [] }, delegations: null, mechanical: null }
+  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [] }, delegations: null, mechanical: null, frictions: null }
   const rows = paintCells(bursts, 15 + 100).glyphRows()
   const bar = rows[2]!.slice(15)
   const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[3]!.slice(15).indexOf('┊')
@@ -109,7 +110,7 @@ test('a row with no step prints no step yet', () => {
 test('DELEGATIONS: the header, the counts with their names, the newest rows first, the heavy share', () => {
   const rows = paintCells(scene, 70).glyphRows().map((r) => r.trimEnd())
   const at = rows.findIndex((r) => r.startsWith('DELEGATIONS'))
-  expect(rows.slice(at)).toEqual([
+  expect(rows.slice(at, at + 6)).toEqual([
     'DELEGATIONS (judged against their DESIGN block)',
     '9 delegations, 7 designed',
     'overkill 2  underpowered 0  undesigned 1  rerouted 0',
@@ -125,7 +126,7 @@ test('DELEGATIONS: at 60 columns every flag name is still in the glyph rows', ()
 })
 
 test('an insights state with neither delegations nor mechanical (0.3.0) draws a placeholder and no crash', () => {
-  const { delegations: _d, mechanical: _m, ...old } = INSIGHTS as unknown as Record<string, unknown>
+  const { delegations: _d, mechanical: _m, frictions: _f, ...old } = INSIGHTS as unknown as Record<string, unknown>
   const s = sceneOf(PHASES, old as unknown as typeof INSIGHTS, 100_000)
   expect(s.delegations).toBeNull()
   expect(s.mechanical).toBeNull()
@@ -149,4 +150,48 @@ test('a mechanical share from an insights without the new fields still draws its
 
 test('DELEGATIONS: at 60 columns the whole share line is present', () => {
   expect(paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())).toContain('main opus/fable: 25% steps only Read/Grep/Glob, 5 sessions')
+})
+
+test('FRICTIONS: after DELEGATIONS, one row per recurring friction, kind in 15 columns then sessions, times and the signature', () => {
+  const rows = paintCells(scene, 70).glyphRows().map((r) => r.trimEnd())
+  const at = rows.findIndex((r) => r.startsWith('FRICTIONS'))
+  expect(at).toBeGreaterThan(rows.findIndex((r) => r.startsWith('DELEGATIONS')))
+  expect(rows[at - 1]).toBe('') // a blank row between the sections
+  expect(rows.slice(at)).toEqual([
+    'FRICTIONS (recurring over the last sessions)',
+    'hook-block      4s 16x Owned cleanup remains: [{<Q>: <Q>}]',
+    'harness-refusal 3s 5x Permission to use Bash with command rm -rf <PATH',
+    'hook-error      2s 17x Failed to run: Plugin directory does not exist:',
+  ])
+})
+
+test('FRICTIONS: at most 5 rows, each cut to the pane width', () => {
+  const many = Array.from({ length: 8 }, (_, i) => ({ kind: 'hook-block' as const, signature: `row ${i} ${'x'.repeat(100)}`, sessions: 9 - i, count: 1 }))
+  const s = sceneOf(PHASES, { ...INSIGHTS, frictions: many }, 100_000)
+  for (const columns of [40, 60, 90]) {
+    const rows = paintCells(s, columns).glyphRows().map((r) => r.trimEnd())
+    const at = rows.findIndex((r) => r.startsWith('FRICTIONS'))
+    expect(rows.slice(at + 1).filter((r) => r !== '')).toHaveLength(5)
+    expect(rows.slice(at + 1)[4]!.startsWith('hook-block      5s 1x row 4 ')).toBe(true)
+    expect(Math.max(...rows.map((r) => r.length))).toBeLessThanOrEqual(columns)
+  }
+})
+
+test('FRICTIONS: an insights without the field (before 0.7.0) draws no section and no crash; an empty list draws its placeholder', () => {
+  const { frictions: _f, ...old } = INSIGHTS as unknown as Record<string, unknown>
+  const s = sceneOf(PHASES, old as unknown as typeof INSIGHTS, 100_000)
+  expect(s.frictions).toBeNull()
+  const rows = paintCells(s, 70).glyphRows().map((r) => r.trimEnd())
+  expect(rows.some((r) => r.includes('FRICTION'))).toBe(false)
+  expect(rows[rows.length - 1]).toBe('main opus/fable: 25% steps only Read/Grep/Glob, 5 sessions')
+  expect(sceneOf(null, null, 5).frictions).toBeNull()
+  const none = paintCells(sceneOf(PHASES, { ...INSIGHTS, frictions: [] }, 100_000), 70).glyphRows().map((r) => r.trimEnd())
+  expect(none.slice(none.findIndex((r) => r.startsWith('FRICTIONS')))).toEqual(['FRICTIONS (recurring over the last sessions)', 'no friction recurs over 2 sessions yet'])
+})
+
+test('FRICTIONS: a signature with a glyph the Raster refuses is drawn as ?, so the grid stays inside the allowlist', () => {
+  const odd = [{ kind: 'hook-error' as const, signature: 'Plugin \u2014 run /plugin \u00e9\u{1F600}', sessions: 2, count: 2 }]
+  const g = paintCells(sceneOf(PHASES, { ...INSIGHTS, frictions: odd }, 100_000), 80)
+  for (let i = 0; i < g.columns * g.rows; i++) expect(isAllowed(g.words[i * 3]!)).toBe(true)
+  expect(g.glyphRows().some((r) => r.includes('Plugin ? run /plugin ??'))).toBe(true)
 })

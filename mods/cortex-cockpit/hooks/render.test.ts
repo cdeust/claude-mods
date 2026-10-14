@@ -141,6 +141,7 @@ const FULL = {
     models: [],
     delegations: { total: 0, designed: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] },
     mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null },
+    frictions: [],
     brief: null,
     cortex: { pushed: 0, pending: 0, lastError: null, lastAt: null },
     agents: [],

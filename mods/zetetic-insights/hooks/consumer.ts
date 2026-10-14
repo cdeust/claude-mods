@@ -5,15 +5,22 @@
 // lives outside any hook that ends the session.
 
 import type { TurnRecord } from '../types'
-import { BRIEF_LINE_CAP, BRIEF_SESSIONS, composeBrief, mechanicalShare, windowOf } from './brief'
+import { BRIEF_LINE_CAP, BRIEF_SESSIONS, composeBrief, mechanicalShare, windowOf, windowSessions } from './brief'
 import { delegationStats } from './delegations'
+import { type Friction, recurringOver } from './friction'
 import { sessionModels } from './models'
 
 // The aggregate's text over the finished sessions' records (the newest BRIEF_SESSIONS of them), or
-// null when nothing is measured. composeBrief's header is replaced, its lines kept.
-export const aggregateSummary = (records: readonly TurnRecord[], now: number): string | null => {
+// null when nothing is measured. composeBrief's header is replaced, its lines kept. `frictions`: the
+// frictions measured, by session; the ones recurring over this window's sessions are in the text.
+export const aggregateSummary = (records: readonly TurnRecord[], now: number, frictions: ReadonlyMap<string, readonly Friction[]> = new Map()): string | null => {
   const w = windowOf(records, BRIEF_SESSIONS)
-  const body = composeBrief({ delegations: delegationStats(w.records), models: sessionModels(w.records), mechanical: mechanicalShare(w.records) })
+  const body = composeBrief({
+    delegations: delegationStats(w.records),
+    models: sessionModels(w.records),
+    mechanical: mechanicalShare(w.records),
+    frictions: recurringOver(frictions, windowSessions(w.records)),
+  })
   if (body === null) return null
   const header = `Self-calibration (zetetic-insights, last ${w.sessions} finished sessions, as of ${new Date(now).toISOString().slice(0, 10)}):`
 

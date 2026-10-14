@@ -39,8 +39,9 @@ export type Curve = { phase: Phase; rates: number[]; moveAt: number | null; move
 export type Span = { t0: number; t1: number }
 export type Delegations = InsightsState['delegations']
 export type Mechanical = InsightsState['mechanical']
+export type Frictions = InsightsState['frictions']
 export type Models = { window: ModelSteps[]; sessions: SessionModels[] }
-export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models; delegations: Delegations | null; mechanical: Mechanical | null }
+export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models; delegations: Delegations | null; mechanical: Mechanical | null; frictions: Frictions | null }
 
 // A model id as its family: the first of fable, opus, sonnet, haiku found in it, else other.
 export const familyOf = (model: unknown): ModelFamily => {
@@ -174,6 +175,8 @@ export const sceneOf = (phases: PhasesState | null, insights: InsightsState | nu
     // An older insights (0.3.0 has no delegations, 0.4.0 no mechanical) sends neither: null, never a crash.
     delegations: insights?.delegations ?? null,
     mechanical: insights?.mechanical ?? null,
+    // An older insights (before 0.7.0) has no frictions: null draws no section, never a crash.
+    frictions: insights?.frictions ?? null,
   }
 }
 

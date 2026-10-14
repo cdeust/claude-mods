@@ -26,7 +26,7 @@ const duration = (ms: number): string => {
 const pct = (r: number): string => `${Math.round(r * 100)}%`
 
 const heightOf = (scene: Scene): number =>
-  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length + 1 + delegationLines(scene).length
+  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length + 1 + delegationLines(scene).length + frictionLines(scene, MAX_COLUMNS).length + (scene.frictions == null ? 0 : 1)
 
 // The room the printed shares take to the right of a model bar (two spaces, three families).
 const SHARES = 24 // source: own choice, "  haiku 12% sonnet 30% opus 58%" is 31 and is cut at the edge
@@ -95,6 +95,31 @@ export const delegationLines = (scene: Scene): Piece[][] => {
   if (m != null)
     lines.push([{ text: m.share == null ? 'main opus/fable: no measured step yet' : `main opus/fable: ${pct(m.share)} steps only Read/Grep/Glob, ${m.sessions} sessions`, color: m.share == null ? MUTED : INK_2 }])
   return lines
+}
+
+// The FRICTIONS section: the insights' recurring frictions, the first FRICTION_ROWS, one row each:
+// the kind in KIND columns, in how many sessions (Ns), how many times (Mx), the signature. Nothing
+// at all when the insights sends none (a version before 0.7.0). Printable ASCII only (a Raster
+// refuses the rest), and every row cut to the pane's width.
+const FRICTION_ROWS = 5 // source: own choice, the rows that fit under DELEGATIONS; the brief says only the top one
+const KIND = 15 // source: the longest kind, "harness-refusal", is 15
+const ascii = (s: string): string => s.replace(/[^\x20-\x7e]/g, '?')
+
+export const frictionLines = (scene: Scene, columns: number): Piece[][] => {
+  const f = scene.frictions
+  if (f == null) return []
+  const row = (text: string, color: number): Piece[] => [{ text: ascii(text).slice(0, columns), color }]
+  const lines: Piece[][] = [row('FRICTIONS (recurring over the last sessions)', INK)]
+  if (f.length === 0) lines.push(row('no friction recurs over 2 sessions yet', MUTED))
+  for (const r of f.slice(0, FRICTION_ROWS)) lines.push(row(`${String(r.kind).slice(0, KIND).padEnd(KIND)} ${r.sessions}s ${r.count}x ${r.signature}`, INK_2))
+  return lines
+}
+
+function frictions(g: Grid, scene: Scene, top: number): void {
+  frictionLines(scene, g.columns).forEach((line, i) => {
+    let x = 0
+    for (const p of line) x = g.text(x, top + i, p.text, p.color)
+  })
 }
 
 function delegations(g: Grid, scene: Scene, top: number): void {
@@ -224,6 +249,8 @@ export const paintCells = (scene: Scene, columns: number): Grid => {
   scene.curves.forEach((c, i) => curve(g, c, y + i * (CURVE_ROWS + 1)))
   const m = y + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 1
   models(g, scene, m)
-  delegations(g, scene, m + 2 + modelRows(scene).length + 1)
+  const d = m + 2 + modelRows(scene).length + 1
+  delegations(g, scene, d)
+  frictions(g, scene, d + delegationLines(scene).length + 1)
   return g
 }

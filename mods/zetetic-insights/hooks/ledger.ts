@@ -11,21 +11,29 @@
 // I3: the aggregate is updated by at most one process per claim window (register.tsx claimAggregate).
 // I4: the own write lands within LEDGER_BYTES, or is refused and named in ledgerError.
 // I5: the migration is idempotent and writes no key an owner writes.
+// The exception to I1, frictions:<s>: any process may write it, for any finished session whose ended:<s>
+//   names a transcript. Its value is the pure function frictionsOf of that file (no clock, no writer
+//   in it, a total order on its rows), so two processes writing at once write the same value. The
+//   process of s deletes it when s resumes (its transcript grows again); eviction and orphans delete
+//   it as the other keys of s.
 
 import type { TurnRecord } from '../types'
+import { type Friction, isUnavailable, rowsOf } from './friction'
 import { LEDGER_BYTES, recordBytes, trimmed, utf8Bytes } from './learn'
 
 export const TURNS = 'turns:' // that session's records; only the process whose session id it is writes it
 export const LEGACY = 'legacy:' // that session's records moved from the legacy key; only the migration writes it
-export const ENDED = 'ended:' // { at }, set by that same process at session.end (also fired by /clear, old id)
+export const ENDED = 'ended:' // { at, transcript? }, set by that same process at classic.SessionEnd and session.end (also fired by /clear, old id); an older value has no transcript
 export const CLAIM = 'claim:' // { by, at }, set by the process about to hand the session over, then read back
 export const PUSHED = 'pushed:' // { at, lastAt }: that session is in the aggregate memory, up to its record lastAt
 export const AGGREGATE = 'aggregate' // { at, memoryId? }: the head of the one aggregate memory in Cortex; claim:aggregate guards it
-export const SESSION_PREFIXES = [TURNS, LEGACY, ENDED, PUSHED, CLAIM] as const // a deleted session loses all five, records first
+export const FRICTIONS = 'frictions:' // that session's frictions (friction.ts), measured from the transcript its ended: names; [] is measured, none found
+export const SESSION_PREFIXES = [TURNS, LEGACY, ENDED, PUSHED, CLAIM, FRICTIONS] as const // a deleted session loses all six, records first
 export const LEGACY_TURNS = 'turns' // the single-key ledger of 0.5-0.6 (PR #13), every process rewriting it whole
 export const LEGACY_PUSHED = 'pushed' // the single-key handover list of PR #18 before this layout
 
 export const CLAIM_TTL_MS = 10 * 60_000 // source: own choice, far above one batch (30 s delay, then 5 remembers at 7.8 s measured 2026-10-14); an older claim is a process that died mid-handover
+export const FRICTION_BATCH = 3 // source: own choice, transcripts read per start; a transcript is megabytes, and the read is deferred (observer effect: the measure must not slow the session it measures)
 export const STALE_MS = 24 * 3_600_000 // source: own choice, a session with no turn for a day is finished for the handover: covers a crashed process that never fired session.end
 
 export type Claim = { by: string; at: number }
@@ -54,6 +62,10 @@ export const sessionOfKey = (key: string, prefix: string): string | null => (key
 export type Layout = {
   turns: ReadonlyMap<string, readonly TurnRecord[]>
   ended: ReadonlySet<string>
+  // The transcript each ended session named at its end; a session whose ended: has none (an older
+  // value, or classic hooks not run under managed settings) is not here: its frictions are not measured.
+  transcripts: ReadonlyMap<string, string>
+  frictions: ReadonlyMap<string, readonly Friction[]>
   pushed: ReadonlyMap<string, Pushed>
   claims: ReadonlyMap<string, Claim>
   malformed: readonly string[]
@@ -70,6 +82,8 @@ const isClaim = (v: unknown): v is Claim => typeof v === 'object' && v !== null 
 export const layoutOf = (entries: ReadonlyMap<string, unknown>): Layout => {
   const turns = new Map<string, readonly TurnRecord[]>()
   const ended = new Set<string>()
+  const transcripts = new Map<string, string>()
+  const frictions = new Map<string, readonly Friction[]>()
   const pushed = new Map<string, Pushed>()
   const claims = new Map<string, Claim>()
   const malformed: string[] = []
@@ -81,14 +95,20 @@ export const layoutOf = (entries: ReadonlyMap<string, unknown>): Layout => {
       continue
     }
     const e = sessionOfKey(key, ENDED)
-    if (e !== null) ended.add(e)
+    if (e !== null) {
+      ended.add(e)
+      const t = (typeof value === 'object' && value !== null ? (value as { transcript?: unknown }).transcript : undefined)
+      if (typeof t === 'string' && t !== '') transcripts.set(e, t)
+    }
+    const f = sessionOfKey(key, FRICTIONS)
+    if (f !== null && (Array.isArray(value) || isUnavailable(value))) frictions.set(f, rowsOf(value)) // an unavailable marker is measured, with no rows
     const p = sessionOfKey(key, PUSHED)
     const covered = p === null ? undefined : pushedOf(value)
     if (p !== null && covered !== undefined) pushed.set(p, covered)
     const c = sessionOfKey(key, CLAIM)
     if (c !== null && isClaim(value)) claims.set(c, value)
   }
-  return { turns, ended, pushed, claims, malformed }
+  return { turns, ended, transcripts, frictions, pushed, claims, malformed }
 }
 
 export const newestAt = (records: readonly TurnRecord[]): number => records.reduce((m, r) => Math.max(m, r.at), Number.NEGATIVE_INFINITY)
@@ -135,12 +155,12 @@ export const evictions = (others: readonly Sized[], ownBytes: number, budget = L
 // The own records within the budget alone (and the record count cap), oldest dropped.
 export const ownWithin = (session: string, records: readonly TurnRecord[], room = LEDGER_BYTES): TurnRecord[] => trimmed(records, Math.max(0, room - keyBytes(keyOf(TURNS, session), []) + 1))
 
-// ended:, pushed: and claim: keys whose session has no records key (evicted while another process
-// claimed or pushed it): deleted at the next own write. Never the own session's, never claim:aggregate.
+// ended:, pushed:, claim: and frictions: keys whose session has no records key (evicted while another
+// process claimed, pushed or measured it): deleted at the next own write. Never the own session's, never claim:aggregate.
 export const orphans = (keys: readonly string[], own: string): string[] => {
   const held = new Set(keys.map((k) => sessionOfKey(k, TURNS) ?? sessionOfKey(k, LEGACY)).filter((s): s is string => s !== null))
   return keys.filter((k) => {
-    for (const p of [ENDED, PUSHED, CLAIM]) {
+    for (const p of [ENDED, PUSHED, CLAIM, FRICTIONS]) {
       const s = sessionOfKey(k, p)
       if (s !== null) return s !== own && s !== AGGREGATE && !held.has(s)
     }
@@ -172,3 +192,16 @@ export const migrationPlan = (legacyTurns: unknown, legacyPushed: unknown, prese
   if (legacyPushed !== undefined) deletes.push(LEGACY_PUSHED)
   return { sets, deletes, malformed: legacyTurns !== undefined && !Array.isArray(legacyTurns) }
 }
+
+// The sessions of the brief's window to measure, newest first, at most `batch`: ended with a
+// transcript named, no frictions: yet, not the own session. Without a transcript nothing is measured.
+export const frictionTargets = (layout: Layout, window: ReadonlySet<string>, own: string, batch = FRICTION_BATCH): { session: string; transcript: string }[] =>
+  [...layout.transcripts]
+    .filter(([session]) => session !== own && window.has(session) && !layout.frictions.has(session))
+    .map(([session, transcript]) => ({ session, transcript, newest: newestAt(layout.turns.get(session) ?? []) }))
+    .sort((a, b) => b.newest - a.newest || (a.session < b.session ? -1 : 1))
+    .slice(0, batch)
+    .map(({ session, transcript }) => ({ session, transcript }))
+
+// What ended:<s> holds: when, and the transcript (absent in a value written before it was kept).
+export const endedValue = (at: number, transcript: string | undefined): { at: number; transcript?: string } => (transcript === undefined || transcript === '' ? { at } : { at, transcript })

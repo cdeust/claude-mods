@@ -15,6 +15,7 @@ const INSIGHTS: InsightsState = {
   models: [],
   delegations: { total: 0, designed: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] },
   mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null },
+  frictions: [],
   brief: null,
   cortex: { pushed: 0, pending: 0, lastError: null, lastAt: null },
   agents: [{ type: 'zetetic-team-subagents:code-reviewer', runs: 4, steps: 20, errors: 1, models: ['claude-opus-5-5'] }],

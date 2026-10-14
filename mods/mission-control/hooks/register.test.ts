@@ -12,14 +12,14 @@ const PANE = {
   props: { title: 'Mission', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
 } as const
 
-const deps = (on: Parameters<TestBody>[1]) => {
+const deps = (on: Parameters<TestBody>[1], insights: unknown = INSIGHTS) => {
   mock.clock(on, { now: 100_000 })
   on('session.start', () => ({ cwd: '/r' }))
   on('env.get', () => ({ value: undefined as never }))
   on('state.get', ($$, e, next) => {
     const { plugin, key } = e as { plugin?: string; key?: string }
     if (plugin === 'zetetic-autopilot' && key === 'phases') return { value: { value: PHASES as never, version: 1 } }
-    if (plugin === 'zetetic-insights') return { value: { value: INSIGHTS as never, version: 1 } }
+    if (plugin === 'zetetic-insights') return { value: { value: insights as never, version: 1 } }
     return next(e)
   })
 }
@@ -45,6 +45,18 @@ test('pixels when the option asks: Images for the lanes and each curve, text aro
   expect(await ui.find({ type: 'Text', text: /^EFFORT$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^STEPS BY MODEL/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^DELEGATIONS/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^FRICTIONS \(recurring/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^hook-block {6}4s 16x Owned cleanup remains/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('pixels with an insights that sends no frictions: the section is not drawn and the pane still mounts', { options: { renderer: 'pixels' } }, async ($, on) => {
+  const { frictions: _f, ...old } = INSIGHTS as unknown as Record<string, unknown>
+  deps(on, old)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const ui = await $.ui.mount({ plugin: 'mission-control', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /^DELEGATIONS/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /FRICTIONS/ })).toBeUndefined()
   await ui.unmount()
 })
 

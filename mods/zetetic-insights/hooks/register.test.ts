@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { FRICTION_MAX_BYTES } from './friction'
+
 // Wiring: a main turn's runs go to the ledger, the evidence becomes a proposal, /calibrate apply
 // writes the file the autopilot reads; enforced, the file is written at once.
 
@@ -8,7 +10,7 @@ const CAL = '/home/t/.claude/zetetic-insights/calibration.json'
 
 // `store` is the one store every Claude process shares; `sid` is this process's session id. A second
 // process is simulated by writing its keys into `store` directly: the kit hosts one plugin instance.
-type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void }
+type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; sizes?: Record<string, number>; readErrors?: Record<string, string>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void }
 
 // A main turn of 40 test steps at medium, 12 of them with a failed call: enough to raise.
 const PHASES = {
@@ -43,8 +45,14 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
   on('session.id', () => (w.sidDenied !== undefined ? { deny: w.sidDenied } : { value: w.sid ?? 'sess-1' }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
   on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in w.files }))
+  on('fs.stat', ($, e) => {
+    const path = String((e as { path?: string }).path)
+    return !(path in w.files) ? { deny: 'ENOENT' } : { value: { kind: 'file', size: w.sizes?.[path] ?? 1, mtimeMs: 0, isLink: false } as never }
+  })
   on('fs.read', ($, e) => {
-    const text = w.files[String((e as { path?: string }).path)]
+    const path = String((e as { path?: string }).path)
+    if (w.readErrors?.[path] !== undefined) return { deny: w.readErrors[path]! }
+    const text = w.files[path]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
   on('fs.write', ($, e) => {
@@ -878,4 +886,238 @@ test('F2 only live sessions over the budget: the own write is refused and named,
   expect((w.store['turns:L'] as unknown[]).length).toBe(200)
   expect(w.store['turns:sess-1']).toBeUndefined()
   expect(seen.ledgerError).toMatch(/^not saved: .*live sessions/)
+})
+
+// Frictions: read from a finished session's transcript, deferred, once, and surfaced when they recur.
+// A transcript line of the real shape (a Stop hook that blocked), every value made up.
+const BLOCK_LINE = JSON.stringify({ type: 'attachment', attachment: { type: 'hook_blocking_error', hookName: 'Stop', hookEvent: 'Stop', blockingError: { blockingError: 'Owned cleanup remains: [{"path": "/Users/a/s1"}]', command: 'gate' } } })
+const BLOCK_SIGNATURE = 'Owned cleanup remains: [{<Q>: <Q>}]'
+const TRANSCRIPT = `${BLOCK_LINE}\n${BLOCK_LINE}\nnot json\n`
+const lastState = (on: Parameters<TestBody>[1]) => {
+  const seen: { state?: { frictions: unknown[]; brief: string | null; ledgerError: string | null } } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') seen.state = (e as unknown as { value: NonNullable<typeof seen.state> }).value
+    return next(e)
+  })
+  return seen
+}
+// The reads of each file, counted where the engine asks for it.
+const counted = (w: World): Record<string, number> => {
+  const reads: Record<string, number> = {}
+  w.files = new Proxy(w.files, {
+    get: (target, key: string) => {
+      reads[key] = (reads[key] ?? 0) + 1
+      return target[key]
+    },
+  })
+  return reads
+}
+const withTranscripts = (extra: Record<string, unknown> = {}) => ({
+  turns: LEDGER(),
+  'ended:old-a': { at: 11, transcript: '/t/a.jsonl' },
+  'ended:old-b': { at: 21, transcript: '/t/b.jsonl' },
+  ...extra,
+})
+
+test('frictions: classic.SessionEnd names the transcript in ended:, one value, in either order with session.end', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  on('session.end', ($, e) => ({ sessionId: (e as { sessionId: string }).sessionId }))
+  on('classic.SessionEnd', () => ({}) as never)
+  await $.session.start(START)
+  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
+  expect(w.store['ended:sess-1']).toBeUndefined() // no record: never marked
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  // The engine's order: the SessionEnd settings hooks, then session.end, which keeps the transcript.
+  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000, transcript: '/t/s1.jsonl' })
+  await $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000, transcript: '/t/s1.jsonl' })
+  // Reversed: session.end first writes { at }, classic.SessionEnd then sets the full value.
+  delete w.store['ended:sess-1']
+  await $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
+  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000, transcript: '/t/s1.jsonl' })
+})
+
+test('frictions: without classic hooks (managed settings) ended: stays { at }; an empty transcript path names none', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  on('session.end', ($, e) => ({ sessionId: (e as { sessionId: string }).sessionId }))
+  on('classic.SessionEnd', () => ({}) as never)
+  await $.session.start(START)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  await $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
+  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '' })
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
+})
+
+test('frictions: the deferred timer reads each finished transcript once, writes frictions:<sid>, and state.frictions holds what recurs over 2 sessions', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts() }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  const seen = lastState(on)
+  await $.session.start(START)
+  expect(reads['/t/a.jsonl']).toBeUndefined() // nothing is read inside start
+  expect(w.store['frictions:old-a']).toBeUndefined()
+  expect(seen.state?.frictions).toEqual([])
+  await clock.advance(60_000)
+  expect(reads['/t/a.jsonl']).toBe(1)
+  expect(reads['/t/b.jsonl']).toBe(1)
+  expect(w.store['frictions:old-a']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 2 }])
+  expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
+  expect(seen.state?.frictions).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, sessions: 2, count: 3 }])
+  // The next start does not read them again; its brief (frozen at that start) names the friction.
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(reads['/t/a.jsonl']).toBe(1)
+  expect(reads['/t/b.jsonl']).toBe(1)
+  expect(seen.state?.brief).toContain(`- recurring friction: ${BLOCK_SIGNATURE} (hook-block, 2 sessions, 3 times)`)
+})
+
+test('frictions: the aggregate sent to Cortex says the recurring friction, measured before it in the same timer', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts() }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.map((c) => c.tool)).toEqual(['remember'])
+  expect(String(calls[0]?.args.content).split('\n').pop()).toBe(`- recurring friction: ${BLOCK_SIGNATURE} (hook-block, 2 sessions, 3 times)`)
+})
+
+test('frictions: a read that fails is named in the state, the session stays unmarked, and the next start reads it again', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts(), readErrors: { '/t/b.jsonl': 'EIO transient' } }
+  const clock = stubs(on, w)
+  cortex(on)
+  const seen = lastState(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(w.store['frictions:old-a']).toBeDefined()
+  expect(w.store['frictions:old-b']).toBeUndefined()
+  expect(seen.state?.ledgerError).toMatch(/^frictions not measured, retried at the next start: old-b: .*EIO transient/)
+  delete w.readErrors!['/t/b.jsonl']
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
+  expect(seen.state?.ledgerError).toBeNull()
+})
+
+test('frictions: a turn saved after a failed read does not erase its name from the state', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts(), readErrors: { '/t/a.jsonl': 'EIO transient' } }
+  const clock = stubs(on, w)
+  cortex(on)
+  const seen = lastState(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect(seen.state?.ledgerError).toMatch(/^frictions not measured/)
+})
+
+test('frictions: at most FRICTION_BATCH transcripts per start, the newest sessions first', async ($, on) => {
+  const store: Record<string, unknown> = { 'turns:sess-1': [{ ...pastSession('sess-1', 100) }] }
+  const files: Record<string, string> = {}
+  for (const [s, at] of [['s1', 10], ['s2', 20], ['s3', 30], ['s4', 40], ['s5', 50]] as const) {
+    store[`turns:${s}`] = [pastSession(s, at)]
+    store[`ended:${s}`] = { at: at + 1, transcript: `/t/${s}.jsonl` }
+    files[`/t/${s}.jsonl`] = BLOCK_LINE
+  }
+  const w: World = { files, written: {}, store }
+  const clock = stubs(on, w)
+  cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  const measured = () => Object.keys(w.store).filter((k) => k.startsWith('frictions:')).sort()
+  expect(measured()).toEqual(['frictions:s3', 'frictions:s4', 'frictions:s5'])
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(measured()).toEqual(['frictions:s1', 'frictions:s2', 'frictions:s3', 'frictions:s4', 'frictions:s5'])
+})
+
+test('frictions: an ended: stored before the transcript was kept is not measurable: no read, no key, no crash, no friction', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  const seen = lastState(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(Object.keys(reads)).not.toContain('/t/a.jsonl')
+  expect(Object.keys(w.store).filter((k) => k.startsWith('frictions:'))).toEqual([])
+  expect(seen.state?.frictions).toEqual([])
+  expect(seen.state?.ledgerError).toBeNull()
+})
+
+test('frictions: a session outside the brief window is not measured', async ($, on) => {
+  const store: Record<string, unknown> = { 'turns:sess-1': [pastSession('sess-1', 1000)] }
+  for (let i = 1; i <= 11; i++) {
+    store[`turns:s${i}`] = [pastSession(`s${i}`, 10 * i)]
+    store[`ended:s${i}`] = { at: 10 * i, transcript: `/t/s${i}.jsonl` }
+  }
+  const files = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`/t/s${i + 1}.jsonl`, BLOCK_LINE]))
+  const w: World = { files, written: {}, store }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  // The window is the 10 newest sessions of 12: sess-1 and s11..s3; s1 and s2 are outside.
+  expect(Object.keys(reads).filter((k) => k.endsWith('.jsonl')).sort()).toEqual(['/t/s11.jsonl', '/t/s10.jsonl', '/t/s9.jsonl'].sort())
+  expect(w.store['frictions:s1']).toBeUndefined()
+})
+
+test('frictions: frictions:<s> goes with its session on eviction and as an orphan, and with the own ended: on resume', async ($, on) => {
+  const w: World = {
+    files: {},
+    written: {},
+    store: { 'turns:P': many('P', 20), 'ended:P': { at: 30, transcript: '/t/p' }, 'pushed:P': { at: 40, lastAt: 19 }, 'frictions:P': [], 'turns:L': many('L', 180), 'frictions:gone': [], 'ended:sess-1': { at: 1, transcript: '/t/own' }, 'frictions:sess-1': [] },
+  }
+  stubs(on, w, PHASES, DAY + 10_000)
+  await $.session.start(START)
+  expect(w.store['ended:sess-1']).toBeUndefined() // resumed: live again
+  expect(w.store['frictions:sess-1']).toBeUndefined() // its transcript grows: measured afresh at its end
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect(Object.keys(w.store).filter((k) => k.includes(':P') || k === 'frictions:gone')).toEqual([])
+  expect(w.store['turns:L']).toBeDefined()
+})
+
+test('frictions: a transcript that no longer exists is marked missing once, never read again, and counts as measured with no rows', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT }, written: {}, store: withTranscripts() }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  const seen = lastState(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(w.store['frictions:old-b']).toEqual({ unavailable: 'missing' })
+  expect(Object.keys(reads)).not.toContain('/t/b.jsonl')
+  expect(seen.state?.ledgerError).toBeNull()
+  // The marker is final: even if the file appears, the next start does not look at it.
+  w.files['/t/b.jsonl'] = BLOCK_LINE
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(Object.keys(reads)).not.toContain('/t/b.jsonl')
+  expect(w.store['frictions:old-b']).toEqual({ unavailable: 'missing' })
+  expect(seen.state?.frictions).toEqual([]) // one session with rows is not a recurrence
+})
+
+test('frictions: a transcript over FRICTION_MAX_BYTES is not read, is marked too-large and named', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts(), sizes: { '/t/b.jsonl': FRICTION_MAX_BYTES + 1 } }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  const seen = lastState(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(w.store['frictions:old-b']).toEqual({ unavailable: 'too-large' })
+  expect(Object.keys(reads)).not.toContain('/t/b.jsonl')
+  expect(w.store['frictions:old-a']).toBeDefined()
+  expect(seen.state?.ledgerError).toMatch(/^frictions not measured, transcript over 20971520 bytes: old-b 20971521 bytes/)
+  w.sizes = { '/t/b.jsonl': FRICTION_MAX_BYTES } // exactly the cap is read
+  delete w.store['frictions:old-b']
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
 })
