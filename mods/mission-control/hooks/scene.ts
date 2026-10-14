@@ -80,8 +80,9 @@ export const remembered = (history: readonly PastTurn[], turn: PastTurn): PastTu
   [...history.filter((t) => t.turnId !== turn.turnId), turn].slice(-HISTORY_TURNS)
 
 // The one rule for every flow (main's past turns, main's live turn, each agent): a run is in the
-// window when it ends at or after the window's start. A run's end is its segment's t1; main's live
-// turn ends at now, so it is always in.
+// window when it ends at or after the window's start. A run's end is its segment's t1: now while
+// its loop runs, else the loop's last step. A main turn that ended before the window is left out,
+// lane and count alike.
 const inWindow = (from: number) => (s: Segment): boolean => s.t1 >= from
 
 // Main over the window (its past turns, then the current one) and the agents that ran in it, the
