@@ -184,5 +184,101 @@ test("an agent finishing after main's turn completed joins that turn's record", 
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'a1' } as never)
   const ledger = w.store.turns as { turnId: string; agents: { type: string; steps: number }[] }[]
   expect(ledger.length).toBe(1)
-  expect(ledger[0]?.agents).toEqual([{ type: 'Explore', phase: 'analysis', model: 'claude-haiku-5-5', steps: 3, errors: 1 }])
+  expect(ledger[0]?.agents).toEqual([{ agentId: 'a1', type: 'Explore', phase: 'analysis', model: 'claude-haiku-5-5', steps: 3, errors: 1 }])
+})
+
+const DESIGNED = 'DESIGN\ntask: look\ncheck: done\nmodel: opus · effort: high · why: hard\ngenius shape: operational-definition → einstein: measure it\n\nGo.'
+
+test('a spawn is observed, not changed: its design and the finished agent\'s tokens reach the ledger', async ($, on) => {
+  const agentLoop = { ...PHASES.loops[0]!, id: 'a1', type: 'Explore', model: 'claude-haiku-5-5', phase: 'analysis', runs: [{ phase: 'analysis', effort: 'low', steps: 3, errors: 1, since: 7 }] }
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w, { ...PHASES, loops: [...PHASES.loops, agentLoop] })
+  const spawned = { model: 'claude-haiku-5-5', agentId: 'a1' }
+  on('agent.spawn', () => spawned)
+  let state: { delegations?: { total: number; designed: number; flags: Record<string, number> } } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') state = (e as unknown as { value: typeof state }).value
+    return next(e)
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const result = await $.agent.spawn({ prompt: DESIGNED } as never)
+  expect(result).toEqual(spawned)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  const usage = { model: 'claude-haiku-5-5', input_tokens: 10, output_tokens: 7, cache_read_input_tokens: 100, cache_creation_input_tokens: 5 }
+  await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'a1', usage } as never)
+  const ledger = w.store.turns as { agents: unknown[] }[]
+  expect(ledger[0]?.agents).toEqual([
+    {
+      agentId: 'a1',
+      type: 'Explore',
+      phase: 'analysis',
+      model: 'claude-haiku-5-5',
+      steps: 3,
+      errors: 1,
+      design: { model: 'opus', effort: 'high', shape: 'operational-definition → einstein: measure it' },
+      tokensIn: 115,
+      tokensOut: 7,
+    },
+  ])
+  expect(state.delegations?.total).toBe(1)
+  expect(state.delegations?.designed).toBe(1)
+  expect(state.delegations?.flags.rerouted).toBe(1)
+})
+
+test('a spawn without a DESIGN block is undesigned; an agent whose spawn was never seen keeps no design field', async ($, on) => {
+  const loop = (id: string) => ({ ...PHASES.loops[0]!, id, type: 'Explore', model: 'claude-sonnet-5-5', phase: 'analysis', runs: [{ phase: 'analysis', effort: 'low', steps: 9, errors: 0, since: 7 }] })
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w, { ...PHASES, loops: [...PHASES.loops, loop('b1'), loop('b2')] })
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'b1' }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.agent.spawn({ prompt: 'just do it' } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'b1' } as never)
+  await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'b2' } as never)
+  const agents = (w.store.turns as { agents: { design?: unknown; tokensIn?: number }[] }[])[0]!.agents
+  expect(agents[0]?.design).toBeNull()
+  expect('design' in agents[1]!).toBe(false)
+  expect('tokensIn' in agents[1]!).toBe(false)
+})
+
+test('a resumed agent: the design outlives its first turn, each record keeps its own turn\'s steps, one delegation', async ($, on) => {
+  const loop = (steps: number) => ({ ...PHASES.loops[0]!, id: 'r1', type: 'Explore', model: 'claude-opus-5-5', phase: 'analysis', runs: [{ phase: 'analysis', effort: 'low', steps, errors: 0, since: 7 }] })
+  const w: World = { files: {}, written: {}, store: {} }
+  let cumulative = 3
+  stubs(on, w, { ...PHASES, get loops() { return [...PHASES.loops, loop(cumulative)] } })
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'r1' }))
+  let state: { delegations?: { total: number }; agents?: { steps: number }[] } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') state = (e as unknown as { value: typeof state }).value
+    return next(e)
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.agent.spawn({ prompt: DESIGNED } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'r1' } as never)
+  cumulative = 5
+  await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'r1' } as never)
+  const agents = (w.store.turns as { agents: { agentId?: string; steps: number; design?: unknown }[] }[])[0]!.agents
+  expect(agents.map((a) => a.agentId)).toEqual(['r1', 'r1'])
+  expect(agents.map((a) => a.design !== undefined && a.design !== null)).toEqual([true, true])
+  expect(agents.map((a) => a.steps)).toEqual([3, 2])
+  expect(state.delegations?.total).toBe(1)
+  expect(state.agents?.[0]?.steps).toBe(5)
+})
+
+test('a resumed agent whose row was evicted and reopened: the restarted row counts all its steps', async ($, on) => {
+  const row = (since: number, steps: number) => ({ ...PHASES.loops[0]!, id: 'r1', type: 'Explore', model: 'claude-opus-5-5', phase: 'analysis', runs: [{ phase: 'analysis', effort: 'low', steps, errors: 0, since }] })
+  const w: World = { files: {}, written: {}, store: {} }
+  let current = row(10, 3)
+  stubs(on, w, { ...PHASES, get loops() { return [...PHASES.loops, current] } })
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'r1' }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.agent.spawn({ prompt: DESIGNED } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'r1' } as never)
+  current = row(500, 2)
+  await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'r1' } as never)
+  const agents = (w.store.turns as { agents: { agentId?: string; steps: number }[] }[])[0]!.agents
+  expect(agents.map((a) => a.agentId)).toEqual(['r1', 'r1'])
+  expect(agents.map((a) => a.steps)).toEqual([3, 2])
 })

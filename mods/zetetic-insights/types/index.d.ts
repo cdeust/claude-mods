@@ -7,7 +7,40 @@ export type Effort = 'low' | 'medium' | 'high'
 
 export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number }
 
-export type AgentRecord = { type: string; phase: Phase | null; model: string; steps: number; errors: number }
+// The design contract a delegation was dispatched under, read from the DESIGN block of its prompt
+// (the dispatch-contract skill): the model and effort the orchestrator chose and the genius shape it
+// handed over. Each field null when the block does not state it.
+export type Design = { model: string | null; effort: string | null; shape: string | null }
+
+export type AgentRecord = {
+  // The engine's id of the delegation: an agent resumed for another turn writes one record per turn
+  // under the same id, and a delegation is judged once over all of them. Absent on older records.
+  agentId?: string
+  type: string
+  phase: Phase | null
+  model: string
+  // This turn's steps and failed calls only, never the agent's running total.
+  steps: number
+  errors: number
+  // What it was dispatched under: null when the prompt carried no DESIGN block; absent on records
+  // written before the design was kept.
+  design?: Design | null
+  // Tokens its turns used, as the API reported them: input (uncached, cache read and cache write
+  // together) and output. Absent when no usage was reported.
+  tokensIn?: number
+  tokensOut?: number
+}
+
+// A delegation the evidence questions, and why (hooks/delegations.ts).
+export type DelegationFlag = 'overkill' | 'underpowered' | 'undesigned' | 'rerouted'
+export type DelegationRow = { at: number; type: string; model: string; effort: string | null; shape: string | null; steps: number; errors: number; flags: DelegationFlag[] }
+export type DelegationStats = {
+  total: number
+  designed: number
+  flags: Record<DelegationFlag, number>
+  // The newest flagged delegations, newest last.
+  recent: DelegationRow[]
+}
 
 // One main turn as the ledger keeps it ($.store, across sessions).
 export type TurnRecord = {
@@ -76,6 +109,8 @@ export type InsightsState = {
   trends: PhaseTrend[]
   // The ledger's last sessions (at most 12, oldest first), by when their last turn ended.
   models: SessionModels[]
+  // The ledger's delegations judged against their design (hooks/delegations.ts).
+  delegations: DelegationStats
   agents: AgentStat[]
   advisor: { heavyTurns: number; heavyBeforeWrite: number; heavyAtCompletion: number; lightTurns: number; lightWithAdvisor: number }
   goals: { name: string; status: string }[]
