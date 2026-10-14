@@ -8,7 +8,7 @@ const pct = (n: number, of: number): string => (of === 0 ? '—' : `${Math.round
 export const headline = (s: InsightsState): string =>
   `${s.mode} · ${s.turns} turns over ${s.sessions} sessions · ${s.judgedSessions} judged by /insights${
     s.facetsError === null ? '' : ` · facets unreadable: ${s.facetsError}`
-  }`
+  }${s.ledgerError === null ? '' : ` · ledger: ${s.ledgerError}`}`
 
 // `test        medium     40 steps  30 % failed  1/2 achieved`
 export const phaseRows = (s: InsightsState): string[] =>

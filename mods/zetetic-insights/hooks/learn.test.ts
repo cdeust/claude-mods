@@ -1,17 +1,24 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { TurnRecord } from '../types'
+import type { AgentRecord, TurnRecord } from '../types'
 import {
+  LEDGER_BYTES,
+  MAX_AGENTS,
   MIN_STEPS,
+  REVERSAL_STEPS,
   advisorStats,
   agentStats,
   applied,
   emptyCalibration,
   goalStatus,
+  offRung,
   outcomeOf,
   parseCalibration,
   phaseStats,
   proposals,
+  trimmed,
+  utf8Bytes,
+  withAgent,
 } from './learn'
 
 const turn = (over: Partial<TurnRecord>): TurnRecord => ({
@@ -75,8 +82,16 @@ test('proposals start from the calibrated effort and never leave low..high', () 
 
 test('applying writes the new effort and its evidence; a calibration file of another shape is refused', () => {
   const c = applied(emptyCalibration(), [{ phase: 'test', from: 'medium', to: 'high', evidence: 'e' }], 7)
-  expect(c).toEqual({ version: 1, phases: { test: 'high' }, evidence: { test: 'medium → high: e' }, updatedAt: 7 })
+  expect(c).toEqual({
+    version: 1,
+    phases: { test: 'high' },
+    evidence: { test: 'medium → high: e' },
+    changes: { test: { at: 7, from: 'medium', to: 'high' } },
+    updatedAt: 7,
+  })
   expect(parseCalibration(JSON.stringify(c))).toEqual(c)
+  // A file written before `changes` existed reads with none.
+  expect(parseCalibration('{"version":1,"phases":{"test":"high"}}').changes).toEqual({})
   expect(() => parseCalibration('{"phases":{}}')).toThrow(/version 1/)
 })
 
@@ -87,4 +102,48 @@ test('agents and the advisor are summed per type and per grade', () => {
   ]
   expect(agentStats(records)).toEqual([{ type: 'Explore', runs: 2, steps: 6, errors: 1, models: ['claude-haiku-5-5', 'claude-sonnet-5-5'] }])
   expect(advisorStats(records)).toEqual({ heavyTurns: 1, heavyBeforeWrite: 1, heavyAtCompletion: 1, lightTurns: 1, lightWithAdvisor: 1 })
+})
+
+const agent = (i: number) => ({ type: `agent-${i}-${'x'.repeat(150)}`, phase: 'analysis' as const, model: 'claude-haiku-5-5', steps: i, errors: 0 })
+
+test('the ledger keeps the newest records under the byte cap, measured as UTF-8', () => {
+  expect(utf8Bytes('aé€😀')).toBe(1 + 2 + 3 + 4)
+  expect(utf8Bytes(JSON.stringify(['é']))).toBe(6)
+  // 400 agent-heavy records of ~10 KB each: ~4 MB, past the store's 4 MiB.
+  const heavy = Array.from({ length: 400 }, (_, i) => turn({ turnId: `t${i}`, agents: Array.from({ length: MAX_AGENTS }, (_, j) => agent(j)) }))
+  expect(utf8Bytes(JSON.stringify(heavy))).toBeGreaterThan(4 * 1024 * 1024)
+  const kept = trimmed(heavy)
+  expect(utf8Bytes(JSON.stringify(kept))).toBeLessThanOrEqual(LEDGER_BYTES)
+  expect(kept[kept.length - 1]?.turnId).toBe('t399')
+  expect(kept.length).toBeGreaterThan(200)
+  // The count cap still holds, and a ledger under both caps is kept whole.
+  expect(trimmed(heavy, Number.POSITIVE_INFINITY, 3).map((r) => r.turnId)).toEqual(['t397', 't398', 't399'])
+  expect(trimmed(heavy.slice(0, 2))).toEqual(heavy.slice(0, 2))
+  expect(trimmed([])).toEqual([])
+})
+
+test('a turn keeps MAX_AGENTS agents and counts the rest', () => {
+  let list = { agents: [] as AgentRecord[], dropped: 0 }
+  for (let i = 0; i < MAX_AGENTS + 3; i++) list = withAgent(list, agent(i))
+  expect(list.agents.length).toBe(MAX_AGENTS)
+  expect(list.dropped).toBe(3)
+})
+
+test("a moved phase counts only the runs after its move, and undoing the move needs more evidence", () => {
+  const runs = (at: number, effort: string, steps: number, errors: number) => turn({ at, main: [{ phase: 'test', effort, steps, errors }] })
+  const records = [runs(1, 'medium', 100, 50), runs(20, 'high', 40, 0)]
+  const moved = { ...emptyCalibration(), phases: { test: 'high' as const }, changes: { test: { at: 10, from: 'medium' as const, to: 'high' as const } } }
+  expect(phaseStats(records, new Map(), moved.changes).map((s) => [s.effort, s.steps])).toEqual([['high', 40]])
+  // Clean and achieved at high: lowering back to medium undoes the raise, 40 steps are not enough.
+  const clean = { phase: 'test', effort: 'high', steps: MIN_STEPS, errors: 0, sessions: 9, judged: 9, achieved: 9 }
+  expect(proposals([clean], moved)).toEqual([])
+  expect(proposals([{ ...clean, steps: REVERSAL_STEPS }], moved)[0]?.to).toBe('medium')
+  // Failing at high: there is no rung above, and the move is not undone either.
+  expect(proposals([{ ...clean, errors: 30 }], moved)).toEqual([])
+})
+
+test('a phase with steps only at other rungs is named as unable to produce a proposal', () => {
+  const stats = [{ phase: 'test', effort: 'high', steps: 60, errors: 0, sessions: 2, judged: 0, achieved: 0 }]
+  expect(offRung(stats, emptyCalibration())).toEqual([{ phase: 'test', now: 'medium', ran: ['high 60'] }])
+  expect(offRung([{ ...stats[0]!, effort: 'medium' }], emptyCalibration())).toEqual([])
 })

@@ -1,13 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Calibration, InsightsState, TurnRecord } from '../types'
+import type { AgentRecord, Calibration, InsightsState, TurnRecord } from '../types'
 import {
   CALIBRATION_PATH,
   FACETS_DIR,
   FACET_SESSIONS_CAP,
   GOALS_DIR,
-  LEDGER_CAP,
   LEDGER_KEY,
   type Outcome,
   advisorStats,
@@ -15,10 +14,13 @@ import {
   applied,
   emptyCalibration,
   goalStatus,
+  offRung,
   outcomeOf,
   parseCalibration,
   phaseStats,
   proposals,
+  trimmed,
+  withAgent,
 } from './learn'
 import { placePath } from './paths'
 
@@ -27,6 +29,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   turns: 0,
   sessions: 0,
   judgedSessions: 0,
+  ledgerError: null,
   facetsError: null,
   phases: [],
   agents: [],
@@ -44,10 +47,11 @@ const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
 const AUTOPILOT_POLICY = { plugin: 'zetetic-autopilot', key: 'policy' } as const
 const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
 
-// Module state rebuilt at start: the ledger, the outcomes read, the agents finished this turn.
+// Module state rebuilt at start: the ledger, the outcomes read, the agents finished in main's
+// current turn before that turn completed.
 let ledger: TurnRecord[] = []
 let outcomes = new Map<string, Outcome>()
-let pendingAgents: TurnRecord['agents'] = []
+let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped: 0 }
 
 const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
 
@@ -62,27 +66,43 @@ async function expandHome($: EngineInterface, path: string): Promise<string> {
   return placed.path
 }
 
-async function loadLedger($: EngineInterface): Promise<void> {
-  const raw = await $.store.get(LEDGER_KEY)
-  ledger = Array.isArray(raw) ? (raw as TurnRecord[]) : []
-}
-
-// The outcomes /insights wrote for the ledger's last sessions. No facets folder is "never run",
-// not an error; an unreadable or malformed facet is named.
-async function loadOutcomes($: EngineInterface): Promise<string | null> {
-  outcomes = new Map()
-  const sessions = [...new Set(ledger.map((r) => r.session))].slice(-FACET_SESSIONS_CAP)
+// The ledger as the store kept it; a store that cannot be read, or holds something else under the
+// key, is named and the session starts a new ledger (the next write replaces it).
+async function loadLedger($: EngineInterface): Promise<string | null> {
+  ledger = []
   try {
-    const dir = await expandHome($, FACETS_DIR)
-    if (!(await $.fs.exists(dir))) return null
-    for (const session of sessions) {
-      const path = `${dir}/${session}.json`
-      if (await $.fs.exists(path)) outcomes.set(session, outcomeOf(await $.fs.read(path)))
-    }
+    const raw = await $.store.get(LEDGER_KEY)
+    if (raw === undefined) return null
+    if (!Array.isArray(raw)) return `the store's ${LEDGER_KEY} is not a list, a new ledger starts`
+    ledger = trimmed(raw as TurnRecord[])
     return null
   } catch (error) {
     return cut(error)
   }
+}
+
+// The outcomes /insights wrote for the ledger's last sessions. No facets folder is "never run",
+// not an error; an unreadable or malformed facet is skipped and named, the others are read.
+async function loadOutcomes($: EngineInterface): Promise<string | null> {
+  outcomes = new Map()
+  const sessions = [...new Set(ledger.map((r) => r.session))].slice(-FACET_SESSIONS_CAP)
+  const failed: string[] = []
+  let dir: string
+  try {
+    dir = await expandHome($, FACETS_DIR)
+    if (!(await $.fs.exists(dir))) return null
+  } catch (error) {
+    return cut(error)
+  }
+  for (const session of sessions) {
+    const path = `${dir}/${session}.json`
+    try {
+      if (await $.fs.exists(path)) outcomes.set(session, outcomeOf(await $.fs.read(path)))
+    } catch (error) {
+      failed.push(`${session}: ${cut(error)}`)
+    }
+  }
+  return failed.length === 0 ? null : `${failed.length} skipped, first ${failed[0]}`.slice(0, 160)
 }
 
 async function readGoals($: EngineInterface): Promise<{ goals: InsightsState['goals']; error: string | null }> {
@@ -117,12 +137,13 @@ async function writeCalibration($: EngineInterface, c: Calibration): Promise<voi
 async function recompute($: EngineInterface, extra: Partial<InsightsState> = {}): Promise<void> {
   const at = await $.clock.now()
   const s = { ...(await read($, insights)), ...extra }
-  const phases = phaseStats(ledger, outcomes)
   let calibration = s.calibration
+  let phases = phaseStats(ledger, outcomes, calibration.changes)
   let ps = proposals(phases, calibration)
   if (s.mode === 'enforce' && ps.length > 0) {
     calibration = applied(calibration, ps, at)
     await writeCalibration($, calibration)
+    phases = phaseStats(ledger, outcomes, calibration.changes)
     ps = []
   }
   await update($, insights, () => ({
@@ -140,12 +161,12 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
 }
 
 async function start($: EngineInterface, mode: InsightsState['mode']): Promise<void> {
-  pendingAgents = []
-  await loadLedger($)
+  pending = { agents: [], dropped: 0 }
+  const ledgerError = await loadLedger($)
   const facetsError = await loadOutcomes($)
   const g = await readGoals($)
   const c = await readCalibration($)
-  await recompute($, { mode, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error })
+  await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error })
 }
 
 // One main turn, as the autopilot's phases and policy and the genius grade left it.
@@ -163,7 +184,8 @@ async function recordTurn($: EngineInterface): Promise<void> {
     at: await $.clock.now(),
     taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
     main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors })),
-    agents: pendingAgents,
+    agents: pending.agents,
+    ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),
     advisor: {
       calls: uses.reduce((n, u) => n + u.calls, 0),
       beforeWrite: uses.filter((u) => u.when === 'before-write').reduce((n, u) => n + u.calls, 0),
@@ -171,24 +193,43 @@ async function recordTurn($: EngineInterface): Promise<void> {
     },
     stuck: policy?.decisions.filter((d) => d.kind === 'stuck' && d.at >= since).length ?? 0,
   }
-  pendingAgents = []
-  ledger = [...ledger, record].slice(-LEDGER_CAP)
-  await $.store.set(LEDGER_KEY, ledger)
+  pending = { agents: [], dropped: 0 }
+  await saved($, [...ledger, record])
 }
 
+// The ledger kept under both caps, written; a store that still refuses it is named in the panel,
+// never left to fail silently on every turn.
+async function saved($: EngineInterface, next: TurnRecord[]): Promise<void> {
+  ledger = trimmed(next)
+  try {
+    await $.store.set(LEDGER_KEY, ledger)
+    await update($, insights, (s) => ({ ...s, ledgerError: null }))
+  } catch (error) {
+    await update($, insights, (s) => ({ ...s, ledgerError: `not saved: ${cut(error)}` }))
+  }
+}
+
+// A finished agent goes to main's current turn. When that turn already completed (an agent that
+// ran in the background past it), it joins that turn's record instead of the next turn's.
 async function recordAgent($: EngineInterface, agentId: string): Promise<void> {
-  const loop = (await $.state.get(AUTOPILOT_PHASES)).value?.loops.find((l) => l.id === agentId)
-  if (loop === undefined) return
-  pendingAgents = [
-    ...pendingAgents,
-    {
-      type: loop.type,
-      phase: loop.phase,
-      model: loop.model,
-      steps: loop.runs.reduce((n, r) => n + r.steps, 0),
-      errors: loop.runs.reduce((n, r) => n + r.errors, 0),
-    },
-  ]
+  const phases = (await $.state.get(AUTOPILOT_PHASES)).value
+  const loop = phases?.loops.find((l) => l.id === agentId)
+  if (phases === undefined || loop === undefined) return
+  const agent: AgentRecord = {
+    type: loop.type,
+    phase: loop.phase,
+    model: loop.model,
+    steps: loop.runs.reduce((n, r) => n + r.steps, 0),
+    errors: loop.runs.reduce((n, r) => n + r.errors, 0),
+  }
+  const last = ledger[ledger.length - 1]
+  if (last === undefined || phases.turnId === null || last.turnId !== phases.turnId) {
+    pending = withAgent(pending, agent)
+    return
+  }
+  const joined = withAgent({ agents: last.agents, dropped: last.agentsDropped ?? 0 }, agent)
+  const record = { ...last, agents: joined.agents, ...(joined.dropped > 0 ? { agentsDropped: joined.dropped } : {}) }
+  await saved($, [...ledger.slice(0, -1), record])
 }
 
 async function calibrate($: EngineInterface, args: string): Promise<string> {
@@ -207,9 +248,10 @@ async function calibrate($: EngineInterface, args: string): Promise<string> {
     return `Applied: ${s.proposals.map((p) => `${p.phase} ${p.from} → ${p.to}`).join(', ')}.`
   }
   const now = Object.entries(s.calibration.phases).map(([p, e]) => `${p} ${e}`)
+  const off = offRung(s.phases, s.calibration).map((o) => `${o.phase} ran ${o.ran.join(', ')} steps, none enough at ${o.now}`)
   return `Ledger: ${s.turns} turns over ${s.sessions} sessions, ${s.judgedSessions} judged by /insights. Calibration: ${now.length === 0 ? 'none (medium everywhere)' : now.join(', ')}. Proposals: ${
     s.proposals.length === 0 ? 'none' : s.proposals.map((p) => `${p.phase} ${p.from} → ${p.to} (${p.evidence})`).join('; ')
-  }. /calibrate apply or /calibrate reset.`
+  }.${off.length === 0 ? '' : ` No proposal can come from: ${off.join('; ')}.`} /calibrate apply or /calibrate reset.`
 }
 
 export const register: Register = (on, options) => {

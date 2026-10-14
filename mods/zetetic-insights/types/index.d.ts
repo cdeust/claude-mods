@@ -7,6 +7,8 @@ export type Effort = 'low' | 'medium' | 'high'
 
 export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number }
 
+export type AgentRecord = { type: string; phase: Phase | null; model: string; steps: number; errors: number }
+
 // One main turn as the ledger keeps it ($.store, across sessions).
 export type TurnRecord = {
   session: string
@@ -14,7 +16,9 @@ export type TurnRecord = {
   at: number
   taskClass: string | null
   main: RunRecord[]
-  agents: { type: string; phase: Phase | null; model: string; steps: number; errors: number }[]
+  agents: AgentRecord[]
+  // Agents finished in the turn past MAX_AGENTS, counted, not kept (learn.ts).
+  agentsDropped?: number
   advisor: { calls: number; beforeWrite: number; atCompletion: number }
   stuck: number
 }
@@ -39,6 +43,8 @@ export type Calibration = {
   version: 1
   phases: Partial<Record<Phase, Effort>>
   evidence: Partial<Record<Phase, string>>
+  // Each phase's last move: only the runs recorded after it count, and undoing it needs more.
+  changes: Partial<Record<Phase, { at: number; from: Effort; to: Effort }>>
   updatedAt: number | null
 }
 
@@ -47,6 +53,7 @@ export type InsightsState = {
   turns: number
   sessions: number
   judgedSessions: number
+  ledgerError: string | null
   facetsError: string | null
   phases: PhaseStat[]
   agents: AgentStat[]

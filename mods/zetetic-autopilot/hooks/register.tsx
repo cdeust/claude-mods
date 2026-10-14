@@ -13,6 +13,7 @@ import {
   STUCK_ERRORS,
   agentEffortFor,
   currentEffort,
+  defaultEffort,
   effortFor,
   escalate,
   group,
@@ -197,7 +198,9 @@ async function* tracked(
     stepped(s, {
       loopId: sent.agentId ?? 'main',
       model: r.usage?.model ?? sent.model,
-      effort: sent.effort === undefined ? null : String(sent.effort),
+      // The effort the request ran at: the one sent, else the model's API default (policy.ts), so
+      // the insights ledger never keeps an effort it cannot calibrate.
+      effort: sent.effort === undefined ? defaultEffort(r.usage?.model ?? sent.model) : String(sent.effort),
       phase: stepPhase(r.toolUses, r.answer),
       advisorCalls,
       at,

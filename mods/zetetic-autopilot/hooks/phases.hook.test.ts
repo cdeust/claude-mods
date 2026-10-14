@@ -62,6 +62,17 @@ test('a main step that edits a file puts main in implementation and counts its a
   expect(seen.value?.advisor.uses.map((u) => u.when)).toEqual(['before-write'])
 })
 
+test('a step sent with no effort is recorded at the model default, never as an unknown rung', { options: { policy_mode: 'observe' } }, async ($, on) => {
+  const seen = seenPhases(on)
+  answering(on, [{ id: 'c1', name: 'Read', input: { file_path: '/r/src/a.ts' } }], 0)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.turn.start({ turnId: 't1', text: 'look' } as never)
+  await drain($.turn.step({ turnId: 't1', index: 1, model: 'claude-sonnet-5-5', messageCount: 1 }))
+  const main = seen.value?.loops.find((l) => l.id === 'main')
+  // source: policy.ts DEFAULT_EFFORT, Sonnet 5.5's API default is high.
+  expect(main?.runs.map((r) => r.effort)).toEqual(['high'])
+})
+
 test('a spawned reviewer gets a row in review, with the model the engine resolved', { options: { policy_mode: 'enforce' } }, async ($, on) => {
   const seen = seenPhases(on)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })

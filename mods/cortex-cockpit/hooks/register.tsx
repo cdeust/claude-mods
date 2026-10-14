@@ -299,7 +299,11 @@ export const register: Register = (on, options) => {
       insights: await peekInsights($),
       insightsActions: {
         onRunInsights: () => void $.prompt.submit({ text: '/insights' }),
-        onApply: () => void $.command.run({ command: 'calibrate', args: 'apply' }).then((r) => $.ui.toast(r.text ?? 'calibrate: done')),
+        onApply: () =>
+          void $.command
+            .run({ command: 'calibrate', args: 'apply' })
+            .then((r) => $.ui.toast(r.text ?? 'calibrate: done'))
+            .catch((error: unknown) => $.ui.toast(`calibrate apply failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 100)}`)),
         onGoal: () => void $.prompt.submit({ text: CALIBRATION_GOAL }),
       },
       refusals: await peekRefusals($),
