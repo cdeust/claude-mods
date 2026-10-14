@@ -46,8 +46,8 @@ export type PolicyState = {
 // added to the owner's seven for the steps that write code.
 export type Phase = 'planning' | 'analysis' | 'design' | 'implementation' | 'verification' | 'test' | 'review' | 'report'
 
-// A stretch of consecutive steps in one phase.
-export type PhaseRun = { phase: Phase; steps: number; since: number }
+// A stretch of consecutive steps in one phase at one effort, and the tool calls that failed in it.
+export type PhaseRun = { phase: Phase; effort: string | null; steps: number; errors: number; since: number }
 
 // One loop of this session: main (its row starts again each turn) or a subagent.
 export type LoopPhases = {

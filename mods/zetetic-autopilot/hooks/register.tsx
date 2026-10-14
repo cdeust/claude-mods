@@ -2,9 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, EngineInterface, PluginState, Register, TurnStepChunk, TurnStepResult } from 'claude-code'
 
 import type { ContextHealth, PhasesState, PolicyDecision, PolicyState } from '../types'
+import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
 import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, definitionPaths, parseDefinition } from './agents'
 import { placePath } from './paths'
-import { emptyPhases, finished, spawned, startTurn, stepPhase, stepped } from './phases'
+import { emptyPhases, erred, finished, spawned, startTurn, stepPhase, stepped } from './phases'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
 import {
   CHARS_PER_TOKEN,
@@ -12,6 +13,7 @@ import {
   STUCK_ERRORS,
   agentEffortFor,
   currentEffort,
+  defaultEffort,
   effortFor,
   escalate,
   group,
@@ -81,6 +83,20 @@ async function note($: EngineInterface, subject: string, reason: string): Promis
   if (last?.to === reason) return
   const at = await $.clock.now()
   await update($, policy, (s) => decide(s, { at, kind: 'unread', subject, from: '', to: reason, applied: false }))
+}
+
+// The calibrated tool-loop rung per phase, read at start and at each new main turn: a missing file
+// is no calibration; an unreadable one is a named row and no calibration.
+let ceilings: LoopCeilings = {}
+
+async function readCeilings($: EngineInterface): Promise<void> {
+  try {
+    const path = await expandHome($, CALIBRATION_PATH)
+    ceilings = (await $.fs.exists(path)) ? parseCeilings(await $.fs.read(path)) : {}
+  } catch (error) {
+    ceilings = {}
+    await note($, 'calibration', `unreadable: ${String(error).slice(0, 100)}`)
+  }
 }
 
 // Agent definitions, read once per type and session: what the type's file pins, or why it could
@@ -182,7 +198,9 @@ async function* tracked(
     stepped(s, {
       loopId: sent.agentId ?? 'main',
       model: r.usage?.model ?? sent.model,
-      effort: sent.effort === undefined ? null : String(sent.effort),
+      // The effort the request ran at: the one sent, else the model's API default (policy.ts), so
+      // the insights ledger never keeps an effort it cannot calibrate.
+      effort: sent.effort === undefined ? defaultEffort(r.usage?.model ?? sent.model) : String(sent.effort),
       phase: stepPhase(r.toolUses, r.answer),
       advisorCalls,
       at,
@@ -256,8 +274,11 @@ export const register: Register = (on, options) => {
     const grade = isMain ? await gradeOf($) : undefined
     const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
     const have = currentEffort(e.model, e.effort)
+    if (isMain && e.index === 0) await readCeilings($)
+    const phase = isMain ? (await read($, phases)).loops.find((l) => l.id === 'main')?.phase : undefined
+    const loop = phase === undefined || phase === null || e.index === 0 ? undefined : ceilings[phase]
     let target =
-      (isMain ? effortFor(e.model, e.index, e.effort, p.pressure, g?.effort) : agentEffortFor(e.model, e.effort, p.pressure)) ??
+      (isMain ? effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) : agentEffortFor(e.model, e.effort, p.pressure)) ??
       have
     let kind: PolicyDecision['kind'] = 'effort'
     if (isMain && p.errorsInRow >= STUCK_ERRORS) {
@@ -274,7 +295,7 @@ export const register: Register = (on, options) => {
     const at = await $.clock.now()
     const who = `${isMain ? 'main' : 'agent'} step ${e.index} (${e.model})`
     if (target !== have) {
-      const subject = g !== undefined && e.index === 0 ? `${who} · ${g.taskClass}` : who
+      const subject = g !== undefined && e.index === 0 ? `${who} · ${g.taskClass}` : loop !== undefined ? `${who} · ${phase} calibrated` : who
       await update($, policy, (s) => decide(s, { at, kind, subject, from: String(e.effort ?? 'default'), to: target, applied }))
     }
     if (model !== undefined && e.index === 0)
@@ -316,10 +337,10 @@ export const register: Register = (on, options) => {
   // The stuck signal: main's tool errors in a row, read by the next turn.step.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    if ((e as { agentId?: string }).agentId === undefined) {
-      const isBlocked = ran.deny !== undefined || ran.isError === true
-      await update($, policy, (s) => ({ ...s, errorsInRow: isBlocked ? s.errorsInRow + 1 : 0 }))
-    }
+    const agentId = (e as { agentId?: string }).agentId
+    const isBlocked = ran.deny !== undefined || ran.isError === true
+    if (agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: isBlocked ? s.errorsInRow + 1 : 0 }))
+    if (isBlocked) await update($, phases, (s) => erred(s, agentId ?? 'main'))
 
     return ran
   })

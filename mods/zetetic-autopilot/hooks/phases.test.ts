@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { LOOPS_CAP, emptyPhases, finished, spawned, startTurn, stepPhase, stepped, toolPhase, typePhase } from './phases'
+import { LOOPS_CAP, emptyPhases, erred, finished, spawned, startTurn, stepPhase, stepped, toolPhase, typePhase } from './phases'
 
 const use = (name: string, input: unknown = {}) => ({ name, input })
 
@@ -93,7 +93,7 @@ test('steps that come in before the spawn answers are kept on the row the spawn 
   const a = s.loops.find((l) => l.id === 'a2')
   expect(a?.type).toBe('zetetic-team-subagents:test-engineer')
   expect(a?.phase).toBe('test')
-  expect(a?.runs).toEqual([{ phase: 'test', steps: 2, since: 2 }])
+  expect(a?.runs).toEqual([{ phase: 'test', effort: 'medium', steps: 2, errors: 0, since: 2 }])
 })
 
 test('the advisor is counted with when it was called', () => {
@@ -115,4 +115,16 @@ test('the list keeps its order and drops the oldest finished agents past the cap
   expect(s.loops.length).toBe(LOOPS_CAP)
   expect(s.loops[0]?.id).toBe('main')
   expect(s.loops[s.loops.length - 1]?.id).toBe(`a${LOOPS_CAP + 2}`)
+})
+
+test('a run is one phase at one effort; a failed call counts on the run it happened in', () => {
+  let s = startTurn(emptyPhases(), 't1', 'claude-opus-5-5', 1)
+  s = stepped(s, step('main', 'analysis'))
+  s = erred(s, 'main')
+  s = stepped(s, { ...step('main', 'analysis'), effort: 'low' })
+  s = erred(s, 'nobody')
+  expect(s.loops.find((l) => l.id === 'main')?.runs.map((r) => [r.phase, r.effort, r.steps, r.errors])).toEqual([
+    ['analysis', 'medium', 1, 1],
+    ['analysis', 'low', 1, 0],
+  ])
 })

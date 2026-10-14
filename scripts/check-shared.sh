@@ -21,8 +21,8 @@ while read -r file reference users; do
     fi
   done
 done <<'LIST'
-paths.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot cortex-cockpit
-paths.test.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot cortex-cockpit
+paths.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot cortex-cockpit zetetic-insights
+paths.test.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot cortex-cockpit zetetic-insights
 rules.ts cortex-guard cortex-cockpit
 rules.test.ts cortex-guard cortex-cockpit
 LIST

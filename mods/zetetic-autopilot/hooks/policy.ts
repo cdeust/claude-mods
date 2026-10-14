@@ -29,17 +29,20 @@ export const defaultEffort = (model: string): Effort => {
 // first request drops to medium at most. `base` is the effort the request classifier chose for
 // this turn (classify.ts); it replaces the session setting as the rung the ladder starts from,
 // so a `routine` turn runs its whole loop at low and a `critical` one keeps high on its first
-// request. Without a base the ladder never raises.
+// request. Without a base the ladder never raises. `loop` is the tool-loop rung the insights
+// calibrated for the phase main is in (calibration.ts); medium without one. It is a ceiling like
+// the rest: it never lifts a request above its base.
 export const effortFor = (
   model: string,
   index: number,
   current: unknown,
   pressure: Pressure,
   base?: Effort,
+  loop: Effort = 'medium',
 ): Effort | undefined => {
   const have = isEffort(current) ? current : defaultEffort(model)
   const now = base ?? have
-  const ceiling: Effort = index === 0 ? (pressure === 'none' ? now : 'medium') : pressure === 'none' ? 'medium' : 'low'
+  const ceiling: Effort = index === 0 ? (pressure === 'none' ? now : 'medium') : pressure === 'none' ? loop : 'low'
   const target = RANK[ceiling] < RANK[now] ? ceiling : now
   return target === have ? undefined : target
 }
