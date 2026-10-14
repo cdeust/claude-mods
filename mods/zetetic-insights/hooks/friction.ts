@@ -73,13 +73,16 @@ const reduced = (text: string): string => {
 // source: review of PR #19 (privacy finding): a signature flows into the brief and from there into the
 // Cortex aggregate memory, and tokens without quotes passed through it unmasked (a GitHub token after
 // "token", an Anthropic key after "api_key=", an AWS secret after "export NAME="). This step runs FIRST,
-// before every other rule, and replaces what it matches with <SECRET>: (d) known token prefixes,
-// (b) whatever follows Bearer or Basic, (a) the value after = or : of a key whose name says it is a
-// credential, (c) any 16+ run of [A-Za-z0-9_\-+/=] mixing letters and digits. Ordinary words stay.
+// before every other rule, replacing with <SECRET>: (d) known prefixes, (b) Bearer/Basic values, (a) the value
+// after = or : of a credential-named key, (e) and (f) below, (c) any 16+ run mixing letters and digits.
 const SECRET = '<SECRET>'
 const PREFIXED = /\b(?:ghp_|gho_|github_pat_|sk-ant-|sk-|xox[abp]-|AKIA|AIza)[A-Za-z0-9_\-+/=]{8,}/g
 const SCHEME = /\b(Bearer|Basic)\s+\S+/gi
 const KEYED = /([A-Za-z0-9_.-]*(?:token|key|secret|passw(?:or)?d|pwd|auth|credential|bearer|session)[A-Za-z0-9_.-]*["']?)(\s*=\s*|:\s+)("[^"\n]*"|'[^'\n]*'|[^\s,;"')\]}]+)/gi
+// (e) a flag or header: a token starting `--`, `-` or `x-` whose name holds a sensitive word, whitespace, then a non-flag value (`--password hunter2`, `x-api-key abc`). The lookbehind keeps it at a token start, so `box-key` is not one.
+const FLAG = /(?<![\w.-])((?:--|-|x-)[A-Za-z0-9_.-]*(?:token|key|secret|passw(?:or)?d|pwd|auth|credential|bearer|session)[A-Za-z0-9_.-]*)(\s+)(?!-)("[^"\n]*"|'[^'\n]*'|[^\s,;"')\]}]+)/gi
+// (f) `password:hunter2`: a name ENDING in a sensitive word, then `:` with no space. `SessionStart:startup` ends in "Start", so it is untouched; a hook-event suffix as the value (`session:startup`) is not a secret.
+const COLON = /([A-Za-z0-9_.-]*(?:token|key|secret|passw(?:or)?d|pwd|auth|credential|bearer|session))(:)(?!(?:startup|resume|clear|compact|start|end|stop)\b)("[^"\n]*"|'[^'\n]*'|[^\s,;"')\]}]+)/gi
 const RUN = /[A-Za-z0-9_\-+/=]{16,}/g
 // A path or a URL is not a secret (a later rule names paths); a hex run is a hash or an id, named <HEX>; a tool-use id is <ID>.
 const spared = (token: string): boolean => token.startsWith('/') || token.startsWith('~/') || token.includes('://')
@@ -90,6 +93,8 @@ export const maskSecrets = (text: string): string =>
     .replace(PREFIXED, SECRET)
     .replace(SCHEME, `$1 ${SECRET}`)
     .replace(KEYED, `$1$2${SECRET}`)
+    .replace(FLAG, `$1$2${SECRET}`)
+    .replace(COLON, `$1$2${SECRET}`)
     .replace(/\S+/g, (token) => (spared(token) ? token : token.replace(RUN, (run) => (mixed(run) ? SECRET : run))))
 
 export const signatureOf = (text: string): string => NORMALISE.reduce((s, [re, to]) => s.replace(re, to), reduced(maskSecrets(text))).slice(0, SIGNATURE_CAP)

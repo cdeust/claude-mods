@@ -213,3 +213,24 @@ test('a secret in a hook stderr, a blockingError or a tool error never reaches a
   expect(text).not.toMatch(/ghp_|sk-ant|16C7e4/)
   expect(text.match(/<SECRET>/g)).toHaveLength(3)
 })
+
+// The reviewer's round-2 leaks (PR #19), each as the exact input measured, and each must stop leaking.
+test('round-2 leaks: a flag value, a colon value, a header value and a short flag value are masked', () => {
+  expect(maskSecrets('--password hunter2 rejected')).toBe('--password <SECRET> rejected')
+  expect(maskSecrets('password:hunter2')).toBe('password:<SECRET>')
+  expect(maskSecrets('x-api-key abcdefghijklmnopqrstuvwx')).toBe('x-api-key <SECRET>')
+  expect(maskSecrets('--token zyxw9876 bad')).toBe('--token <SECRET> bad')
+  expect(signatureOf('--password hunter2 rejected')).toBe('--password <SECRET> rejected')
+})
+
+// The same rules must not swallow what stays readable: an event name, a hook-event suffix, a flag without a secret name.
+test('round-2 readability: event names, hook suffixes, plain flags and error text are unchanged', () => {
+  expect(signatureOf('Error: connection refused')).toBe('Error: connection refused')
+  expect(signatureOf('SessionStart:startup')).toBe('SessionStart:startup')
+  expect(maskSecrets('session:startup')).toBe('session:startup') // a sensitive word followed by a hook-event suffix is not a secret
+  expect(signatureOf('PreToolUse:Bash hook error')).toBe('PreToolUse:Bash hook error')
+  expect(signatureOf('--verbose true')).toBe('--verbose true')
+  expect(signatureOf('Error: Authentication failed for the user')).toBe('Error: Authentication failed for the user')
+  expect(signatureOf('Owned cleanup remains')).toBe('Owned cleanup remains')
+  expect(signatureOf('timed out')).toBe('timed out')
+})

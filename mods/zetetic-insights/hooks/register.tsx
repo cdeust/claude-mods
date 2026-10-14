@@ -284,8 +284,15 @@ async function measureFrictions($: EngineInterface, mine: number, sid: string): 
         // the measurement began, so a resumed session is measured afresh when it ends again.
         const endedKey = keyOf(ENDED, t.session)
         const began = JSON.stringify(await $.store.get(endedKey)) ?? ''
+        // The pre-check and the set are two awaits apart: a resume that runs entirely between them deletes ended: and
+        // frictions:, and the set would then land stale. So after the set the ended: is read again, and if it is absent
+        // or changed the frictions: just written is deleted. This bounds the stale window to the moments between the
+        // set and that delete; the next resume deletion or the next measurement corrects it.
+        const stillEnded = async (): Promise<boolean> => began !== '' && JSON.stringify(await $.store.get(endedKey)) === began
         const write = async (value: unknown): Promise<void> => {
-          if (began !== '' && JSON.stringify(await $.store.get(endedKey)) === began) await $.store.set(keyOf(FRICTIONS, t.session), value)
+          if (!(await stillEnded())) return
+          await $.store.set(keyOf(FRICTIONS, t.session), value)
+          if (!(await stillEnded())) await $.store.delete(keyOf(FRICTIONS, t.session))
         }
         if (!(await $.fs.exists(t.transcript))) await write({ unavailable: 'missing' } satisfies Unavailable) // gone for good: a fact, the same for every writer
         else {

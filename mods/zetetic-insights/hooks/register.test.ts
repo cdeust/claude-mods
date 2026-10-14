@@ -10,7 +10,7 @@ const CAL = '/home/t/.claude/zetetic-insights/calibration.json'
 
 // `store` is the one store every Claude process shares; `sid` is this process's session id. A second
 // process is simulated by writing its keys into `store` directly: the kit hosts one plugin instance.
-type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; sizes?: Record<string, number>; onRead?: (path: string) => void; readErrors?: Record<string, string>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void }
+type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; sizes?: Record<string, number>; onRead?: (path: string) => void; readErrors?: Record<string, string>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void; afterGet?: (key: string) => void }
 
 // A main turn of 40 test steps at medium, 12 of them with a failed call: enough to raise.
 const PHASES = {
@@ -62,7 +62,13 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
     w.files[path] = text
     return { value: undefined as never }
   })
-  on('store.get', ($, e) => (w.storeDenied !== undefined ? { deny: w.storeDenied } : { value: w.store[String((e as { key?: string }).key)] as never }))
+  on('store.get', ($, e) => {
+    if (w.storeDenied !== undefined) return { deny: w.storeDenied }
+    const key = String((e as { key?: string }).key)
+    const value = w.store[key]
+    w.afterGet?.(key) // after the read: a write that runs here reads the value before it changes
+    return { value: value as never }
+  })
   on('store.set', ($, e) => {
     const { key, value } = e as unknown as { key: string; value: unknown }
     if (storeBytes({ ...w.store, [key]: value }) > STORE_LIMIT) return { deny: 'store over 4 MiB' }
@@ -1005,6 +1011,27 @@ test('frictions: a session that resumes while its transcript is read is not writ
   await clock.advance(60_000)
   expect(reads['/t/b.jsonl']).toBe(2)
   expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
+})
+
+test('frictions: a resume that lands between the check and the set of frictions: is undone by the post-check, never left stale', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts() }
+  let armed = false
+  w.onRead = (path) => {
+    if (path === '/t/b.jsonl') armed = true // the transcript of old-b has been read: its write comes next
+  }
+  w.afterGet = (key) => {
+    if (armed && key === 'ended:old-b') {
+      armed = false // the pre-check read has returned the unchanged ended:; the resume runs now, before the set
+      delete w.store['ended:old-b']
+      delete w.store['frictions:old-b']
+    }
+  }
+  const clock = stubs(on, w)
+  cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(w.store['frictions:old-b']).toBeUndefined() // the set landed after the resume, and the post-check deleted it
+  expect(w.store['frictions:old-a']).toBeDefined()
 })
 
 test('frictions: the deferred timer reads each finished transcript once, writes frictions:<sid>, and state.frictions holds what recurs over 2 sessions', async ($, on) => {
