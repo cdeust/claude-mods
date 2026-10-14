@@ -40,10 +40,10 @@ import {
   SESSION_PREFIXES,
   STALE_MS,
   type Sized,
+  TRANSCRIPT,
   TURNS,
   aggregateOf,
   claimedByOther,
-  endedValue,
   evictions,
   frictionTargets,
   handoverPlan,
@@ -279,14 +279,21 @@ async function measureFrictions($: EngineInterface, mine: number, sid: string): 
     const large: string[] = []
     for (const t of frictionTargets(view, windowSessions(windowOf(recordsOf(view)).records), sid)) {
       try {
-        const key = keyOf(FRICTIONS, t.session)
-        if (!(await $.fs.exists(t.transcript))) await $.store.set(key, { unavailable: 'missing' } satisfies Unavailable) // gone for good: a fact, the same for every writer
+        // The session may resume while its transcript is read (its process deletes ended: and the
+        // frictions: it measured): nothing is written unless ended:<s> is exactly what it was when
+        // the measurement began, so a resumed session is measured afresh when it ends again.
+        const endedKey = keyOf(ENDED, t.session)
+        const began = JSON.stringify(await $.store.get(endedKey)) ?? ''
+        const write = async (value: unknown): Promise<void> => {
+          if (began !== '' && JSON.stringify(await $.store.get(endedKey)) === began) await $.store.set(keyOf(FRICTIONS, t.session), value)
+        }
+        if (!(await $.fs.exists(t.transcript))) await write({ unavailable: 'missing' } satisfies Unavailable) // gone for good: a fact, the same for every writer
         else {
           const { size } = await $.fs.stat(t.transcript)
           if (size > FRICTION_MAX_BYTES) {
-            await $.store.set(key, { unavailable: 'too-large' } satisfies Unavailable)
+            await write({ unavailable: 'too-large' } satisfies Unavailable)
             large.push(`${t.session.slice(0, 8)} ${size} bytes`)
-          } else await $.store.set(key, frictionsOf(await $.fs.read(t.transcript)))
+          } else await write(frictionsOf(await $.fs.read(t.transcript)))
         }
       } catch (error) {
         failed.push(`${t.session.slice(0, 8)}: ${cut(error)}`)
@@ -360,7 +367,7 @@ async function loadLedger($: EngineInterface): Promise<string | null> {
     const migrated = await migrate($, await $.store.keys())
     const view = await readLayout($, await $.store.keys())
     if (view.ended.has(sid)) await $.store.delete(keyOf(ENDED, sid))
-    if (view.frictions.has(sid)) await $.store.delete(keyOf(FRICTIONS, sid)) // its transcript grows again: measured afresh when it ends
+    for (const prefix of [TRANSCRIPT, FRICTIONS]) if (view.transcripts.has(sid) || view.frictions.has(sid)) await $.store.delete(keyOf(prefix, sid)) // its transcript grows again: named and measured afresh when it ends
     own = [...(view.turns.get(sid) ?? [])]
     others = [...view.turns].filter(([s]) => s !== sid).flatMap(([, records]) => records)
     layout = view
@@ -570,30 +577,30 @@ async function saved($: EngineInterface, sid: string, next: TurnRecord[]): Promi
   }
 }
 
-// classic.SessionEnd and session.end, also fired with the old id by /clear: the session is finished,
-// other processes may hand it over, and its transcript (from classic.SessionEnd only) is the source of
-// its frictions. Both hooks run in this process and each makes ONE set of ended:<sid>; neither erases
-// what the other wrote. The engine runs the SessionEnd settings hooks before session.end, so
-// classic.SessionEnd sets { at, transcript } and session.end then finds it and keeps the transcript;
-// were they ever reversed, classic.SessionEnd would set the same full value over { at }. Classic hooks
-// do not run under organisation-managed settings: then no transcript is named, ended: stays { at },
-// and the frictions of that session are simply not measured. Well inside the 1.5 s of session end.
-// Only a session with records is marked, so no ended: key outlives a session without a turns: key.
-async function markEnded($: EngineInterface, sid: string, transcript?: string): Promise<void> {
+// session.end, also fired with the old id by /clear: the session is finished and other processes may
+// hand it over. One local set of ended:<sid> = { at }, well inside the hook's 1.5 s. Only a session
+// with records is marked, so no ended: key outlives a session without a turns: key.
+// classic.SessionEnd writes ONLY transcript:<sid> = { path } (the source of the session's frictions),
+// by the same guard. The two hooks share no key, so nothing depends on which runs first, or on one
+// not running: the measurement reads both keys. Classic hooks do not run under organisation-managed
+// settings: then no transcript: key exists and the session's frictions are simply not measured.
+const hasRecords = async ($: EngineInterface, sid: string): Promise<boolean> =>
+  ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined || (await $.store.get(keyOf(LEGACY, sid))) !== undefined
+
+async function markEnded($: EngineInterface, sid: string): Promise<void> {
   try {
-    const has = ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined || (await $.store.get(keyOf(LEGACY, sid))) !== undefined
-    if (!has) return
-    const named = transcript !== undefined && transcript !== '' ? transcript : transcriptOf(await $.store.get(keyOf(ENDED, sid)))
-    await $.store.set(keyOf(ENDED, sid), endedValue(await $.clock.now(), named))
+    if (await hasRecords($, sid)) await $.store.set(keyOf(ENDED, sid), { at: await $.clock.now() })
   } catch (error) {
     await update($, insights, (s) => ({ ...s, ledgerError: `not marked ended (finished after ${STALE_MS / 3_600_000} h idle instead): ${cut(error)}` }))
   }
 }
 
-// The transcript an ended: value names; an older value, or none, names none.
-const transcriptOf = (v: unknown): string | undefined => {
-  const t = typeof v === 'object' && v !== null ? (v as { transcript?: unknown }).transcript : undefined
-  return typeof t === 'string' ? t : undefined
+async function markTranscript($: EngineInterface, sid: string, path: string): Promise<void> {
+  try {
+    if (path !== '' && (await hasRecords($, sid))) await $.store.set(keyOf(TRANSCRIPT, sid), { path })
+  } catch (error) {
+    await update($, insights, (s) => ({ ...s, ledgerError: `transcript not named (its frictions are not measured): ${cut(error)}` }))
+  }
 }
 
 // A finished agent goes to main's current turn. When that turn already completed (an agent that
@@ -661,7 +668,7 @@ export const register: Register = (on, options) => {
   ownSid = null // a load or a hot reload: the module holds no ledger until it reads the store again
 
   on('classic.SessionEnd', async ($, e, next) => {
-    await markEnded($, e.session_id, e.transcript_path)
+    await markTranscript($, e.session_id, e.transcript_path)
 
     return next(e)
   }).catch(($, e, next) => next(e))

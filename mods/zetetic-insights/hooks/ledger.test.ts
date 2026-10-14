@@ -10,7 +10,6 @@ import {
   LEGACY_TURNS,
   STALE_MS,
   type Sized,
-  endedValue,
   evictions,
   frictionTargets,
   isCovered,
@@ -168,15 +167,21 @@ test('F5 two migrations around one live owner write: the owner record survives',
 
 test('frictions: is a session key family: deleted with its session, an orphan without a records key, never the own one', () => {
   expect(SESSION_PREFIXES).toContain(FRICTIONS)
+  expect(SESSION_PREFIXES).toContain('transcript:')
   expect(SESSION_PREFIXES[0]).toBe('turns:') // records first
-  const keys = ['turns:a', 'frictions:a', 'frictions:gone', 'frictions:own', 'legacy:l', 'frictions:l']
-  expect(orphans(keys, 'own')).toEqual(['frictions:gone'])
+  const keys = ['turns:a', 'frictions:a', 'transcript:a', 'transcript:gone', 'frictions:gone', 'frictions:own', 'legacy:l', 'frictions:l']
+  expect(orphans(keys, 'own')).toEqual(['transcript:gone', 'frictions:gone'])
 })
 
 test('the layout reads the transcript an ended: names and the frictions: rows; an older ended: names none and is no crash', () => {
   const row = { kind: 'hook-block', signature: 's', count: 1 }
   const l = view({
-    'ended:a': { at: 1, transcript: '/t/a.jsonl' },
+    'ended:a': { at: 1, transcript: '/t/legacy.jsonl' },
+    'transcript:a': { path: '/t/a.jsonl' },
+    'transcript:t2': { path: '/t/t2.jsonl' },
+    'transcript:badpath': { path: 5 },
+    'transcript:str': 'x',
+    'ended:old2': { at: 1, transcript: '/t/old2.jsonl' },
     'ended:old': { at: 1 },
     'ended:empty': { at: 1, transcript: '' },
     'ended:junk': 'x',
@@ -187,8 +192,9 @@ test('the layout reads the transcript an ended: names and the frictions: rows; a
     'frictions:gone': { unavailable: 'missing' },
     'frictions:big': { unavailable: 'too-large' },
   })
-  expect([...l.ended].sort()).toEqual(['a', 'empty', 'junk', 'num', 'old'])
-  expect([...l.transcripts]).toEqual([['a', '/t/a.jsonl']])
+  expect([...l.ended].sort()).toEqual(['a', 'empty', 'junk', 'num', 'old', 'old2'])
+  // a transcript: key wins over a legacy ended: value; a legacy one stands alone; a damaged key names none
+  expect(Object.fromEntries(l.transcripts)).toEqual({ a: '/t/a.jsonl', t2: '/t/t2.jsonl', old2: '/t/old2.jsonl' })
   expect([...l.frictions]).toEqual([['a', [row]], ['none', []], ['gone', []], ['big', []]])
 })
 
@@ -196,9 +202,11 @@ test('frictionTargets: ended with a transcript, in the window, not measured, not
   const entries: Record<string, unknown> = { 'turns:own': [turn('own', 90)], 'ended:own': { at: 1, transcript: '/t/own' } }
   for (const [s, at] of [['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50]] as const) {
     entries[`turns:${s}`] = [turn(s, at)]
-    entries[`ended:${s}`] = { at, transcript: `/t/${s}` }
+    entries[`ended:${s}`] = { at }
+    entries[`transcript:${s}`] = { path: `/t/${s}` }
   }
   entries['frictions:e'] = [] // measured: [] is a result, not a gap
+  entries['transcript:live'] = { path: '/t/live' } // classic.SessionEnd ran, session.end not yet: not ended
   entries['turns:old'] = [turn('old', 5)]
   entries['ended:old'] = { at: 5 } // no transcript: not measurable
   entries['turns:live'] = [turn('live', 99)] // not ended
@@ -209,10 +217,4 @@ test('frictionTargets: ended with a transcript, in the window, not measured, not
   expect(frictionTargets(l, all, 'own')[0]).toEqual({ session: 'd', transcript: '/t/d' })
   expect(frictionTargets(l, new Set(['a', 'b']), 'own').map((t) => t.session)).toEqual(['b', 'a'])
   expect(frictionTargets(view({}), all, 'own')).toEqual([])
-})
-
-test('ended: names a transcript only when there is one', () => {
-  expect(endedValue(5, '/t/x')).toEqual({ at: 5, transcript: '/t/x' })
-  expect(endedValue(5, undefined)).toEqual({ at: 5 })
-  expect(endedValue(5, '')).toEqual({ at: 5 })
 })

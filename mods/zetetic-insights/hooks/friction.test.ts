@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { FRICTION_MAX_BYTES, FRICTION_TOP, frictionScan, frictionsOf, recurringFrictions, isUnavailable, recurringOver, rowsOf, signatureOf, toolErrorKind } from './friction'
+import { FRICTION_MAX_BYTES, maskSecrets, FRICTION_TOP, frictionScan, frictionsOf, recurringFrictions, isUnavailable, recurringOver, rowsOf, signatureOf, toolErrorKind } from './friction'
 
 // Line shapes are the real ones (read from a Claude Code transcript 2026-10-14), every value made up.
 const use = (id: string, name: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] } })
@@ -170,4 +170,46 @@ test('the unavailable marker is a measured session with no rows; the cap is 20 M
   expect(isUnavailable({ unavailable: 'other' })).toBe(false)
   expect(isUnavailable([])).toBe(false)
   expect(rowsOf({ unavailable: 'missing' })).toEqual([])
+})
+
+test('secrets without quotes are masked first, before any other rule (review of PR #19)', () => {
+  // The three outputs the reviewer ran, values made up in the same shapes.
+  expect(signatureOf('Error: connection refused, token ghp_16C7e42F292c6912E7710c838347Ae178B4aZ rejected')).toBe('Error: connection refused, token <SECRET> rejected')
+  expect(signatureOf('MCP error: 4 for api_key=sk-ant-api03-AbCdEfGhIjKl_mnOPq timed out')).toBe('MCP error: N for api_key=<SECRET> timed out')
+  expect(signatureOf('Permission check: export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')).toBe('Permission check: export AWS_SECRET_ACCESS_KEY=<SECRET>')
+})
+
+test('each masking rule on its own: key=value, key: value, Bearer and Basic, known prefixes, mixed 16+ runs', () => {
+  expect(maskSecrets('password=hunter2 and pwd: s3cret')).toBe('password=<SECRET> and pwd: <SECRET>')
+  expect(maskSecrets('{"api_key": "abc def"}')).toBe('{"api_key": <SECRET>}')
+  expect(maskSecrets('Authorization: Bearer abc.def-ghi')).toBe('Authorization: <SECRET> <SECRET>') // both rules fire; nothing leaks
+  expect(maskSecrets('sent Bearer abc.def-ghi')).toBe('sent Bearer <SECRET>')
+  expect(maskSecrets('basic dXNlcjpwYXNz')).toBe('basic <SECRET>')
+  for (const t of ['gho_abcdefghijkl', 'github_pat_11ABCDEFG0abcdefgh', 'sk-abcdefghijkl', 'xoxb-123456789-abcdef', 'xoxp-1234567890', 'AKIAIOSFODNN7EXAMPLE', 'AIzaSyA-abcdefghijklmnop']) expect(maskSecrets(`got ${t} here`)).toBe('got <SECRET> here')
+  expect(maskSecrets('opaque Zm9vYmFyMTIzNDU2Nzg5MA end')).toBe('opaque <SECRET> end')
+  expect(maskSecrets('a long id aaaaaaaabbbbbbbbcccccccc')).toBe('a long id aaaaaaaabbbbbbbbcccccccc') // letters only
+  expect(maskSecrets('12345678901234567890')).toBe('12345678901234567890') // digits only
+})
+
+test('ordinary text stays readable: generic words after Error:, paths, hashes, tool ids, hook names', () => {
+  expect(signatureOf('Error: connection refused')).toBe('Error: connection refused')
+  expect(signatureOf('Error: Authentication failed for the user')).toBe('Error: Authentication failed for the user')
+  expect(signatureOf('Failed to run: Plugin directory does not exist: /Users/a/.claude/plugins/cache/m/p/2.1.0')).toBe('Failed to run: Plugin directory does not exist: <PATH>')
+  expect(signatureOf('commit 0123456789abcdef done')).toBe('commit <HEX> done')
+  expect(signatureOf('tool toolu_01HUNjX8abc failed')).toBe('tool <ID> failed')
+  expect(maskSecrets('see https://example.com/a1/b2/c3d4e5f6g7h8i9 now')).toBe('see https://example.com/a1/b2/c3d4e5f6g7h8i9 now') // a URL is not a secret; the path rule names it later
+  const rows = frictionsOf(attach({ type: 'hook_cancelled', hookName: 'SessionStart:startup', command: 'python3 /Users/a/h/claude_dir_doctor.py', timedOut: true }))
+  expect(rows[0]?.signature).toBe('SessionStart:startup: claude_dir_doctor.py timed out')
+})
+
+test('a secret in a hook stderr, a blockingError or a tool error never reaches a row', () => {
+  const lines = [
+    attach({ type: 'hook_non_blocking_error', stderr: 'Failed: GITHUB_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4aZ missing' }),
+    blocking('gate refused token ghp_16C7e42F292c6912E7710c838347Ae178B4aZ'),
+    use('toolu_1', 'mcp__x__y'),
+    result('toolu_1', 'rejected, api_key=sk-ant-api03-AbCdEfGhIjKl_mnOPq'),
+  ].join('\n')
+  const text = JSON.stringify(frictionsOf(lines))
+  expect(text).not.toMatch(/ghp_|sk-ant|16C7e4/)
+  expect(text.match(/<SECRET>/g)).toHaveLength(3)
 })

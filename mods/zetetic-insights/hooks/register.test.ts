@@ -10,7 +10,7 @@ const CAL = '/home/t/.claude/zetetic-insights/calibration.json'
 
 // `store` is the one store every Claude process shares; `sid` is this process's session id. A second
 // process is simulated by writing its keys into `store` directly: the kit hosts one plugin instance.
-type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; sizes?: Record<string, number>; readErrors?: Record<string, string>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void }
+type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; sizes?: Record<string, number>; onRead?: (path: string) => void; readErrors?: Record<string, string>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void }
 
 // A main turn of 40 test steps at medium, 12 of them with a failed call: enough to raise.
 const PHASES = {
@@ -51,6 +51,7 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
   })
   on('fs.read', ($, e) => {
     const path = String((e as { path?: string }).path)
+    w.onRead?.(path)
     if (w.readErrors?.[path] !== undefined) return { deny: w.readErrors[path]! }
     const text = w.files[path]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
@@ -914,34 +915,42 @@ const counted = (w: World): Record<string, number> => {
 }
 const withTranscripts = (extra: Record<string, unknown> = {}) => ({
   turns: LEDGER(),
-  'ended:old-a': { at: 11, transcript: '/t/a.jsonl' },
-  'ended:old-b': { at: 21, transcript: '/t/b.jsonl' },
+  'ended:old-a': { at: 11 },
+  'transcript:old-a': { path: '/t/a.jsonl' },
+  'ended:old-b': { at: 21 },
+  'transcript:old-b': { path: '/t/b.jsonl' },
   ...extra,
 })
 
-test('frictions: classic.SessionEnd names the transcript in ended:, one value, in either order with session.end', async ($, on) => {
+test('frictions: classic.SessionEnd writes only transcript:<sid>, session.end only ended:<sid>; every order and interleaving keeps the path', async ($, on) => {
   const w: World = { files: {}, written: {}, store: {} }
   stubs(on, w)
   on('session.end', ($, e) => ({ sessionId: (e as { sessionId: string }).sessionId }))
   on('classic.SessionEnd', () => ({}) as never)
   await $.session.start(START)
-  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
-  expect(w.store['ended:sess-1']).toBeUndefined() // no record: never marked
+  const classic = () => $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
+  const end = () => $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
+  await classic()
+  expect(w.store['transcript:sess-1']).toBeUndefined() // no record: nothing is named
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  // The engine's order: the SessionEnd settings hooks, then session.end, which keeps the transcript.
-  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
-  expect(w.store['ended:sess-1']).toEqual({ at: 1_000, transcript: '/t/s1.jsonl' })
-  await $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
-  expect(w.store['ended:sess-1']).toEqual({ at: 1_000, transcript: '/t/s1.jsonl' })
-  // Reversed: session.end first writes { at }, classic.SessionEnd then sets the full value.
+  const settle = () => ({ ended: w.store['ended:sess-1'], transcript: w.store['transcript:sess-1'] })
+  const WHOLE = { ended: { at: 1_000 }, transcript: { path: '/t/s1.jsonl' } }
+  await classic()
+  expect(settle()).toEqual({ ended: undefined, transcript: { path: '/t/s1.jsonl' } })
+  await end()
+  expect(settle()).toEqual(WHOLE) // classic first
   delete w.store['ended:sess-1']
-  await $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
-  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
-  await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '/t/s1.jsonl' })
-  expect(w.store['ended:sess-1']).toEqual({ at: 1_000, transcript: '/t/s1.jsonl' })
+  delete w.store['transcript:sess-1']
+  await end()
+  await classic()
+  expect(settle()).toEqual(WHOLE) // session.end first
+  await end()
+  await classic()
+  await end() // interleaved and repeated
+  expect(settle()).toEqual(WHOLE)
 })
 
-test('frictions: without classic hooks (managed settings) ended: stays { at }; an empty transcript path names none', async ($, on) => {
+test('frictions: without classic hooks (managed settings) only ended: exists and the session is not measured; an empty path names none', async ($, on) => {
   const w: World = { files: {}, written: {}, store: {} }
   stubs(on, w)
   on('session.end', ($, e) => ({ sessionId: (e as { sessionId: string }).sessionId }))
@@ -951,7 +960,51 @@ test('frictions: without classic hooks (managed settings) ended: stays { at }; a
   await $.session.end({ reason: 'other', sessionId: 'sess-1' } as never)
   expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
   await $.classic.SessionEnd({ reason: 'other', session_id: 'sess-1', transcript_path: '' })
-  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
+  expect(w.store['transcript:sess-1']).toBeUndefined()
+})
+
+test('frictions: an ended: of the first 0.7.0 builds that carries the transcript is still honoured; a transcript: key wins over it', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE, '/t/new.jsonl': BLOCK_LINE }, written: {}, store: { turns: LEDGER(), 'ended:old-a': { at: 11, transcript: '/t/a.jsonl' }, 'ended:old-b': { at: 21, transcript: '/t/gone.jsonl' }, 'transcript:old-b': { path: '/t/b.jsonl' } } }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(Object.keys(w.store).filter((k) => k.startsWith('frictions:')).sort()).toEqual(['frictions:old-a', 'frictions:old-b'])
+  expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
+  expect(reads['/t/a.jsonl']).toBe(1)
+})
+
+test('frictions: a transcript: key without ended: (session.end not yet run) is not measured', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT }, written: {}, store: { turns: LEDGER(), 'transcript:old-a': { path: '/t/a.jsonl' } } }
+  const reads = counted(w)
+  const clock = stubs(on, w)
+  cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(Object.keys(reads)).not.toContain('/t/a.jsonl')
+})
+
+test('frictions: a session that resumes while its transcript is read is not written, and is measured afresh when it ends again', async ($, on) => {
+  const w: World = { files: { '/t/a.jsonl': TRANSCRIPT, '/t/b.jsonl': BLOCK_LINE }, written: {}, store: withTranscripts() }
+  const reads = counted(w)
+  w.onRead = (path) => {
+    if (path === '/t/b.jsonl') delete w.store['ended:old-b'] // old-b's process resumed it
+  }
+  const clock = stubs(on, w)
+  cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(reads['/t/b.jsonl']).toBe(1)
+  expect(w.store['frictions:old-b']).toBeUndefined()
+  expect(w.store['frictions:old-a']).toBeDefined() // the others are unaffected
+  // It ends again (its process writes ended: once more): the next start measures it afresh.
+  w.onRead = undefined
+  w.store['ended:old-b'] = { at: 25 }
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(reads['/t/b.jsonl']).toBe(2)
+  expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
 })
 
 test('frictions: the deferred timer reads each finished transcript once, writes frictions:<sid>, and state.frictions holds what recurs over 2 sessions', async ($, on) => {
@@ -1072,14 +1125,15 @@ test('frictions: frictions:<s> goes with its session on eviction and as an orpha
   const w: World = {
     files: {},
     written: {},
-    store: { 'turns:P': many('P', 20), 'ended:P': { at: 30, transcript: '/t/p' }, 'pushed:P': { at: 40, lastAt: 19 }, 'frictions:P': [], 'turns:L': many('L', 180), 'frictions:gone': [], 'ended:sess-1': { at: 1, transcript: '/t/own' }, 'frictions:sess-1': [] },
+    store: { 'turns:P': many('P', 20), 'ended:P': { at: 30 }, 'transcript:P': { path: '/t/p' }, 'pushed:P': { at: 40, lastAt: 19 }, 'frictions:P': [], 'turns:L': many('L', 180), 'frictions:gone': [], 'ended:sess-1': { at: 1 }, 'transcript:sess-1': { path: '/t/own' }, 'transcript:gone': { path: '/t/g' }, 'frictions:sess-1': [] },
   }
   stubs(on, w, PHASES, DAY + 10_000)
   await $.session.start(START)
   expect(w.store['ended:sess-1']).toBeUndefined() // resumed: live again
+  expect(w.store['transcript:sess-1']).toBeUndefined()
   expect(w.store['frictions:sess-1']).toBeUndefined() // its transcript grows: measured afresh at its end
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  expect(Object.keys(w.store).filter((k) => k.includes(':P') || k === 'frictions:gone')).toEqual([])
+  expect(Object.keys(w.store).filter((k) => k.includes(':P') || k === 'frictions:gone' || k === 'transcript:gone')).toEqual([])
   expect(w.store['turns:L']).toBeDefined()
 })
 
