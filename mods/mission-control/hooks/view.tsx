@@ -3,8 +3,8 @@
 
 import type { Elements } from 'claude-code'
 
-import { LABEL, paintCells } from './cells'
-import { GRID, INK, INK_2, MUTED, phaseColor } from './palette'
+import { LABEL, familiesPresent, modelRows, paintCells, segmentWidths, shareText } from './cells'
+import { GRID, INK, INK_2, MUTED, familyColor, phaseColor } from './palette'
 import { MAX_IMAGE_COLUMNS } from './bitmap'
 import { curvePicture, lanesPicture } from './pixels'
 import { type Scene, WINDOW_MS, rung } from './scene'
@@ -33,6 +33,40 @@ const Gauges = (ui: Ui, scene: Scene) => {
             <Text color={hex(phaseColor(g.phase))}>{'████'.repeat(level)}</Text>
             <Text color={hex(GRID)}>{'░░░░'.repeat(4 - level)}</Text>
             <Text color={hex(g.calibrated === null ? MUTED : INK_2)}>{`  ${g.calibrated ?? 'medium (default)'} / ${g.ran ?? '-'}`}</Text>
+          </Text>
+        )
+      })}
+    </Box>
+  )
+}
+
+// STEPS BY MODEL as text rows: coloured blocks, the same widths as the cells' section.
+const Models = (ui: Ui, scene: Scene, columns: number) => {
+  const { Box, Text } = ui
+  const track = Math.max(1, columns - LABEL - 24)
+  return (
+    <Box flexDirection="column">
+      <Text color={hex(INK)}>STEPS BY MODEL (this window, then the last sessions)</Text>
+      <Text>
+        <Text>{' '.repeat(LABEL)}</Text>
+        {familiesPresent(scene).map((f) => (
+          <Text>
+            <Text color={hex(familyColor(f))}>█</Text>
+            <Text color={hex(INK_2)}>{` ${f}  `}</Text>
+          </Text>
+        ))}
+      </Text>
+      {modelRows(scene).map((row) => {
+        const total = row.steps.reduce((n, s) => n + s.steps, 0)
+        const widths = segmentWidths(row.steps, track)
+        return (
+          <Text>
+            <Text color={hex(INK_2)}>{row.label.padEnd(LABEL)}</Text>
+            {total === 0 && <Text color={hex(MUTED)}>no step yet</Text>}
+            {row.steps.map((s, k) => (
+              <Text color={hex(familyColor(s.family))}>{'█'.repeat(widths[k]!)}</Text>
+            ))}
+            {total > 0 && <Text color={hex(INK_2)}>{`  ${shareText(row.steps)}`}</Text>}
           </Text>
         )
       })}
@@ -78,6 +112,8 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
           <Text color={hex(INK)}>{` ${pct(c.rates[0]!)}>${pct(c.rates[c.rates.length - 1]!)}`}</Text>
         </Box>
       ))}
+      <Text> </Text>
+      {Models(ui, scene, columns)}
     </Box>
   )
 }

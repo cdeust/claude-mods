@@ -13,7 +13,7 @@
 // (the 6-8 band, legal only with a secondary encoding: every colour is drawn beside its phase
 // name). One slot per phase in a fixed order, never cycled.
 
-import type { Phase } from './scene'
+import type { ModelFamily, Phase } from './scene'
 
 export const SURFACE = 0x1c1c1c // 234, the reference dark surface #1a1a19 snapped
 export const INK = 0xeeeeee // 255, text primary; 14.7:1 on the surface
@@ -33,3 +33,18 @@ const SLOTS = [0x5f87d7, 0xd75f00, 0x00af5f, 0xaf8700, 0xd75f87, 0x008700, 0x878
 export const phaseColor = (phase: Phase): number => SLOTS[PHASE_ORDER.indexOf(phase)] ?? INK_2
 
 export const rgb = (color: number): [number, number, number] => [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff]
+
+// A second categorical dimension, the model family, drawn only in the STEPS BY MODEL section and
+// always beside its printed family name (the secondary encoding the 6-8 band needs). Exact xterm
+// entries again.
+// source: same palette's slots (blue, purple, green, orange) and its neutrals, one per family.
+const FAMILY_SLOTS: Record<ModelFamily, number> = {
+  haiku: 0x00af5f,
+  sonnet: 0x5f87d7,
+  opus: 0x8787d7,
+  fable: 0xd75f00,
+  other: 0xbcbcbc,
+  unknown: 0x444444,
+}
+
+export const familyColor = (family: ModelFamily): number => FAMILY_SLOTS[family]

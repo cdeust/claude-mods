@@ -5,7 +5,7 @@
 export type Renderer = 'cells' | 'pixels'
 
 export type PastRun = { phase: string; effort: string | null; steps: number; errors: number; since: number; until: number }
-export type PastTurn = { turnId: string; runs: PastRun[] }
+export type PastTurn = { turnId: string; model: string; runs: PastRun[] }
 
 declare module 'claude-code' {
   interface PluginState {

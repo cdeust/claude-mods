@@ -17,6 +17,9 @@ export type TurnRecord = {
   taskClass: string | null
   main: RunRecord[]
   agents: AgentRecord[]
+  // The model main ran on this turn (autopilot phases, main loop); absent on records written before
+  // it was kept, counted as `unknown`.
+  mainModel?: string
   // Agents finished in the turn past MAX_AGENTS, counted, not kept (learn.ts).
   agentsDropped?: number
   advisor: { calls: number; beforeWrite: number; atCompletion: number }
@@ -56,6 +59,12 @@ export type PhaseTrend = {
   move: { at: number; from: Effort; to: Effort } | null
 }
 
+// Who did the steps: a model id reduced to its family (hooks/models.ts).
+export type ModelFamily = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'other' | 'unknown'
+export type ModelSteps = { family: ModelFamily; steps: number }
+// One session's steps by family, main's and its agents' together; families with no step left out.
+export type SessionModels = { session: string; at: number; steps: ModelSteps[] }
+
 export type InsightsState = {
   mode: 'observe' | 'enforce'
   turns: number
@@ -65,6 +74,8 @@ export type InsightsState = {
   facetsError: string | null
   phases: PhaseStat[]
   trends: PhaseTrend[]
+  // The ledger's last sessions (at most 12, oldest first), by when their last turn ended.
+  models: SessionModels[]
   agents: AgentStat[]
   advisor: { heavyTurns: number; heavyBeforeWrite: number; heavyAtCompletion: number; lightTurns: number; lightWithAdvisor: number }
   goals: { name: string; status: string }[]

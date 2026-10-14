@@ -22,6 +22,7 @@ import {
   trimmed,
   withAgent,
 } from './learn'
+import { sessionModels } from './models'
 import { placePath } from './paths'
 import { trends } from './trend'
 
@@ -34,6 +35,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   facetsError: null,
   phases: [],
   trends: [],
+  models: [],
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
   goals: [],
@@ -157,6 +159,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
     agents: agentStats(ledger),
     advisor: advisorStats(ledger),
     trends: trends(ledger, calibration.changes),
+    models: sessionModels(ledger),
     calibration,
     proposals: ps,
     updatedAt: at,
@@ -187,6 +190,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
     at: await $.clock.now(),
     taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
     main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors })),
+    mainModel: main.model,
     agents: pending.agents,
     ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),
     advisor: {

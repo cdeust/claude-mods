@@ -29,6 +29,10 @@ const points = (rates: number[]) => rates.map((rate, i) => ({ at: (i + 1) * 1000
 
 export const INSIGHTS = {
   calibration: { version: 1, phases: { test: 'high' }, evidence: {}, changes: {}, updatedAt: 1 },
+  models: [
+    { session: 'abc10001-aaaa', at: 1000, steps: [{ family: 'sonnet', steps: 30 }, { family: 'opus', steps: 70 }] },
+    { session: 'def20002-bbbb', at: 2000, steps: [{ family: 'haiku', steps: 12 }, { family: 'sonnet', steps: 30 }, { family: 'opus', steps: 58 }] },
+  ],
   trends: [
     { phase: 'analysis', points: points([0.1, 0.05, 0.08, 0.02]), move: null },
     { phase: 'test', points: points([0.4, 0.35, 0.3, 0.1, 0.05]), move: { at: 3000, from: 'medium', to: 'high' } },
