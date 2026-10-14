@@ -9,13 +9,19 @@ import type { PastTurn } from '../types'
 export type PhasesState = PluginState['zetetic-autopilot']['phases']
 export type InsightsState = PluginState['zetetic-insights']['insights']
 type LoopPhases = PhasesState['loops'][number]
+// Structural copies of the insights contract's types (a mod cannot import another mod's file).
+export type ModelFamily = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'other' | 'unknown'
+export type ModelSteps = { family: ModelFamily; steps: number }
+export type SessionModels = InsightsState['models'][number]
 export type Phase = NonNullable<LoopPhases['phase']>
 
 export const MAX_LANES = 8 // source: own choice, main and the seven agents seen last
 export const WINDOW_MS = 10 * 60_000 // source: own choice, the recent past the lanes span
 export const HISTORY_TURNS = 20 // source: own choice, main's past turns kept for the window
+export const MODEL_ROWS = 8 // source: own choice, the last sessions drawn beside the window
 export const IDLE_MS = 20_000 // source: own choice, a pause this long is cut from the time axis
 const CUT_SHARE = 0.04 // source: own choice, the room one cut takes, as a share of the active time
+export const FAMILIES: readonly ModelFamily[] = ['haiku', 'sonnet', 'opus', 'fable', 'other', 'unknown'] // cheap to dear, then the rest
 const LADDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 // An effort as a bar height, 1 (low) to 4 (xhigh or max); 0 when the engine sent none.
@@ -31,7 +37,22 @@ export type Curve = { phase: Phase; rates: number[]; moveAt: number | null; move
 // The stretches of time something ran in; a pause of IDLE_MS or more between them is cut from the
 // axis, so a turn of seconds after minutes of reading does not shrink to a sliver.
 export type Span = { t0: number; t1: number }
-export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[] }
+export type Models = { window: ModelSteps[]; sessions: SessionModels[] }
+export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models }
+
+// A model id as its family: the first of fable, opus, sonnet, haiku found in it, else other.
+export const familyOf = (model: string): ModelFamily => {
+  if (model === '') return 'unknown'
+  const m = model.toLowerCase()
+  return (['fable', 'opus', 'sonnet', 'haiku'] as const).find((f) => m.includes(f)) ?? 'other'
+}
+
+// Steps added per family, in FAMILIES order, a family with no step left out.
+const tally = (parts: readonly { model: string; steps: number }[]): ModelSteps[] => {
+  const by = new Map<ModelFamily, number>()
+  for (const p of parts) by.set(familyOf(p.model), (by.get(familyOf(p.model)) ?? 0) + p.steps)
+  return FAMILIES.filter((f) => (by.get(f) ?? 0) > 0).map((family) => ({ family, steps: by.get(family)! }))
+}
 
 // A loop's runs as segments: each run lasts until the next one starts, the last until the loop's
 // last step (or now, while it runs).
@@ -50,6 +71,7 @@ const shortType = (type: string): string => type.split(':').pop() ?? type
 // Main's turn as it completed, kept because the autopilot starts main's row afresh each turn.
 export const pastTurn = (main: LoopPhases, turnId: string, now: number): PastTurn => ({
   turnId,
+  model: main.model,
   runs: segmentsOf(main, now).map((s) => ({ phase: s.phase, effort: s.effort, steps: s.steps, errors: s.errors, since: s.t0, until: s.t1 })),
 })
 
@@ -59,14 +81,15 @@ export const remembered = (history: readonly PastTurn[], turn: PastTurn): PastTu
 
 // Main over the window (its past turns, then the current one) and the agents that ran in it, the
 // newest kept; the advisor calls of the window on main's lane.
-const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number): Lane[] => {
+const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number): { lanes: Lane[]; window: ModelSteps[] } => {
   const from = now - WINDOW_MS
   const main = phases.loops.find((l) => l.id === 'main')
-  const past: Segment[] = history
+  const pastRuns = history
     .filter((t) => t.turnId !== phases.turnId)
-    .flatMap((t) => t.runs)
-    .filter((r) => r.until >= from)
-    .map((r) => ({ phase: r.phase as Phase, effort: r.effort, t0: r.since, t1: r.until, steps: r.steps, errors: r.errors }))
+    .flatMap((t) => t.runs.map((r) => ({ r, model: t.model })))
+    .filter(({ r }) => r.until >= from)
+  const past: Segment[] = pastRuns
+    .map(({ r }) => ({ phase: r.phase as Phase, effort: r.effort, t0: r.since, t1: r.until, steps: r.steps, errors: r.errors }))
   const mainSegments = [...past, ...(main === undefined ? [] : segmentsOf(main, now))]
   const agents = phases.loops
     .filter((l) => l.id !== 'main' && l.runs.length > 0 && l.updatedAt >= from)
@@ -81,7 +104,14 @@ const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number)
     segments: segmentsOf(l, now),
     advisor: [],
   }))
-  if (mainSegments.length === 0) return agentLanes
+  // The window's steps by model: main's past runs under their turn's model, its current runs under
+  // main's, each shown agent under its own.
+  const window = tally([
+    ...pastRuns.map(({ r, model }) => ({ model, steps: r.steps })),
+    ...(main?.runs ?? []).map((r) => ({ model: main!.model, steps: r.steps })),
+    ...agents.flatMap((l) => l.runs.map((r) => ({ model: l.model, steps: r.steps }))),
+  ])
+  if (mainSegments.length === 0) return { lanes: agentLanes, window }
   const mainLane: Lane = {
     id: 'main',
     label: 'main',
@@ -90,7 +120,7 @@ const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number)
     segments: mainSegments,
     advisor: phases.advisor.uses.filter((u) => u.at >= from).map((u) => u.at),
   }
-  return [mainLane, ...agentLanes]
+  return { lanes: [mainLane, ...agentLanes], window }
 }
 
 const gaugesOf = (main: LoopPhases | undefined, insights: InsightsState | null): Gauge[] => {
@@ -115,7 +145,7 @@ const curvesOf = (insights: InsightsState | null): Curve[] =>
     }))
 
 export const sceneOf = (phases: PhasesState | null, insights: InsightsState | null, now: number, history: readonly PastTurn[] = []): Scene => {
-  const lanes = phases === null ? [] : lanesOf(phases, history, now)
+  const { lanes, window } = phases === null ? { lanes: [], window: [] } : lanesOf(phases, history, now)
   const starts = lanes.flatMap((l) => l.segments.map((s) => s.t0))
   const ends = lanes.flatMap((l) => l.segments.map((s) => s.t1))
   return {
@@ -126,6 +156,7 @@ export const sceneOf = (phases: PhasesState | null, insights: InsightsState | nu
     lanes,
     gauges: gaugesOf(phases?.loops.find((l) => l.id === 'main'), insights),
     curves: curvesOf(insights),
+    models: { window, sessions: (insights?.models ?? []).slice(-MODEL_ROWS) },
   }
 }
 

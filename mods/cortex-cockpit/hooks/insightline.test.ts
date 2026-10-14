@@ -12,6 +12,7 @@ const INSIGHTS: InsightsState = {
   facetsError: null,
   phases: [{ phase: 'test', effort: 'medium', steps: 40, errors: 12, sessions: 2, judged: 2, achieved: 1 }],
   trends: [],
+  models: [],
   agents: [{ type: 'zetetic-team-subagents:code-reviewer', runs: 4, steps: 20, errors: 1, models: ['claude-opus-5-5'] }],
   advisor: { heavyTurns: 4, heavyBeforeWrite: 3, heavyAtCompletion: 2, lightTurns: 8, lightWithAdvisor: 1 },
   goals: [{ name: 'calibrate', status: 'active' }],

@@ -43,6 +43,7 @@ test('pixels when the option asks: Images for the lanes and each curve, text aro
   expect(await ui.find({ key: 'lanes' })).toBeDefined()
   expect(await ui.find({ key: 'curve-test' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^EFFORT$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^STEPS BY MODEL/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -73,7 +74,7 @@ test('/mission opens the pane and says which renderer and why', { options: { ren
 test("main's turn is kept when it completes, an agent's is not", async ($, on) => {
   deps(on)
   on('turn.complete', () => ({ text: '' }))
-  let kept: { turnId: string }[] = []
+  let kept: { turnId: string; model: string }[] = []
   on('state.set', ($$, e, next) => {
     if ((e as { key?: string }).key === 'history') kept = (e as unknown as { value: typeof kept }).value
     return next(e)
@@ -83,4 +84,5 @@ test("main's turn is kept when it completes, an agent's is not", async ($, on) =
   expect(kept).toEqual([])
   await $.turn.complete({ turnId: 'turn-0001-abcd', reason: 'answer' } as never)
   expect(kept.map((t) => t.turnId)).toEqual(['turn-0001-abcd'])
+  expect(kept[0]!.model).toBe('claude-opus-5-5')
 })

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { paintCells } from './cells'
+import { paintCells, segmentWidths } from './cells'
 import { INSIGHTS, PHASES } from './fixture'
 import { sceneOf } from './scene'
 
@@ -51,6 +51,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
     lanes: [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 900, 1), seg(900, 910, 4), seg(950, 1000, 2)], advisor: [] }],
     gauges: [],
     curves: [],
+    models: { window: [], sessions: [] },
   }
   const marks = paintCells(crowded, 60).glyphRows()[3]!.trim()
   expect(marks).toBe('test                                    x7')
@@ -59,7 +60,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
 test('a long pause is cut from the axis: two bursts share the track, a dashed mark between them', () => {
   const seg = (t0: number, t1: number) => ({ phase: 'analysis' as const, effort: 'medium', t0, t1, steps: 1, errors: 0 })
   const lanes = [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 30_000), seg(630_000, 660_000)], advisor: [] }]
-  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [] }
+  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [] } }
   const rows = paintCells(bursts, 15 + 100).glyphRows()
   const bar = rows[2]!.slice(15)
   const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[3]!.slice(15).indexOf('┊')
@@ -68,4 +69,37 @@ test('a long pause is cut from the axis: two bursts share the track, a dashed ma
   expect(cut).toBeGreaterThan(40)
   expect(cut).toBeLessThan(60)
   expect(rows[4]).toMatch(/1m00s of work, 1 pause cut/)
+})
+
+test('segmentWidths always sums to the track, every family with steps getting a column when the track allows', () => {
+  const widths = (steps: number[], track: number) => segmentWidths(steps.map((n, i) => ({ family: (['haiku', 'sonnet', 'opus'] as const)[i % 3]!, steps: n })), track)
+  expect(widths([1000], 20)).toEqual([20])
+  expect(widths([1000], 1)).toEqual([1])
+  expect(widths([1, 1, 1], 20)).toEqual([8, 6, 6])
+  expect(widths([1, 1, 1], 1)).toEqual([1, 0, 0])
+  expect(widths([1, 1, 1], 3)).toEqual([1, 1, 1])
+  expect(widths([1, 1000], 21)).toEqual([1, 20])
+  expect(widths([1, 1, 1, 1, 1000], 5)).toEqual([1, 1, 1, 1, 1].map((w, i) => (i === 4 ? 1 : w)))
+  expect(widths([0, 0], 10)).toEqual([0, 0])
+  for (let track = 1; track <= 40; track++)
+    for (const steps of [[1, 2, 3], [7, 7, 7], [1, 1, 1000], [5, 0, 5], [999, 1, 1]])
+      expect(widths(steps, track).reduce((a, b) => a + b, 0)).toBe(track)
+})
+
+test('STEPS BY MODEL: a header, a legend, the window then one row per session', () => {
+  const rows = paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())
+  const at = rows.findIndex((r) => r.startsWith('STEPS BY MODEL'))
+  const section = rows.slice(at)
+  expect(section).toEqual([
+    'STEPS BY MODEL (this window, then the last sessions)',
+    '               █ haiku  █ sonnet  █ opus',
+    'window         █████████████████████  haiku 15% opus 85%',
+    'abc10001       █████████████████████  sonnet 30% opus 70%',
+    'def20002       █████████████████████  haiku 12% sonnet 30% o',
+  ])
+})
+
+test('a row with no step prints no step yet', () => {
+  const rows = paintCells(sceneOf(null, null, 5), 50).glyphRows().map((r) => r.trimEnd())
+  expect(rows.find((r) => r.startsWith('window'))).toBe('window         no step yet')
 })

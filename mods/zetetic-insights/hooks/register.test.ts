@@ -74,10 +74,11 @@ test('observe: a main turn is kept in the ledger and its evidence proposed, not 
   stubs(on, w)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  const ledger = w.store.turns as { session: string; taskClass: string; main: unknown[] }[]
+  const ledger = w.store.turns as { session: string; taskClass: string; mainModel: string; main: unknown[] }[]
   expect(ledger.length).toBe(1)
   expect(ledger[0]?.session).toBe('sess-1')
   expect(ledger[0]?.taskClass).toBe('bugfix')
+  expect(ledger[0]?.mainModel).toBe('claude-opus-5-5')
   expect(w.written[CAL]).toBe(undefined)
   const shown = await $.command.run({ command: 'calibrate' } as never)
   expect(shown.text).toMatch(/^Ledger: 1 turns over 1 sessions, 0 judged by \/insights\./)
@@ -105,6 +106,20 @@ test('a calibration file that is not the expected shape is named, not read as em
   })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   expect(state.calibrationError).toMatch(/not version 1/)
+})
+
+test('the steps by model: the main run is counted under its model family, one session row', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  let state: { models?: unknown } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') state = (e as unknown as { value: typeof state }).value
+    return next(e)
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  // 40 main steps on claude-opus-5-5 (PHASES), no agents, clock 1000.
+  expect(state.models).toEqual([{ session: 'sess-1', at: 1000, steps: [{ family: 'opus', steps: 40 }] }])
 })
 
 const record = (i: number, session = 'old') => ({
