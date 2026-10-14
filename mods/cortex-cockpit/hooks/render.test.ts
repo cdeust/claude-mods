@@ -140,6 +140,8 @@ const FULL = {
     trends: [],
     models: [],
     delegations: { total: 0, designed: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] },
+    mechanical: { sessions: 0, heavyAnalysis: 0, heavySteps: 0, share: null },
+    brief: null,
     agents: [],
     advisor: { heavyTurns: 4, heavyBeforeWrite: 3, heavyAtCompletion: 2, lightTurns: 8, lightWithAdvisor: 1 },
     goals: [],

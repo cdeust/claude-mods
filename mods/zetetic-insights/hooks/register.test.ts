@@ -282,3 +282,67 @@ test('a resumed agent whose row was evicted and reopened: the restarted row coun
   expect(agents.map((a) => a.agentId)).toEqual(['r1', 'r1'])
   expect(agents.map((a) => a.steps)).toEqual([3, 2])
 })
+
+// The self-calibration section: frozen at session start, appended last, never doubled.
+const ENGINE = { sections: [{ id: 'intro', text: 'x', scope: 'shared' as const }] }
+const BRIEF_ID = 'zetetic-insights:self-calibration'
+const past = (i: number) => ({
+  session: 'old',
+  turnId: `p-${i}`,
+  at: i,
+  taskClass: null,
+  mainModel: 'claude-opus-5-5',
+  main: [{ phase: 'analysis', effort: 'medium', steps: 3, errors: 0 }],
+  agents: [],
+  advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 },
+  stuck: 0,
+})
+const compose = ($: Parameters<TestBody>[0]) =>
+  $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] } as never)
+
+test('prompt.compose: the brief is appended last, on the session side, and the engine sections are kept', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: [past(1), past(2)] } }
+  stubs(on, w)
+  on('prompt.compose', () => ENGINE)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const r = await compose($)
+  expect(r.sections.length).toBe(2)
+  expect(r.sections[0]).toEqual(ENGINE.sections[0])
+  const last = r.sections[1]!
+  expect(last.id).toBe(BRIEF_ID)
+  expect(last.scope).toBe('session')
+  expect(last.text).toBe(
+    [
+      'Self-calibration (zetetic-insights ledger, last 1 sessions). Measured, not prescribed:',
+      '- main thread on opus/fable: 100% of its steps were reading (analysis); a haiku or sonnet delegation could have done them.',
+      '- steps by model: opus 100%.',
+    ].join('\n'),
+  )
+})
+
+test('prompt.compose: the text stays the same after a turn changed the ledger, and is never doubled', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: [past(1), past(2)] } }
+  stubs(on, w)
+  let engine: { sections: { id: string; text: string; scope: 'shared' | 'session' }[] } = ENGINE
+  on('prompt.compose', () => engine)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const first = (await compose($)).sections[1]!.text
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect((w.store.turns as unknown[]).length).toBe(3)
+  const second = await compose($)
+  expect(second.sections.length).toBe(2)
+  expect(second.sections[1]!.text).toBe(first)
+  // Composed over a list that already holds the id: replaced, not added twice.
+  engine = { sections: [...ENGINE.sections, { id: BRIEF_ID, text: 'stale', scope: 'session' }] }
+  const again = await compose($)
+  expect(again.sections.filter((s) => s.id === BRIEF_ID).length).toBe(1)
+  expect(again.sections[again.sections.length - 1]!.text).toBe(first)
+})
+
+test('prompt.compose: an empty ledger adds no section', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  on('prompt.compose', () => ENGINE)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  expect(await compose($)).toEqual(ENGINE)
+})

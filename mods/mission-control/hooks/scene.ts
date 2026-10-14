@@ -37,8 +37,10 @@ export type Curve = { phase: Phase; rates: number[]; moveAt: number | null; move
 // The stretches of time something ran in; a pause of IDLE_MS or more between them is cut from the
 // axis, so a turn of seconds after minutes of reading does not shrink to a sliver.
 export type Span = { t0: number; t1: number }
+export type Delegations = InsightsState['delegations']
+export type Mechanical = InsightsState['mechanical']
 export type Models = { window: ModelSteps[]; sessions: SessionModels[] }
-export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models }
+export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models; delegations: Delegations | null; mechanical: Mechanical | null }
 
 // A model id as its family: the first of fable, opus, sonnet, haiku found in it, else other.
 export const familyOf = (model: unknown): ModelFamily => {
@@ -169,6 +171,9 @@ export const sceneOf = (phases: PhasesState | null, insights: InsightsState | nu
     gauges: gaugesOf(phases?.loops.find((l) => l.id === 'main'), insights),
     curves: curvesOf(insights),
     models: { window, sessions: (insights?.models ?? []).slice(-MODEL_ROWS) },
+    // An older insights (0.3.0 has no delegations, 0.4.0 no mechanical) sends neither: null, never a crash.
+    delegations: insights?.delegations ?? null,
+    mechanical: insights?.mechanical ?? null,
   }
 }
 

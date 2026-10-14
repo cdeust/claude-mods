@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
 import type { AgentRecord, Calibration, Design, InsightsState, TurnRecord } from '../types'
+import { briefOf, mechanicalShare } from './brief'
 import { delegationStats, emptyDelegations, parseDesign } from './delegations'
 import {
   CALIBRATION_PATH,
@@ -38,6 +39,8 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   trends: [],
   models: [],
   delegations: emptyDelegations(),
+  mechanical: { sessions: 0, heavyAnalysis: 0, heavySteps: 0, share: null },
+  brief: null,
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
   goals: [],
@@ -79,6 +82,8 @@ const bounded = <V,>(map: Map<string, V>, key: string, value: V): void => {
 }
 
 const remember = (agentId: string, design: Design | null): void => bounded(designs, agentId, design)
+
+const BRIEF_SECTION = 'zetetic-insights:self-calibration'
 
 const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
 
@@ -184,6 +189,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
     trends: trends(ledger, calibration.changes),
     models: sessionModels(ledger),
     delegations: delegationStats(ledger),
+    mechanical: mechanicalShare(ledger),
     calibration,
     proposals: ps,
     updatedAt: at,
@@ -197,7 +203,10 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   const facetsError = await loadOutcomes($)
   const g = await readGoals($)
   const c = await readCalibration($)
-  await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error })
+  // The only place the brief is computed: recompute keeps it, so the system prompt stays the same for
+  // the whole session and its cache holds.
+  const brief = briefOf(ledger)
+  await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error, brief })
 }
 
 // One main turn, as the autopilot's phases and policy and the genius grade left it.
@@ -328,6 +337,18 @@ export const register: Register = (on, options) => {
 
     return next(e)
   })
+
+  // Appends the frozen self-calibration section last, on the session side of the cache boundary; the
+  // engine's own sections are returned as they came. A state without a brief (older version, empty
+  // ledger) adds nothing. The id is unique in a list: an existing one is replaced, never doubled.
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    const { brief } = await read($, insights)
+    if (typeof brief !== 'string') return r
+    const section = { id: BRIEF_SECTION, text: brief, scope: 'session' } as const
+
+    return { ...r, sections: [...r.sections.filter((x) => x.id !== BRIEF_SECTION), section] }
+  }).catch(($, e, next) => next(e))
 
   // Observes only: the result is the spawn's own, returned untouched; a throw here never blocks it.
   on('agent.spawn', async ($, e, next) => {

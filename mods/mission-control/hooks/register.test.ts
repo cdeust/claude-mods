@@ -44,6 +44,7 @@ test('pixels when the option asks: Images for the lanes and each curve, text aro
   expect(await ui.find({ key: 'curve-test' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^EFFORT$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^STEPS BY MODEL/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^DELEGATIONS/ })).toBeDefined()
   await ui.unmount()
 })
 

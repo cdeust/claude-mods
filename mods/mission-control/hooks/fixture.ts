@@ -28,6 +28,16 @@ export const PHASES = {
 const points = (rates: number[]) => rates.map((rate, i) => ({ at: (i + 1) * 1000, steps: 10, rate }))
 
 export const INSIGHTS = {
+  delegations: {
+    total: 9,
+    designed: 7,
+    flags: { overkill: 2, underpowered: 0, undesigned: 1, rerouted: 0 },
+    recent: [
+      { at: 1000, type: 'Explore', model: 'claude-opus-5-5', effort: 'high', shape: null, steps: 12, errors: 1, flags: ['overkill'] },
+      { at: 2000, type: 'zetetic-team-subagents:code-reviewer', model: 'claude-haiku-5-5', effort: null, shape: null, steps: 4, errors: 0, flags: ['undesigned'] },
+    ],
+  },
+  mechanical: { sessions: 5, heavyAnalysis: 30, heavySteps: 120, share: 0.25 },
   calibration: { version: 1, phases: { test: 'high' }, evidence: {}, changes: {}, updatedAt: 1 },
   models: [
     { session: 'abc10001-aaaa', at: 1000, steps: [{ family: 'sonnet', steps: 30 }, { family: 'opus', steps: 70 }] },

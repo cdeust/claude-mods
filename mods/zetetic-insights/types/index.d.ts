@@ -98,6 +98,11 @@ export type ModelSteps = { family: ModelFamily; steps: number }
 // One session's steps by family, main's and its agents' together; families with no step left out.
 export type SessionModels = { session: string; at: number; steps: ModelSteps[] }
 
+// Main's mechanical work on heavy models over the last sessions (hooks/brief.ts): steps of main
+// in the analysis phase (reading tools: Read, Grep, Glob, listing) run on opus or fable, against
+// all of main's steps on those models. The work a cheaper model could have done.
+export type MechanicalShare = { sessions: number; heavyAnalysis: number; heavySteps: number; share: number | null }
+
 export type InsightsState = {
   mode: 'observe' | 'enforce'
   turns: number
@@ -111,6 +116,11 @@ export type InsightsState = {
   models: SessionModels[]
   // The ledger's delegations judged against their design (hooks/delegations.ts).
   delegations: DelegationStats
+  mechanical: MechanicalShare
+  // The self-calibration text sent to the model at the end of the system prompt, computed once at
+  // session start and frozen for the session (a changing system prompt would void its cache);
+  // null when the ledger has nothing to say yet.
+  brief: string | null
   agents: AgentStat[]
   advisor: { heavyTurns: number; heavyBeforeWrite: number; heavyAtCompletion: number; lightTurns: number; lightWithAdvisor: number }
   goals: { name: string; status: string }[]

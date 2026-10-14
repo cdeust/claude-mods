@@ -1,6 +1,6 @@
 {
   "name": "zetetic-insights",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "The learning loop: every main turn is kept in a ledger across sessions (phase, effort, steps, failed tool calls, agents, advisor calls), joined with the session outcomes /insights writes and the project's goals; a phase whose evidence says so gets its tool-loop effort moved one notch, written to a calibration file the autopilot reads. /calibrate apply, /calibrate reset. Starts in observe: proposals are shown, not applied.",
   "types": "./types/index.d.ts",
   "dependencies": ["zetetic-autopilot", "zetetic-genius"],
