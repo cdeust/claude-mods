@@ -100,7 +100,8 @@ async function readCeilings($: EngineInterface): Promise<void> {
 }
 
 // Agent definitions: what the type's file pins, or why it could not be read. A definition found, and
-// a file proven absent (`absent`: every candidate path answered "no such file"), are remembered for
+// a file proven absent, or no installed plugin providing the type (`absent`: the records answered
+// "no such file" / "no such plugin"), are remembered for
 // the session; a read that failed, or a record that could not be read, is asked again at the next
 // spawn, so a transient error does not stand until /clear (issue #11). The built-ins measured to
 // inherit pin nothing and have no file.
@@ -135,7 +136,7 @@ async function readDefinition($: EngineInterface, type: string): Promise<Definit
       if (await $.fs.exists(path)) return parseDefinition(String(await $.fs.read(path)))
     }
     return paths.length === 0
-      ? { unread: 'no installed plugin provides it', absent: false }
+      ? { unread: 'no installed plugin provides it', absent: true }
       : { unread: `no file at ${paths.join(', ')}`, absent: true }
   } catch (error) {
     return { unread: String(error).slice(0, 120), absent: false }

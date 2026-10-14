@@ -164,6 +164,79 @@ test(
   },
 )
 
+// Issue #11: the walk up from the working directory stops at the first folder holding a `.git`; a
+// definition above that folder belongs to another project and is never read.
+const DISPATCH = '---\nname: dispatch\nmodel: haiku\n---\n'
+const noRead = (d: Disk, path: string) => expect(d.reads).not.toContain(path)
+
+test(
+  'the walk up stops at the repository root: a definition above it is never read',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({ cwd: '/r/pkg', files: { ...FILES, '/r/.git': '', '/.claude/agents/dispatch.md': DISPATCH } })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    noRead(d, '/.claude/agents/dispatch.md')
+    expect(seen.policy?.decisions.find((x) => x.kind === 'unread')?.to).toMatch(/^no file at /)
+    const named = seen.policy?.decisions.find((x) => x.kind === 'unread')?.to.replace('no file at ', '').split(', ')
+    expect(named).toEqual(['/r/pkg/.claude/agents/dispatch.md', '/r/.claude/agents/dispatch.md', '/home/t/.claude/agents/dispatch.md'])
+  },
+)
+
+test(
+  'with a definition at the repository root and one above it, only the root one is read',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({
+      cwd: '/r/pkg',
+      files: { ...FILES, '/r/.git': '', '/r/.claude/agents/dispatch.md': DISPATCH, '/.claude/agents/dispatch.md': DISPATCH },
+    })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    expect(d.reads).toContain('/r/.claude/agents/dispatch.md')
+    noRead(d, '/.claude/agents/dispatch.md')
+  },
+)
+
+test(
+  'in a worktree (.git is a file) the walk stops at the worktree, never at the main checkout above',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({
+      cwd: '/r/wt/sub',
+      files: { ...FILES, '/r/.git': '', '/r/wt/.git': 'gitdir: /r/.git/worktrees/wt', '/r/.claude/agents/dispatch.md': DISPATCH },
+    })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    noRead(d, '/r/.claude/agents/dispatch.md')
+    expect(seen.policy?.decisions.find((x) => x.kind === 'unread')?.to).toMatch(/^no file at /)
+  },
+)
+
+test(
+  'a plugin type no installed plugin provides is proven absent: remembered, the record read once, named once',
+  { options: { policy_mode: 'enforce' } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk()
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.agent.spawn(spawn('nosuchplugin:ghost'))
+    await $.agent.spawn(spawn('nosuchplugin:ghost'))
+    expect(d.reads.filter((p) => p.endsWith('installed_plugins.json'))).toHaveLength(1)
+    expect(seen.policy?.decisions.filter((x) => x.kind === 'unread' && x.to === 'no installed plugin provides it')).toHaveLength(1)
+  },
+)
+
 // Issue #11, case 3: a read that fails is not "no such file"; the next spawn reads again.
 test(
   'a definition that failed to read is read again at the next spawn, and a found one is read once',
