@@ -14,7 +14,7 @@ let stale = false;
 for (const [name, source] of Object.entries(sources)) {
   const input = new URL(`mods/${source}`, root);
   const target = new URL(`codex/shared/${name}.mjs`, root);
-  const code = stripTypeScriptTypes(await readFile(input, 'utf8'), { mode: 'transform' })
+  const code = stripTypeScriptTypes(await readFile(input, 'utf8'), { mode: 'strip' })
     .replace("from './rules'", "from './rules.mjs'");
   const output = `// Generated from mods/${source}; run npm run build:codex.\n${code}`;
   if (process.argv.includes('--check')) {
