@@ -113,9 +113,10 @@ test('the ledger keeps the newest records under the byte cap, measured as UTF-8'
   const heavy = Array.from({ length: 400 }, (_, i) => turn({ turnId: `t${i}`, agents: Array.from({ length: MAX_AGENTS }, (_, j) => agent(j)) }))
   expect(utf8Bytes(JSON.stringify(heavy))).toBeGreaterThan(4 * 1024 * 1024)
   const kept = trimmed(heavy)
-  expect(utf8Bytes(JSON.stringify(kept))).toBeLessThanOrEqual(LEDGER_BYTES)
+  // Measured as the store file writes it, indented, which is larger than the compact text.
+  expect(utf8Bytes(JSON.stringify({ turns: kept }, null, 2))).toBeLessThanOrEqual(LEDGER_BYTES)
   expect(kept[kept.length - 1]?.turnId).toBe('t399')
-  expect(kept.length).toBeGreaterThan(200)
+  expect(kept.length).toBeGreaterThan(100)
   // The count cap still holds, and a ledger under both caps is kept whole.
   expect(trimmed(heavy, Number.POSITIVE_INFINITY, 3).map((r) => r.turnId)).toEqual(['t397', 't398', 't399'])
   expect(trimmed(heavy.slice(0, 2))).toEqual(heavy.slice(0, 2))

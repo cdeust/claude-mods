@@ -35,6 +35,11 @@ button writes `~/.claude/zetetic-insights/calibration.json`.
   store still refuses is shown in the panel (`ledger: not saved: …`), not thrown on every turn.
   Test: a 420-record agent-heavy ledger (> 4 MiB) against a store mock that rejects past 4 MiB;
   the next turn is saved and the store is back under 3 MiB. Reverting the trim fails both tests.
+- Round 2 review residual, closed: the store file on disk is indented JSON (865 bytes against 474
+  compact for the live insights store). Each record is now measured as the file writes it
+  (indented, two levels deep), the larger reading, so 3 MiB holds whichever text the 4 MiB limit
+  counts. The tests' store mock rejects past 4 MiB of indented text; reverting to compact
+  measurement fails both size tests.
 - `default` rows: the autopilot recorded `null` when the engine sent no effort. It now records the
   model's API default (policy.ts DEFAULT_EFFORT, sourced), so every run lands on a rung the
   calibration can read. The run effort is the effort sent: after the policy under enforce, as the

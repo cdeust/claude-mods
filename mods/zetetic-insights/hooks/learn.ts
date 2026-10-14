@@ -7,7 +7,8 @@ import type { AgentRecord, AgentStat, Calibration, Effort, Phase, PhaseStat, Pro
 export const LEDGER_KEY = 'turns'
 export const LEDGER_CAP = 3000 // source: own choice, the turns the rates are read from
 // source: claude-code types, `$.store.set` "rejects ... a store over 4 MiB of JSON text in all"
-// (every key of the mod's store). The ledger keeps 3 MiB of it, the rest is margin.
+// (every key of the mod's store). The ledger keeps 3 MiB of it as the file writes it, the rest is
+// margin.
 export const LEDGER_BYTES = 3 * 1024 * 1024
 // source: own choice, the agents one record keeps (~200 bytes each); the rest are counted.
 export const MAX_AGENTS = 50
@@ -73,10 +74,21 @@ export const utf8Bytes = (text: string): number => {
   return n
 }
 
+// A record's bytes as the store file holds it: the file is JSON indented by two spaces (read from
+// ~/.claude/plugins/store/zetetic-insights_*.json, 2026-10-14: 865 bytes against 474 compact), a
+// record sitting two levels deep under `{"turns": [...]}`. Whether the store's 4 MiB counts that
+// text or the compact one, this is the larger, so the cap holds under both.
+export const recordBytes = (r: TurnRecord): number => {
+  const text = JSON.stringify(r, null, 2)
+  let lines = 1
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lines++
+  return utf8Bytes(text) + 4 * lines + 2 // the indent of each line, then ",\n"
+}
+
 // The newest records that fit both caps, oldest dropped first. Each record is measured once:
 // O(n) in the records, whatever the ledger loaded from the store weighed.
 export const trimmed = (records: readonly TurnRecord[], maxBytes = LEDGER_BYTES, maxCount = LEDGER_CAP): TurnRecord[] => {
-  const sizes = records.map((r) => utf8Bytes(JSON.stringify(r)) + 1) // the comma, or a bracket
+  const sizes = records.map(recordBytes)
   let total = sizes.reduce((a, b) => a + b, 1)
   let from = Math.max(0, records.length - maxCount)
   for (let i = 0; i < from; i++) total -= sizes[i]!

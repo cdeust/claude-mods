@@ -31,7 +31,8 @@ const PHASES = {
 
 // source: claude-code types, `$.store.set` rejects "a store over 4 MiB of JSON text in all".
 const STORE_LIMIT = 4 * 1024 * 1024
-const storeBytes = (store: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify(store)).length
+// The store file is indented JSON (read 2026-10-14); the stricter of the two readings of the limit.
+const storeBytes = (store: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify(store, null, 2)).length
 
 const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES) => {
   mock.clock(on, { now: 1_000 })
@@ -125,7 +126,7 @@ test('a ledger past the store limit is trimmed, and the next turn is saved', asy
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   const kept = w.store.turns as { turnId: string }[]
   expect(kept[kept.length - 1]?.turnId).toBe('t1')
-  expect(storeBytes(w.store)).toBeLessThanOrEqual(3 * 1024 * 1024 + 64)
+  expect(storeBytes(w.store)).toBeLessThanOrEqual(3 * 1024 * 1024)
 })
 
 test('a malformed facet is skipped and named, the others are read', async ($, on) => {
