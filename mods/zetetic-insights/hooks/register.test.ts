@@ -6,7 +6,9 @@ import type { TestBody } from 'claude-code/testing'
 
 const CAL = '/home/t/.claude/zetetic-insights/calibration.json'
 
-type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; storeDenied?: string }
+// `store` is the one store every Claude process shares; `sid` is this process's session id. A second
+// process is simulated by writing its keys into `store` directly: the kit hosts one plugin instance.
+type World = { files: Record<string, string>; written: Record<string, string>; store: Record<string, unknown>; storeDenied?: string; sid?: string; sidDenied?: string; afterSet?: (key: string) => void }
 
 // A main turn of 40 test steps at medium, 12 of them with a failed call: enough to raise.
 const PHASES = {
@@ -34,11 +36,11 @@ const STORE_LIMIT = 4 * 1024 * 1024
 // The store file is indented JSON (read 2026-10-14); the stricter of the two readings of the limit.
 const storeBytes = (store: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify(store, null, 2)).length
 
-const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES) => {
-  const clock = mock.clock(on, { now: 1_000 })
+const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, now = 1_000) => {
+  const clock = mock.clock(on, { now })
   on('session.start', () => ({ cwd: '/r' }))
   on('session.cwd', () => ({ value: '/r' }))
-  on('session.id', () => ({ value: 'sess-1' }))
+  on('session.id', () => (w.sidDenied !== undefined ? { deny: w.sidDenied } : { value: w.sid ?? 'sess-1' }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
   on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in w.files }))
   on('fs.read', ($, e) => {
@@ -55,7 +57,13 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES) 
   on('store.set', ($, e) => {
     const { key, value } = e as unknown as { key: string; value: unknown }
     if (storeBytes({ ...w.store, [key]: value }) > STORE_LIMIT) return { deny: 'store over 4 MiB' }
-    w.store[key] = value
+    w.store[key] = JSON.parse(JSON.stringify(value))
+    w.afterSet?.(key)
+    return { value: undefined as never }
+  })
+  on('store.keys', () => (w.storeDenied !== undefined ? { deny: w.storeDenied } : { value: Object.keys(w.store) as never }))
+  on('store.delete', ($, e) => {
+    delete w.store[String((e as { key?: string }).key)]
     return { value: undefined as never }
   })
   on('command.register', () => ({ value: undefined as never }))
@@ -76,7 +84,7 @@ test('a run without reads is kept without them', async ($, on) => {
   stubs(on, w, bare)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  expect((w.store.turns as { main: unknown[] }[])[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 4, errors: 0 }])
+  expect((w.store['turns:sess-1'] as { main: unknown[] }[])[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 4, errors: 0 }])
 })
 
 test('observe: a main turn is kept in the ledger and its evidence proposed, not applied', async ($, on) => {
@@ -84,7 +92,7 @@ test('observe: a main turn is kept in the ledger and its evidence proposed, not 
   stubs(on, w)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  const ledger = w.store.turns as { session: string; taskClass: string; mainModel: string; main: unknown[] }[]
+  const ledger = w.store['turns:sess-1'] as { session: string; taskClass: string; mainModel: string; main: unknown[] }[]
   expect(ledger.length).toBe(1)
   expect(ledger[0]?.session).toBe('sess-1')
   expect(ledger[0]?.taskClass).toBe('bugfix')
@@ -144,14 +152,18 @@ const record = (i: number, session = 'old') => ({
   stuck: 0,
 })
 
-test('a ledger past the store limit is trimmed, and the next turn is saved', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { turns: Array.from({ length: 420 }, (_, i) => record(i)) } }
+// I4: the store over its limit, the finished session evicted with its keys, a live one kept.
+test('a ledger past the store limit: the finished session is evicted, the live one kept, and the next turn is saved', async ($, on) => {
+  const live = [{ ...record(990, 'live'), agents: [] }]
+  const w: World = { files: {}, written: {}, store: { 'turns:old': Array.from({ length: 420 }, (_, i) => record(i)), 'ended:old': { at: 500 }, 'claim:old': { by: 'x', at: 1 }, 'turns:live': live } }
   expect(storeBytes(w.store)).toBeGreaterThan(STORE_LIMIT)
   stubs(on, w)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  const kept = w.store.turns as { turnId: string }[]
+  const kept = w.store['turns:sess-1'] as { turnId: string }[]
   expect(kept[kept.length - 1]?.turnId).toBe('t1')
+  expect(Object.keys(w.store).sort()).toEqual(['turns:live', 'turns:sess-1'])
+  expect(w.store['turns:live']).toEqual(live)
   expect(storeBytes(w.store)).toBeLessThanOrEqual(3 * 1024 * 1024)
 })
 
@@ -193,7 +205,7 @@ test("an agent finishing after main's turn completed joins that turn's record", 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'a1' } as never)
-  const ledger = w.store.turns as { turnId: string; agents: { type: string; steps: number }[] }[]
+  const ledger = w.store['turns:sess-1'] as { turnId: string; agents: { type: string; steps: number }[] }[]
   expect(ledger.length).toBe(1)
   expect(ledger[0]?.agents).toEqual([{ agentId: 'a1', type: 'Explore', phase: 'analysis', model: 'claude-haiku-5-5', steps: 3, errors: 1 }])
 })
@@ -217,7 +229,7 @@ test('a spawn is observed, not changed: its design and the finished agent\'s tok
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   const usage = { model: 'claude-haiku-5-5', input_tokens: 10, output_tokens: 7, cache_read_input_tokens: 100, cache_creation_input_tokens: 5 }
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'a1', usage } as never)
-  const ledger = w.store.turns as { agents: unknown[] }[]
+  const ledger = w.store['turns:sess-1'] as { agents: unknown[] }[]
   expect(ledger[0]?.agents).toEqual([
     {
       agentId: 'a1',
@@ -246,7 +258,7 @@ test('a spawn without a DESIGN block is undesigned; an agent whose spawn was nev
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'b1' } as never)
   await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'b2' } as never)
-  const agents = (w.store.turns as { agents: { design?: unknown; tokensIn?: number }[] }[])[0]!.agents
+  const agents = (w.store['turns:sess-1'] as { agents: { design?: unknown; tokensIn?: number }[] }[])[0]!.agents
   expect(agents[0]?.design).toBeNull()
   expect('design' in agents[1]!).toBe(false)
   expect('tokensIn' in agents[1]!).toBe(false)
@@ -269,7 +281,7 @@ test('a resumed agent: the design outlives its first turn, each record keeps its
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'r1' } as never)
   cumulative = 5
   await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'r1' } as never)
-  const agents = (w.store.turns as { agents: { agentId?: string; steps: number; design?: unknown }[] }[])[0]!.agents
+  const agents = (w.store['turns:sess-1'] as { agents: { agentId?: string; steps: number; design?: unknown }[] }[])[0]!.agents
   expect(agents.map((a) => a.agentId)).toEqual(['r1', 'r1'])
   expect(agents.map((a) => a.design !== undefined && a.design !== null)).toEqual([true, true])
   expect(agents.map((a) => a.steps)).toEqual([3, 2])
@@ -289,7 +301,7 @@ test('a resumed agent whose row was evicted and reopened: the restarted row coun
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'r1' } as never)
   current = row(500, 2)
   await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'r1' } as never)
-  const agents = (w.store.turns as { agents: { agentId?: string; steps: number }[] }[])[0]!.agents
+  const agents = (w.store['turns:sess-1'] as { agents: { agentId?: string; steps: number }[] }[])[0]!.agents
   expect(agents.map((a) => a.agentId)).toEqual(['r1', 'r1'])
   expect(agents.map((a) => a.steps)).toEqual([3, 2])
 })
@@ -339,7 +351,7 @@ test('prompt.compose: the text stays the same after a turn changed the ledger, a
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   const first = (await compose($)).sections[1]!.text
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  expect((w.store.turns as unknown[]).length).toBe(3)
+  expect((w.store['turns:old'] as unknown[]).length + (w.store['turns:sess-1'] as unknown[]).length).toBe(3)
   const second = await compose($)
   expect(second.sections.length).toBe(2)
   expect(second.sections[1]!.text).toBe(first)
@@ -368,7 +380,10 @@ const cortex = (on: Parameters<TestBody>[1], reply: { isError: boolean } = { isE
     const { server, tool, args } = e as unknown as Call
     if (server !== SERVER) return next(e)
     calls.push({ server, tool, args })
-    return { value: { content: [{ type: 'text' as const, text: answer.reply.isError ? 'down' : '{"stored":true}' }], isError: answer.reply.isError } }
+    if (answer.reply.isError) return { value: { content: [{ type: 'text' as const, text: 'down' }], isError: true } }
+    // Cortex's reply shape: remember_response.py:78, a new memory id per stored row.
+    const structured = { stored: true, memory_id: 100 + calls.length, action: 'supersedes_id' in args ? 'superseded' : 'stored' }
+    return { value: { content: [{ type: 'text' as const, text: JSON.stringify(structured) }], isError: false, structuredContent: structured } }
   })
   return { calls, answer }
 }
@@ -383,10 +398,13 @@ const watch = (on: Parameters<TestBody>[1]) => {
 // Two past sessions (old-a older than old-b) and the current one, sess-1, already in the ledger.
 const pastSession = (session: string, at: number) => ({ ...past(at), session, turnId: `${session}-t` })
 const LEDGER = () => [pastSession('old-b', 20), pastSession('old-a', 10), pastSession('sess-1', 30)]
+// The two past sessions' processes ended them (session.end wrote ended:); sess-1 is this one, live.
+const ENDED_PAST = { 'ended:old-a': { at: 11 }, 'ended:old-b': { at: 21 } }
+const pushedKeys = (store: Record<string, unknown>) => Object.keys(store).filter((k) => k.startsWith('pushed:')).sort()
 const START = { surface: 'terminal', isInteractive: true, cwd: '/r' } as const
 
 test('cortex: after start the 2 past sessions are remembered, oldest first, the current one is not', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
   const seen = watch(on)
@@ -398,12 +416,12 @@ test('cortex: after start the 2 past sessions are remembered, oldest first, the 
   expect(calls.map((c) => String(c.args.content).slice(0, 36))).toEqual(['Self-calibration of session old-a (1', 'Self-calibration of session old-b (1'])
   expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['agent_topic', 'content', 'origin_tool', 'source', 'tags'])
   expect(calls[0]?.args).toMatchObject({ tags: ['archival', 'self-calibration', 'zetetic-insights'], agent_topic: 'self-calibration', source: 'tool', origin_tool: 'zetetic-insights' })
-  expect(w.store.pushed).toEqual(['old-a', 'old-b'])
+  expect(pushedKeys(w.store)).toEqual(['pushed:old-a', 'pushed:old-b'])
   expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0, lastError: null })
 })
 
 test('cortex: a second start remembers nothing more', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
   await $.session.start(START)
@@ -415,14 +433,14 @@ test('cortex: a second start remembers nothing more', async ($, on) => {
 })
 
 test('cortex: an isError reply stops the batch, is named in the state, and the next start retries', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
   const clock = stubs(on, w)
   const { calls, answer } = cortex(on, { isError: true })
   const seen = watch(on)
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(1)
-  expect(w.store.pushed ?? []).toEqual([])
+  expect(pushedKeys(w.store)).toEqual([])
   expect(seen.cortex?.pushed).toBe(0)
   expect(seen.cortex?.pending).toBe(2)
   expect(seen.cortex?.lastError).toMatch(/down/)
@@ -430,12 +448,12 @@ test('cortex: an isError reply stops the batch, is named in the state, and the n
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(3)
-  expect(w.store.pushed).toEqual(['old-a', 'old-b'])
+  expect(pushedKeys(w.store)).toEqual(['pushed:old-a', 'pushed:old-b'])
   expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0 })
 })
 
 test('cortex: a state stored by an older version, without pushed, reads as empty', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), pushed: 'garbage' } }
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), pushed: 'garbage', ...ENDED_PAST } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
   await $.session.start(START)
@@ -444,11 +462,269 @@ test('cortex: a state stored by an older version, without pushed, reads as empty
 })
 
 test('cortex: no mcp.call happens inside a session.end hook', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
   stubs(on, w)
   const { calls } = cortex(on)
   on('session.end', () => ({ sessionId: 'sess-1' }))
   await $.session.start(START)
   await $.session.end({ reason: 'exit', sessionId: 'sess-1' } as never)
+  expect(calls.length).toBe(0)
+})
+
+// Two Claude processes, one store. This process is A (session sess-1); B is a second process whose
+// writes land in the shared store between A's own (the kit hosts one plugin instance).
+const recordsOf = (store: Record<string, unknown>) =>
+  Object.entries(store)
+    .filter(([k]) => k === 'turns' || k.startsWith('turns:'))
+    .flatMap(([, v]) => v as { turnId: string }[])
+const turnIds = (store: Record<string, unknown>) => [...new Set(recordsOf(store).map((r) => r.turnId))].sort()
+const PHASES_AT = (turnId: string) => ({ ...PHASES, turnId })
+const bTurn = (i: number) => ({ ...pastSession('B', 900 + i), turnId: `B-t${i}` })
+const watchTurns = (on: Parameters<TestBody>[1]) => {
+  const seen: { turns?: number } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') seen.turns = (e as unknown as { value: { turns: number } }).value.turns
+    return next(e)
+  })
+  return seen
+}
+
+// D1: B's records sit under the legacy key, the one the single-key ledger had every process rewrite
+// whole: A's own writes must not erase them, and A's next start moves them to turns:B.
+test('D1 two processes: A records 2 turns while B records 3 under the shared key: all 5 survive', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  let phases = PHASES_AT('A-t1')
+  stubs(on, w, { get turnId() { return phases.turnId }, loops: PHASES.loops, advisor: PHASES.advisor })
+  const seen = watchTurns(on)
+  await $.session.start(START)
+  w.store.turns = [bTurn(1)]
+  await $.turn.complete({ turnId: 'A-t1', reason: 'answer' } as never)
+  w.store.turns = [bTurn(1), bTurn(2)]
+  phases = PHASES_AT('A-t2')
+  await $.turn.complete({ turnId: 'A-t2', reason: 'answer' } as never)
+  w.store.turns = [bTurn(1), bTurn(2), bTurn(3)]
+  expect(turnIds(w.store)).toEqual(['A-t1', 'A-t2', 'B-t1', 'B-t2', 'B-t3'])
+  await $.session.start(START)
+  expect(seen.turns).toBe(5)
+})
+
+// I2 I1: B, a process of this version, writes its own key between A's turns; A never writes it.
+test('I2 two processes: B writes turns:B between A\'s turns; A leaves it as B wrote it, and sees it at its next start', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  const seen = watchTurns(on)
+  await $.session.start(START)
+  w.store['turns:B'] = [bTurn(1), bTurn(2), bTurn(3)]
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect(w.store['turns:B']).toEqual([bTurn(1), bTurn(2), bTurn(3)])
+  expect(Object.keys(w.store).sort()).toEqual(['turns:B', 'turns:sess-1'])
+  await $.session.start(START)
+  expect(seen.turns).toBe(4)
+})
+
+// D2 and I3: B is live (fresh, no ended:) while A starts: A never hands it over. Its records sit
+// under the legacy key so that the single-key version, which read only that key, sees them too.
+test('D2 I3 a session live in another process is not handed over; after its ended:, it is, exactly once', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: [bTurn(1)] } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  const seen = watch(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(0)
+  expect(seen.cortex).toMatchObject({ pending: 0, lastError: null })
+  w.store['ended:B'] = { at: 2_000 } // B's process ended it
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.map((c) => String(c.args.content).slice(0, 29))).toEqual(['Self-calibration of session B'])
+  expect(w.store['pushed:B']).toBeDefined()
+  expect((w.store['claim:B'] as { by: string }).by).toBe('sess-1')
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+})
+
+test('I3 a claim by another process younger than the TTL makes A skip; one taken during the delay too; an expired one does not', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 }, 'claim:B': { by: 'C', at: 900 } } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(0)
+  // The claim expires (TTL 10 min): the next start schedules B, but C claims it again during the delay.
+  await clock.advance(10 * 60_000)
+  await $.session.start(START)
+  w.store['claim:B'] = { by: 'C', at: clock.now() }
+  await clock.advance(60_000)
+  expect(calls.length).toBe(0)
+  expect(w.store['pushed:B']).toBeUndefined()
+  // C died mid-handover: once its claim is older than the TTL, A hands B over.
+  await clock.advance(10 * 60_000)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+})
+
+test('I3 a crashed session (no ended:, no turn for 24 h) is finished: handed over', async ($, on) => {
+  const DAY = 24 * 3_600_000
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [{ ...bTurn(1), at: 5_000 }] } }
+  const clock = stubs(on, w, PHASES, 5_000 + DAY - 1)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(1)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+})
+
+test('I3 session.end marks the own session ended (also on /clear, old id), never one without records', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  on('session.end', ($, e) => ({ sessionId: (e as { sessionId: string }).sessionId }))
+  await $.session.start(START)
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1' } as never)
+  expect(w.store['ended:sess-1']).toBeUndefined()
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1' } as never)
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
+  // /clear goes on under a new id: its start keeps the old session's keys, now another's.
+  w.sid = 'sess-2'
+  await $.session.start(START)
+  expect(w.store['turns:sess-1']).toBeDefined()
+  expect(w.store['ended:sess-1']).toEqual({ at: 1_000 })
+})
+
+test('I3 a resumed session is live again: its start removes its own ended:', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:sess-1': [{ ...bTurn(1), session: 'sess-1' }], 'ended:sess-1': { at: 950 } } }
+  stubs(on, w)
+  await $.session.start(START)
+  expect(w.store['ended:sess-1']).toBeUndefined()
+  expect((w.store['turns:sess-1'] as unknown[]).length).toBe(1)
+})
+
+test('I5 migration from the legacy turns and pushed keys, run twice: the same store', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), pushed: ['old-a', 'never-recorded'] } }
+  stubs(on, w)
+  await $.session.start(START)
+  const once = JSON.parse(JSON.stringify(w.store))
+  expect(Object.keys(once).sort()).toEqual(['pushed:old-a', 'turns:old-a', 'turns:old-b', 'turns:sess-1'])
+  expect(once['turns:old-b']).toEqual([pastSession('old-b', 20)])
+  await $.session.start(START)
+  expect(w.store).toEqual(once)
+})
+
+test('I1 an orphan claim:, pushed: or ended: (its turns: evicted by another process) goes at the next own write', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'claim:gone': { by: 'C', at: 1 }, 'pushed:gone': { at: 1 }, 'turns:B': [bTurn(1)], 'claim:B': { by: 'C', at: 999 } } }
+  stubs(on, w)
+  await $.session.start(START)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect(Object.keys(w.store).sort()).toEqual(['claim:B', 'turns:B', 'turns:sess-1'])
+})
+
+test('a turn before any start (a hot reload resets the module) reads the own key first, never erasing it', async ($, on) => {
+  const mine = { ...bTurn(1), session: 'sess-1', turnId: 'before' }
+  const w: World = { files: {}, written: {}, store: { 'turns:sess-1': [mine] } }
+  stubs(on, w)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect((w.store['turns:sess-1'] as { turnId: string }[]).map((r) => r.turnId)).toEqual(['before', 't1'])
+})
+
+test('schedulePush: a session id that throws is named in state.cortex and start() completes', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  w.sidDenied = 'no id'
+  stubs(on, w)
+  const seen = watch(on)
+  await $.session.start(START)
+  // start() completed: the hook went on to register /calibrate, whose command now runs.
+  expect((await $.command.run({ command: 'calibrate' } as never)).text).toMatch(/^Ledger: 0 turns/)
+  expect(seen.cortex?.lastError).toMatch(/handover not scheduled: .*no id/)
+})
+
+test('the clock.after callback leaves no rejection unhandled when the state itself refuses', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  let refuse = false
+  on('state.set', ($, e, next) => (refuse ? { deny: 'state refused' } : next(e)))
+  await $.session.start(START)
+  refuse = true
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+  expect(pushedKeys(w.store)).toEqual(['pushed:old-a'])
+})
+
+test('I3 a claim C writes between A\'s claim and A\'s read-back wins: A does not remember', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
+  w.afterSet = (key) => {
+    if (key === 'claim:B') w.store['claim:B'] = { by: 'C', at: 1_000 }
+  }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  const seen = watch(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(0)
+  expect(w.store['pushed:B']).toBeUndefined()
+  expect(seen.cortex).toMatchObject({ pushed: 0, pending: 0, lastError: null })
+})
+
+test('I3 a session resumed during the delay (its process removed its ended:) is live again: not handed over', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  delete w.store['ended:B']
+  await clock.advance(60_000)
+  expect(calls.length).toBe(0)
+  expect(w.store['pushed:B']).toBeUndefined()
+})
+
+test('I3 the claim is set at selection; B overwrites it during the delay, so A skips', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  expect(w.store['claim:B']).toEqual({ by: 'sess-1', at: 1_000 })
+  await clock.advance(10_000)
+  w.store['claim:B'] = { by: 'B2', at: clock.now() } // another process, its claim landing 10 s after A's
+  await clock.advance(50_000)
+  expect(calls.length).toBe(0)
+  expect(w.store['pushed:B']).toBeUndefined()
+})
+
+test('a session resumed after its handover: new turns and a new ended:, then sent again superseding its memory', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+  expect('supersedes_id' in calls[0]!.args).toBe(false)
+  expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901, memoryId: 101 })
+  // B's process resumes it (its start drops ended:B), records a turn, and ends it again.
+  delete w.store['ended:B']
+  w.store['turns:B'] = [bTurn(1), { ...bTurn(2), at: 40_000 }]
+  w.store['ended:B'] = { at: 41_000 }
+  await clock.advance(10 * 60_000)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(2)
+  expect(calls[1]?.args.supersedes_id).toBe(101)
+  expect(String(calls[1]?.args.content)).toMatch(/^Self-calibration of session B/)
+  expect(w.store['pushed:B']).toMatchObject({ lastAt: 40_000, memoryId: 102 })
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(2)
+})
+
+test('a legacy pushed list: the migrated pushed: covers every legacy record, nothing is sent again', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), pushed: ['old-a', 'old-b'], ...ENDED_PAST } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  expect(w.store['pushed:old-a']).toEqual({ at: 0, lastAt: 10 })
+  await clock.advance(60_000)
+  await $.session.start(START)
+  await clock.advance(60_000)
   expect(calls.length).toBe(0)
 })

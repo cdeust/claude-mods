@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { TurnRecord } from '../types'
-import { pendingSessions, sessionSummary } from './consumer'
+import { rememberOutcome, sessionSummary } from './consumer'
 
 // 1_700_000_000_000 ms is 2023-11-14T22:13:20Z.
 const AT = 1_700_000_000_000
@@ -57,7 +57,22 @@ test('every line is cut to 200 characters', () => {
   expect(text.split('\n').every((l) => l.length <= 200)).toBe(true)
 })
 
-test('pendingSessions: oldest first, never the current one or one already handed over, none without a summary', () => {
-  const records = [turn('b', 200), turn('a', 100), turn('cur', 300), turn('done', 50), turn('idle', 60, { main: [] }), turn('a', 150)]
-  expect(pendingSessions(records, 'cur', new Set(['done']))).toEqual(['a', 'b'])
+// The selection of the sessions to hand over moved to ledger.ts (pendingSessions, ledger.test.ts).
+
+// The reply shapes are Cortex's own (mcp_server/handlers/remember_response.py:78,
+// remember_helpers.py:851-873 and 818-830, core/write_gate.py:156).
+const text = (t: string) => [{ type: 'text', text: t }]
+test('rememberOutcome: the memory id from structuredContent, else from the JSON text; none when it does not parse', () => {
+  expect(rememberOutcome({ content: [], isError: false, structuredContent: { stored: true, memory_id: 42, action: 'stored' } })).toEqual({ ok: true, memoryId: 42 })
+  expect(rememberOutcome({ content: text('{"stored":true,"memory_id":43,"action":"superseded"}'), isError: false })).toEqual({ ok: true, memoryId: 43 })
+  expect(rememberOutcome({ content: text('stored'), isError: false })).toEqual({ ok: true })
+  expect(rememberOutcome({ content: [], isError: false, structuredContent: { stored: true, memory_id: '42' } })).toEqual({ ok: true })
+})
+
+test('rememberOutcome: an error fails; a write-gate rejection is delivered; a supersede that cannot land names what to supersede next', () => {
+  expect(rememberOutcome({ content: text('down'), isError: true })).toEqual({ ok: false, failure: 'down' })
+  expect(rememberOutcome({ content: [], isError: false, structuredContent: { stored: false, action: 'rejected', reason: 'low surprise' } })).toEqual({ ok: true })
+  expect(rememberOutcome({ content: [], isError: false, structuredContent: { stored: false, action: 'rejected', reason: 'supersede_target_not_found' } })).toEqual({ ok: false, failure: 'supersede_target_not_found', rebase: null })
+  expect(rememberOutcome({ content: [], isError: false, structuredContent: { stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', current_superseded_by_id: 9 } })).toEqual({ ok: false, failure: 'supersede_target_already_superseded', rebase: 9 })
+  expect(rememberOutcome({ content: [], isError: false, structuredContent: { stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', current_head_id: 11 } })).toEqual({ ok: false, failure: 'supersede_chain_head_moving', rebase: 11 })
 })

@@ -24,16 +24,43 @@ export const sessionSummary = (records: readonly TurnRecord[], session: string):
   return [header, ...body.split('\n').slice(1)].map((l) => l.slice(0, BRIEF_LINE_CAP)).join('\n')
 }
 
-// The sessions still to hand over, oldest first by their newest record: not the current one (it is
-// still being measured), not one already handed over, and only those with a summary.
-// A session the ledger trimmed away (by bytes) before it was handed over is not in `records`, so it
-// is never handed over: the handoff cannot invent what the ledger no longer holds.
-export const pendingSessions = (records: readonly TurnRecord[], current: string, handed: ReadonlySet<string>): string[] => {
-  const newest = new Map<string, number>()
-  for (const r of records) newest.set(r.session, Math.max(newest.get(r.session) ?? r.at, r.at))
+// Cortex's remember result as the plugin receives it: the handler's dict as structuredContent (the
+// tool declares an outputSchema: Cortex mcp_server/handlers/remember_schema.py:16-133, attached by
+// _tool_meta.py:87-102), or the same JSON in a text block. memory_id is an integer present when
+// stored is true (remember_schema.py:27-33, remember_response.py:78).
+export type RememberReply = { content: readonly unknown[]; isError: boolean; structuredContent?: unknown }
+export type RememberOutcome = { ok: true; memoryId?: number } | { ok: false; failure: string; rebase?: number | null }
 
-  return [...newest.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .map(([session]) => session)
-    .filter((s) => s !== current && !handed.has(s) && sessionSummary(records, s) !== null)
+const textOf = (content: readonly unknown[]): string =>
+  content.map((b) => (typeof b === 'object' && b !== null && 'text' in b ? String((b as { text: unknown }).text) : '')).join(' ').trim()
+
+const resultOf = (r: RememberReply): Record<string, unknown> | null => {
+  if (typeof r.structuredContent === 'object' && r.structuredContent !== null) return r.structuredContent as Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(textOf(r.content))
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+const idOf = (v: unknown): number | undefined => (Number.isSafeInteger(v) && (v as number) > 0 ? (v as number) : undefined)
+
+// Delivered: no error, and either stored (its memory_id kept when it parses) or judged redundant by
+// the write gate (action rejected, a gate reason: Cortex decided, re-sending would not change that).
+// A supersede that cannot land is a failure, with the id to supersede next time: none when the
+// target is gone, the version that replaced it when already superseded or raced (remember_helpers.py
+// 851-873 and 818-830).
+export const rememberOutcome = (r: RememberReply): RememberOutcome => {
+  if (r.isError) return { ok: false, failure: textOf(r.content) || 'remember returned an error' }
+  const o = resultOf(r)
+  if (o === null || o.stored === true) {
+    const memoryId = idOf(o?.memory_id)
+    return memoryId === undefined ? { ok: true } : { ok: true, memoryId }
+  }
+  const reason = String(o.reason ?? o.action ?? 'not stored')
+  if (reason === 'supersede_target_not_found' || reason === 'invalid_supersedes_id') return { ok: false, failure: reason, rebase: null }
+  if (reason === 'supersede_target_already_superseded') return { ok: false, failure: reason, rebase: idOf(o.current_superseded_by_id) ?? null }
+  if (o.action === 'superseded_conflict') return { ok: false, failure: reason, rebase: idOf(o.current_head_id) ?? null }
+  return { ok: true }
 }

@@ -3,14 +3,14 @@ import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
 import type { AgentRecord, Calibration, Design, InsightsState, TurnRecord } from '../types'
 import { briefOf, mechanicalShare } from './brief'
-import { pendingSessions, sessionSummary } from './consumer'
+import { type RememberOutcome, rememberOutcome, sessionSummary } from './consumer'
 import { delegationStats, emptyDelegations, parseDesign } from './delegations'
 import {
   CALIBRATION_PATH,
   FACETS_DIR,
   FACET_SESSIONS_CAP,
   GOALS_DIR,
-  LEDGER_KEY,
+  LEDGER_CAP,
   type Outcome,
   advisorStats,
   agentStats,
@@ -22,9 +22,35 @@ import {
   parseCalibration,
   phaseStats,
   proposals,
-  trimmed,
   withAgent,
 } from './learn'
+import {
+  CLAIM,
+  type Claim,
+  ENDED,
+  LEGACY_PUSHED,
+  LEGACY_TURNS,
+  type Layout,
+  PUSHED,
+  type Pushed,
+  SESSION_PREFIXES,
+  STALE_MS,
+  type Sized,
+  TURNS,
+  evictions,
+  isCovered,
+  isFinished,
+  keyBytes,
+  keyOf,
+  layoutOf,
+  migrationPlan,
+  newestAt,
+  orphans,
+  ownWithin,
+  pendingSessions,
+  pushedOf,
+  sessionOfKey,
+} from './ledger'
 import { sessionModels } from './models'
 import { placePath } from './paths'
 import { trends } from './trend'
@@ -58,11 +84,19 @@ const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
 const AUTOPILOT_POLICY = { plugin: 'zetetic-autopilot', key: 'policy' } as const
 const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
 
-// Module state rebuilt at start: the ledger, the outcomes read, the agents finished in main's
-// current turn before that turn completed.
-let ledger: TurnRecord[] = []
+// Module state rebuilt at start, and again before the first write after a hot reload (register()
+// runs again and resets it; session.start does not fire). The own session's records are written to
+// its own key every turn; the other sessions' records are a snapshot read at start, so the brief and
+// the pane see other live sessions as of start.
+let ownSid: string | null = null
+let own: TurnRecord[] = []
+let others: TurnRecord[] = []
+let layout: Layout | null = null
 let outcomes = new Map<string, Outcome>()
 let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped: 0 }
+
+// Every session's records in time order, the newest LEDGER_CAP, as the single-key ledger held them.
+const ledger = (): TurnRecord[] => [...others, ...own].sort((a, b) => a.at - b.at).slice(-LEDGER_CAP)
 
 // The design each spawned agent was dispatched under, by agentId, kept for the agent's lifetime (a
 // resumed agent completes more than one turn). Bounded: the oldest entry is dropped past the cap.
@@ -85,12 +119,10 @@ const bounded = <V,>(map: Map<string, V>, key: string, value: V): void => {
 
 const remember = (agentId: string, design: Design | null): void => bounded(designs, agentId, design)
 
-// The handoff to Cortex. Sessions already handed over live in the store (it survives restarts;
-// $.state is reset by /clear). A push never runs in a hook that ends the session (session.end has
-// about 1.5 s in all, a Cortex remember was measured at 7.8 s): it is scheduled at start, for the
-// sessions finished before this one.
-export const PUSHED_KEY = 'pushed'
-export const PUSHED_CAP = 500 // source: own choice, session ids kept as handed over; far more than the ledger holds (4 MiB, a few hundred sessions)
+// The handoff to Cortex. What was handed over lives in the store (it survives restarts; $.state is
+// reset by /clear), one pushed:<sid> key per session. A push never runs in a hook that ends the
+// session (session.end has about 1.5 s in all, a Cortex remember was measured at 7.8 s): it is
+// scheduled at start, for the sessions finished by then.
 export const PUSH_BATCH = 5 // source: own choice, sessions handed over per start; a remember is slow (7.8 s measured 2026-10-14), the rest waits for the next start
 export const PUSH_DELAY_MS = 30_000 // source: own choice, the wait after start before the first remember; the session's own startup work goes first
 const REMEMBER_TAGS = ['archival', 'self-calibration', 'zetetic-insights'] // source: Cortex remember convention (agent-guidance: archival + agent_topic)
@@ -98,57 +130,81 @@ const REMEMBER_TAGS = ['archival', 'self-calibration', 'zetetic-insights'] // so
 const REMEMBER_SOURCE = 'tool' // source: Cortex mcp_server/handlers/remember_schema.py lines 205-226 (ADR-0442), `source` is an enum (session, tool, user, consolidation, import, distillation); the writer is named by origin_tool
 
 let server = 'plugin_hypermnesia-mcp_cortex' // source: cortex-cockpit plugin.json userConfig cortex_server default
-let handed: string[] = []
 let generation = 0
 let pushing = false
 
 const cortexOf = (pushed: number, pending: number, lastError: string | null, lastAt: number | null) => ({ pushed, pending, lastError, lastAt })
-
-// The ids handed over, as the store kept them; absent or not a list (an older version) is empty.
-// A store that cannot be read is an error, not empty: reading it as empty would remember twice.
-async function loadHanded($: EngineInterface): Promise<string | null> {
-  handed = []
-  try {
-    const raw = await $.store.get(PUSHED_KEY)
-    if (Array.isArray(raw)) handed = raw.filter((x): x is string => typeof x === 'string').slice(-PUSHED_CAP)
-    return null
-  } catch (error) {
-    return cut(error)
-  }
-}
+const hasSummary = (records: readonly TurnRecord[], session: string): boolean => sessionSummary(records, session) !== null
 
 async function setCortex($: EngineInterface, c: InsightsState['cortex']): Promise<void> {
   await update($, insights, (s) => ({ ...s, cortex: c }))
 }
 
-// Remembers the batch one session at a time. The first failure (a throw or an isError reply) stops
-// the batch, is named in the state and leaves its session unpushed: the next start retries it.
-async function pushBatch($: EngineInterface, mine: number, batch: string[]): Promise<void> {
+// One session handed over: pushed the first time, resent when it was resumed after its handover
+// (superseding its memory when the id is known), or skipped (null) when the claim is no longer
+// exactly this one, its records were evicted, it is live again, or it is covered already. A crash
+// between remember and the pushed: key repeats the remember at a later start: delivery to Cortex
+// is at least once, never lost.
+type Handed = 'pushed' | 'resent' | null | { failure: string }
+async function handOver($: EngineInterface, sid: string, session: string, claimAt: number): Promise<Handed> {
+  const now = await $.clock.now()
+  const claim = (await $.store.get(keyOf(CLAIM, session))) as Claim | undefined
+  if (claim?.by !== sid || claim.at !== claimAt) return null
+  const raw = await $.store.get(keyOf(TURNS, session))
+  if (!Array.isArray(raw)) return null
+  const records = raw as TurnRecord[]
+  const newest = newestAt(records)
+  // Finished as read now, not at start: a session resumed during the delay is live again.
+  const ended = (await $.store.get(keyOf(ENDED, session))) === undefined ? new Set<string>() : new Set([session])
+  if (!isFinished(session, ended, newest, now)) return null
+  const stored = await $.store.get(keyOf(PUSHED, session))
+  const before = stored === undefined ? undefined : pushedOf(stored)
+  if (isCovered(before, newest)) return null
+  const content = sessionSummary(records, session)
+  if (content === null) return null
+  const supersedes = before?.memoryId === undefined ? {} : { supersedes_id: before.memoryId }
+  let outcome: RememberOutcome
+  try {
+    const args = { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights', ...supersedes }
+    outcome = rememberOutcome(await $.mcp.call(server, 'remember', args))
+  } catch (error) {
+    outcome = { ok: false, failure: cut(error) }
+  }
+  if (!outcome.ok) {
+    // A supersede that cannot land: the next start supersedes the version Cortex named, or none.
+    if (before !== undefined && outcome.rebase !== undefined) {
+      const { memoryId: _gone, ...rest } = before
+      await $.store.set(keyOf(PUSHED, session), outcome.rebase === null ? rest : { ...rest, memoryId: outcome.rebase })
+    }
+    return { failure: outcome.failure }
+  }
+  const memoryId = outcome.memoryId ?? before?.memoryId
+  try {
+    await $.store.set(keyOf(PUSHED, session), { at: await $.clock.now(), lastAt: newest, ...(memoryId === undefined ? {} : { memoryId }) } satisfies Pushed)
+  } catch (error) {
+    return { failure: `not saved: ${cut(error)}` }
+  }
+  return before === undefined ? 'pushed' : 'resent'
+}
+
+// Hands the batch over one session at a time. The first failure (a throw or an isError reply) stops
+// the batch, is named in the state and leaves its session unpushed: a later start retries it.
+async function pushBatch($: EngineInterface, mine: number, sid: string, batch: ReadonlyMap<string, number>, counts: { pushed: number; pending: number }): Promise<void> {
   if (pushing || mine !== generation) return
   pushing = true
   try {
-    for (const session of batch) {
+    for (const [session, claimAt] of batch) {
       if (mine !== generation) return
-      const content = sessionSummary(ledger, session)
-      if (content === null || handed.includes(session)) continue
-      let failure: string | null = null
+      let r: Handed
       try {
-        const r = await $.mcp.call(server, 'remember', { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights' })
-        if (r.isError) failure = r.content.map((b) => ('text' in b ? String(b.text) : '')).join(' ').trim() || 'remember returned an error'
+        r = await handOver($, sid, session, claimAt)
       } catch (error) {
-        failure = cut(error)
+        r = { failure: cut(error) }
       }
-      const at = await $.clock.now()
-      if (failure === null) {
-        handed = [...handed, session].slice(-PUSHED_CAP)
-        try {
-          await $.store.set(PUSHED_KEY, handed)
-        } catch (error) {
-          failure = `not saved: ${cut(error)}`
-        }
-      }
-      const pending = pendingSessions(ledger, await $.session.id(), new Set(handed)).length
-      await setCortex($, cortexOf(handed.length, pending, failure === null ? null : failure.slice(0, 120), at))
+      if (r === 'pushed') counts.pushed += 1
+      if (r === 'pushed' || r === 'resent' || r === null) counts.pending -= 1
+      const failure = r !== null && typeof r === 'object' ? r.failure.slice(0, 120) : null
+      await setCortex($, cortexOf(counts.pushed, counts.pending, failure, await $.clock.now()))
       if (failure !== null) return
     }
   } finally {
@@ -156,16 +212,49 @@ async function pushBatch($: EngineInterface, mine: number, batch: string[]): Pro
   }
 }
 
-// After the ledger loads: names what is pending and schedules the first PUSH_BATCH of it.
-async function schedulePush($: EngineInterface): Promise<void> {
+// I3, at most one process hands a session over. The batch a process selects is claimed at once
+// (claim:<sid> = {by, at}); each claim is read back just before its remember, PUSH_DELAY_MS or more
+// later, and only a claim still exactly its own goes on. Selection skips a session another process
+// claimed within CLAIM_TTL_MS, so two processes both claim one only when each selected it before
+// the other's claim landed; the later write wins the key. Two processes whose claim writes land
+// more than PUSH_DELAY_MS (30 s) apart cannot both hold the claim at read-back time.
+async function claimBatch($: EngineInterface, sid: string, todo: readonly string[], now: number): Promise<Map<string, number>> {
+  const claimed = new Map<string, number>()
+  for (const session of todo.slice(0, PUSH_BATCH)) {
+    await $.store.set(keyOf(CLAIM, session), { by: sid, at: now } satisfies Claim)
+    claimed.set(session, now)
+  }
+  return claimed
+}
+
+// Exactly once holds when no process stalls PUSH_DELAY_MS or more between selecting a session and
+// writing its claim, a handover ends within CLAIM_TTL_MS of its claim (no claim expires mid-push),
+// and no process crashes between remember and pushed:. A throw here (the session id, the clock, the
+// store, the state) is named in state.cortex and never fails start(); nothing the timer runs can
+// leave a rejection unhandled.
+async function schedulePush($: EngineInterface, loadError: string | null): Promise<void> {
   generation += 1
   const mine = generation
-  const error = await loadHanded($)
-  const todo = error === null ? pendingSessions(ledger, await $.session.id(), new Set(handed)) : []
-  await setCortex($, cortexOf(handed.length, todo.length, error, null))
-  if (todo.length > 0) $.clock.after(PUSH_DELAY_MS, () =>
-      pushBatch($, mine, todo.slice(0, PUSH_BATCH)).catch((error) => setCortex($, cortexOf(handed.length, todo.length, cut(error), null))),
-    )
+  try {
+    const sid = await $.session.id()
+    const now = await $.clock.now()
+    const todo = layout === null ? [] : pendingSessions(layout, sid, now, hasSummary)
+    const counts = { pushed: layout?.pushed.size ?? 0, pending: todo.length }
+    await setCortex($, cortexOf(counts.pushed, counts.pending, layout === null ? (loadError ?? 'the ledger did not load') : null, null))
+    if (todo.length === 0) return
+    const batch = await claimBatch($, sid, todo, now)
+    $.clock.after(PUSH_DELAY_MS, () => {
+      pushBatch($, mine, sid, batch, counts)
+        .catch((error) => setCortex($, cortexOf(counts.pushed, counts.pending, cut(error), null)))
+        .catch(() => undefined) // the state itself refused: there is nothing left to name it in
+    })
+  } catch (error) {
+    try {
+      await setCortex($, cortexOf(0, 0, `handover not scheduled: ${cut(error)}`.slice(0, 120), null))
+    } catch {
+      // the state itself refused: start() still completes, the next start schedules again
+    }
+  }
 }
 
 const BRIEF_SECTION = 'zetetic-insights:self-calibration'
@@ -183,26 +272,60 @@ async function expandHome($: EngineInterface, path: string): Promise<string> {
   return placed.path
 }
 
-// The ledger as the store kept it; a store that cannot be read, or holds something else under the
-// key, is named and the session starts a new ledger (the next write replaces it).
+// I5: the legacy single-key ledger and pushed list moved to the per-session keys, then deleted.
+async function migrate($: EngineInterface, keys: readonly string[]): Promise<string | null> {
+  if (!keys.includes(LEGACY_TURNS) && !keys.includes(LEGACY_PUSHED)) return null
+  const plan = migrationPlan(await $.store.get(LEGACY_TURNS), await $.store.get(LEGACY_PUSHED), new Set(keys))
+  for (const [key, value] of plan.sets) await $.store.set(key, value)
+  for (const key of plan.deletes) await $.store.delete(key)
+  return plan.malformed ? `the store's ${LEGACY_TURNS} was not a list, it was dropped` : null
+}
+
+async function readLayout($: EngineInterface, keys: readonly string[]): Promise<Layout> {
+  const entries = new Map<string, unknown>()
+  for (const key of keys) if (SESSION_PREFIXES.some((p) => sessionOfKey(key, p) !== null)) entries.set(key, await $.store.get(key))
+  return layoutOf(entries)
+}
+
+// The ledger as the store keeps it, after the migration: the own session's records, and a snapshot
+// of every other session's. A store that cannot be read is named and leaves the ledger unloaded, so
+// no write replaces the own key from an empty copy. A resumed session is live again: its ended: goes.
 async function loadLedger($: EngineInterface): Promise<string | null> {
-  ledger = []
+  ownSid = null
+  own = []
+  others = []
+  layout = null
   try {
-    const raw = await $.store.get(LEDGER_KEY)
-    if (raw === undefined) return null
-    if (!Array.isArray(raw)) return `the store's ${LEDGER_KEY} is not a list, a new ledger starts`
-    ledger = trimmed(raw as TurnRecord[])
-    return null
+    const sid = await $.session.id()
+    const migrated = await migrate($, await $.store.keys())
+    const view = await readLayout($, await $.store.keys())
+    if (view.ended.has(sid)) await $.store.delete(keyOf(ENDED, sid))
+    own = [...(view.turns.get(sid) ?? [])]
+    others = [...view.turns].filter(([s]) => s !== sid).flatMap(([, records]) => records)
+    layout = view
+    ownSid = sid
+    const bad = view.malformed.length === 0 ? null : `${view.malformed.length} malformed, first ${view.malformed[0]}`
+    return migrated ?? bad
   } catch (error) {
     return cut(error)
   }
+}
+
+// Before a write: the module holds the ledger of this session, or loads it (after a hot reload, or
+// a session id that changed under it). A load that fails leaves the write undone and named.
+async function loaded($: EngineInterface, sid: string): Promise<boolean> {
+  if (ownSid === sid) return true
+  const error = await loadLedger($)
+  if (ownSid === sid) return true
+  await update($, insights, (s) => ({ ...s, ledgerError: `not saved: ${error ?? 'the session id changed while loading'}` }))
+  return false
 }
 
 // The outcomes /insights wrote for the ledger's last sessions. No facets folder is "never run",
 // not an error; an unreadable or malformed facet is skipped and named, the others are read.
 async function loadOutcomes($: EngineInterface): Promise<string | null> {
   outcomes = new Map()
-  const sessions = [...new Set(ledger.map((r) => r.session))].slice(-FACET_SESSIONS_CAP)
+  const sessions = [...new Set(ledger().map((r) => r.session))].slice(-FACET_SESSIONS_CAP)
   const failed: string[] = []
   let dir: string
   try {
@@ -254,27 +377,28 @@ async function writeCalibration($: EngineInterface, c: Calibration): Promise<voi
 async function recompute($: EngineInterface, extra: Partial<InsightsState> = {}): Promise<void> {
   const at = await $.clock.now()
   const s = { ...(await read($, insights)), ...extra }
+  const all = ledger()
   let calibration = s.calibration
-  let phases = phaseStats(ledger, outcomes, calibration.changes)
+  let phases = phaseStats(all, outcomes, calibration.changes)
   let ps = proposals(phases, calibration)
   if (s.mode === 'enforce' && ps.length > 0) {
     calibration = applied(calibration, ps, at)
     await writeCalibration($, calibration)
-    phases = phaseStats(ledger, outcomes, calibration.changes)
+    phases = phaseStats(all, outcomes, calibration.changes)
     ps = []
   }
   await update($, insights, () => ({
     ...s,
-    turns: ledger.length,
-    sessions: new Set(ledger.map((r) => r.session)).size,
+    turns: all.length,
+    sessions: new Set(all.map((r) => r.session)).size,
     judgedSessions: [...outcomes.values()].filter((o) => o !== 'unclear').length,
     phases,
-    agents: agentStats(ledger),
-    advisor: advisorStats(ledger),
-    trends: trends(ledger, calibration.changes),
-    models: sessionModels(ledger),
-    delegations: delegationStats(ledger),
-    mechanical: mechanicalShare(ledger),
+    agents: agentStats(all),
+    advisor: advisorStats(all),
+    trends: trends(all, calibration.changes),
+    models: sessionModels(all),
+    delegations: delegationStats(all),
+    mechanical: mechanicalShare(all),
     calibration,
     proposals: ps,
     updatedAt: at,
@@ -291,9 +415,9 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   // The only place the brief is computed: recompute keeps it, so the system prompt stays the same
   // within a start. /resume and fork call start() again: the resumed session gets fresh evidence, at
   // the cost of one cache miss.
-  const brief = briefOf(ledger)
+  const brief = briefOf(ledger())
   await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error, brief })
-  await schedulePush($)
+  await schedulePush($, ledgerError)
 }
 
 // One main turn, as the autopilot's phases and policy and the genius grade left it.
@@ -305,8 +429,10 @@ async function recordTurn($: EngineInterface): Promise<void> {
   const grade = (await $.state.get(GENIUS_STATE)).value?.classified
   const policy = (await $.state.get(AUTOPILOT_POLICY)).value
   const uses = phases.advisor.uses.filter((u) => u.turnId === phases.turnId)
+  const sid = await $.session.id()
+  if (!(await loaded($, sid))) return
   const record: TurnRecord = {
-    session: await $.session.id(),
+    session: sid,
     turnId: phases.turnId ?? '',
     at: await $.clock.now(),
     taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
@@ -322,18 +448,52 @@ async function recordTurn($: EngineInterface): Promise<void> {
     stuck: policy?.decisions.filter((d) => d.kind === 'stuck' && d.at >= since).length ?? 0,
   }
   pending = { agents: [], dropped: 0 }
-  await saved($, [...ledger, record])
+  await saved($, sid, [...own, record])
 }
 
-// The ledger kept under both caps, written; a store that still refuses it is named in the panel,
-// never left to fail silently on every turn.
-async function saved($: EngineInterface, next: TurnRecord[]): Promise<void> {
-  ledger = trimmed(next)
+// I4: the own records written under the byte budget, measured over every turns:* key as read now.
+// Finished sessions are evicted when the own write would not fit (ledger.ts evictions), then keys
+// left without their session; a live session is never touched (I2). A store that refuses is named
+// in the panel, never left to fail silently on every turn.
+async function saved($: EngineInterface, sid: string, next: TurnRecord[]): Promise<void> {
   try {
-    await $.store.set(LEDGER_KEY, ledger)
+    const keys = await $.store.keys()
+    const now = await $.clock.now()
+    const ended = new Set(keys.map((k) => sessionOfKey(k, ENDED)).filter((x): x is string => x !== null))
+    const pushed = new Set(keys.map((k) => sessionOfKey(k, PUSHED)).filter((x): x is string => x !== null))
+    // Evicted first: sessions whose pushed: covers every record they hold (nothing left to send).
+    const sized: Sized[] = []
+    for (const key of keys) {
+      const session = sessionOfKey(key, TURNS)
+      if (session === null || session === sid) continue
+      const raw = await $.store.get(key)
+      if (!Array.isArray(raw)) continue
+      const records = raw as TurnRecord[]
+      const newest = newestAt(records)
+      const covered = pushed.has(session) && isCovered(pushedOf(await $.store.get(keyOf(PUSHED, session))), newest)
+      sized.push({ session, bytes: keyBytes(session, records), newest, finished: isFinished(session, ended, newest, now), pushed: covered })
+    }
+    const plan = evictions(sized, keyBytes(sid, next))
+    for (const session of plan.evict) for (const prefix of SESSION_PREFIXES) await $.store.delete(keyOf(prefix, session))
+    for (const key of orphans(keys, sid)) await $.store.delete(key)
+    if (plan.evict.length > 0) others = others.filter((r) => !plan.evict.includes(r.session))
+    own = ownWithin(sid, next, plan.ownRoom)
+    await $.store.set(keyOf(TURNS, sid), own)
     await update($, insights, (s) => ({ ...s, ledgerError: null }))
   } catch (error) {
     await update($, insights, (s) => ({ ...s, ledgerError: `not saved: ${cut(error)}` }))
+  }
+}
+
+// session.end, also fired with the old id by /clear: the session is finished, other processes may
+// hand it over. One local set, well inside the hook's 1.5 s. Only a session with records is marked,
+// so no ended: key outlives a session that never had a turns: key.
+async function markEnded($: EngineInterface, sid: string): Promise<void> {
+  try {
+    const has = ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined
+    if (has) await $.store.set(keyOf(ENDED, sid), { at: await $.clock.now() })
+  } catch (error) {
+    await update($, insights, (s) => ({ ...s, ledgerError: `not marked ended (finished after ${STALE_MS / 3_600_000} h idle instead): ${cut(error)}` }))
   }
 }
 
@@ -361,14 +521,16 @@ async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage
       ? {}
       : { tokensIn: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens, tokensOut: usage.output_tokens }),
   }
-  const last = ledger[ledger.length - 1]
+  const sid = await $.session.id()
+  if (!(await loaded($, sid))) return
+  const last = own[own.length - 1]
   if (last === undefined || phases.turnId === null || last.turnId !== phases.turnId) {
     pending = withAgent(pending, agent)
     return
   }
   const joined = withAgent({ agents: last.agents, dropped: last.agentsDropped ?? 0 }, agent)
   const record = { ...last, agents: joined.agents, ...(joined.dropped > 0 ? { agentsDropped: joined.dropped } : {}) }
-  await saved($, [...ledger.slice(0, -1), record])
+  await saved($, sid, [...own.slice(0, -1), record])
   await recompute($)
 }
 
@@ -397,6 +559,13 @@ async function calibrate($: EngineInterface, args: string): Promise<string> {
 export const register: Register = (on, options) => {
   const mode: InsightsState['mode'] = options.learning_mode === 'enforce' ? 'enforce' : 'observe'
   server = String(options.cortex_server ?? server)
+  ownSid = null // a load or a hot reload: the module holds no ledger until it reads the store again
+
+  on('session.end', async ($, e, next) => {
+    await markEnded($, e.sessionId)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
     await start($, mode)
