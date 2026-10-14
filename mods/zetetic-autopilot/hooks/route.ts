@@ -65,10 +65,19 @@ export const routeAgentModel = (
   return undefined
 }
 
+// The main step's `model` is sent to the Messages API as is, and the API knows full ids only:
+// the CLI aliases (`sonnet`) are resolved by Claude Code before a session starts, not here.
+// Sending `sonnet` made every main step fail over ("Switched to Opus 5 because sonnet is not
+// available", 2026-10-14). The Agent tool's `model` is the alias enum, so subagents keep
+// `SONNET`/`HAIKU`/`OPUS` above.
+// source: Claude model ids, Sonnet 5.5 = 'claude-sonnet-5-5' (measured 2026-10-14:
+// `claude -p --model sonnet` reports modelUsage claude-sonnet-5-5)
+export const SONNET_MAIN_ID = 'claude-sonnet-5-5'
+
 // Main thread: a model switch forfeits the prompt cache (the engine's model-change event
 // carries `prompt_cache_warm` and `estimated_cache_write_usd` for that reason), so the lever
 // is pulled for quota pressure alone, never from a request's class. Owner's rule: heavy → sonnet.
 export const mainModelFor = (model: string, pressure: Pressure): string | undefined => {
   const f = familyOf(model)
-  return pressure === 'quota' && (f === OPUS || f === 'fable') ? SONNET : undefined
+  return pressure === 'quota' && (f === OPUS || f === 'fable') ? SONNET_MAIN_ID : undefined
 }

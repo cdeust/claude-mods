@@ -61,8 +61,9 @@ test('pressure never raises: a haiku or sonnet definition under a heavy parent s
 })
 
 test('main drops to sonnet under quota pressure only, and only from opus or fable', () => {
-  expect(mainModelFor(FABLE, 'quota')).toBe('sonnet')
-  expect(mainModelFor(OPUS, 'quota')).toBe('sonnet')
+  // A full id: the main step's model goes to the Messages API, which rejects the CLI alias.
+  expect(mainModelFor(FABLE, 'quota')).toBe('claude-sonnet-5-5')
+  expect(mainModelFor(OPUS, 'quota')).toBe('claude-sonnet-5-5')
   expect(mainModelFor(FABLE, 'context')).toBe(undefined)
   expect(mainModelFor('claude-sonnet-5-5', 'quota')).toBe(undefined)
   expect(mainModelFor('claude-haiku-5-5', 'quota')).toBe(undefined)
