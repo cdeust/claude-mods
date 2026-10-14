@@ -3,7 +3,7 @@ import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
 import type { AgentRecord, Calibration, Design, InsightsState, TurnRecord } from '../types'
 import { briefOf, mechanicalShare } from './brief'
-import { type RememberOutcome, rememberOutcome, sessionSummary } from './consumer'
+import { type RememberOutcome, aggregateSummary, rememberOutcome } from './consumer'
 import { delegationStats, emptyDelegations, parseDesign } from './delegations'
 import {
   CALIBRATION_PATH,
@@ -25,9 +25,11 @@ import {
   withAgent,
 } from './learn'
 import {
+  AGGREGATE,
   CLAIM,
   type Claim,
   ENDED,
+  LEGACY,
   LEGACY_PUSHED,
   LEGACY_TURNS,
   type Layout,
@@ -37,9 +39,11 @@ import {
   STALE_MS,
   type Sized,
   TURNS,
+  aggregateOf,
+  claimedByOther,
   evictions,
+  handoverPlan,
   isCovered,
-  isFinished,
   keyBytes,
   keyOf,
   layoutOf,
@@ -47,7 +51,6 @@ import {
   newestAt,
   orphans,
   ownWithin,
-  pendingSessions,
   pushedOf,
   sessionOfKey,
 } from './ledger'
@@ -119,11 +122,11 @@ const bounded = <V,>(map: Map<string, V>, key: string, value: V): void => {
 
 const remember = (agentId: string, design: Design | null): void => bounded(designs, agentId, design)
 
-// The handoff to Cortex. What was handed over lives in the store (it survives restarts; $.state is
-// reset by /clear), one pushed:<sid> key per session. A push never runs in a hook that ends the
+// The handoff to Cortex: one aggregate memory over the finished sessions, replacing itself. What it
+// covers lives in the store (it survives restarts; $.state is reset by /clear), one pushed:<sid> key
+// per session, and its head in the key `aggregate`. An update never runs in a hook that ends the
 // session (session.end has about 1.5 s in all, a Cortex remember was measured at 7.8 s): it is
 // scheduled at start, for the sessions finished by then.
-export const PUSH_BATCH = 5 // source: own choice, sessions handed over per start; a remember is slow (7.8 s measured 2026-10-14), the rest waits for the next start
 export const PUSH_DELAY_MS = 30_000 // source: own choice, the wait after start before the first remember; the session's own startup work goes first
 const REMEMBER_TAGS = ['archival', 'self-calibration', 'zetetic-insights'] // source: Cortex remember convention (agent-guidance: archival + agent_topic)
 
@@ -134,117 +137,95 @@ let generation = 0
 let pushing = false
 
 const cortexOf = (pushed: number, pending: number, lastError: string | null, lastAt: number | null) => ({ pushed, pending, lastError, lastAt })
-const hasSummary = (records: readonly TurnRecord[], session: string): boolean => sessionSummary(records, session) !== null
+const AGGREGATE_CLAIM = keyOf(CLAIM, AGGREGATE)
 
 async function setCortex($: EngineInterface, c: InsightsState['cortex']): Promise<void> {
   await update($, insights, (s) => ({ ...s, cortex: c }))
 }
 
-// One session handed over: pushed the first time, resent when it was resumed after its handover
-// (superseding its memory when the id is known), or skipped (null) when the claim is no longer
-// exactly this one, its records were evicted, it is live again, or it is covered already. A crash
-// between remember and the pushed: key repeats the remember at a later start: delivery to Cortex
-// is at least once, never lost.
-type Handed = 'pushed' | 'resent' | null | { failure: string }
-async function handOver($: EngineInterface, sid: string, session: string, claimAt: number): Promise<Handed> {
-  const now = await $.clock.now()
-  const claim = (await $.store.get(keyOf(CLAIM, session))) as Claim | undefined
-  if (claim?.by !== sid || claim.at !== claimAt) return null
-  const raw = await $.store.get(keyOf(TURNS, session))
-  if (!Array.isArray(raw)) return null
-  const records = raw as TurnRecord[]
-  const newest = newestAt(records)
-  // Finished as read now, not at start: a session resumed during the delay is live again.
-  const ended = (await $.store.get(keyOf(ENDED, session))) === undefined ? new Set<string>() : new Set([session])
-  if (!isFinished(session, ended, newest, now)) return null
-  const stored = await $.store.get(keyOf(PUSHED, session))
-  const before = stored === undefined ? undefined : pushedOf(stored)
-  if (isCovered(before, newest)) return null
-  const content = sessionSummary(records, session)
-  if (content === null) return null
-  const supersedes = before?.memoryId === undefined ? {} : { supersedes_id: before.memoryId }
-  let outcome: RememberOutcome
-  try {
-    const args = { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights', ...supersedes }
-    outcome = rememberOutcome(await $.mcp.call(server, 'remember', args))
-  } catch (error) {
-    outcome = { ok: false, failure: cut(error) }
-  }
-  if (!outcome.ok) {
-    // A supersede that cannot land: the next start supersedes the version Cortex named, or none.
-    if (before !== undefined && outcome.rebase !== undefined) {
-      const { memoryId: _gone, ...rest } = before
-      await $.store.set(keyOf(PUSHED, session), outcome.rebase === null ? rest : { ...rest, memoryId: outcome.rebase })
-    }
-    return { failure: outcome.failure }
-  }
-  const memoryId = outcome.memoryId ?? before?.memoryId
-  try {
-    await $.store.set(keyOf(PUSHED, session), { at: await $.clock.now(), lastAt: newest, ...(memoryId === undefined ? {} : { memoryId }) } satisfies Pushed)
-  } catch (error) {
-    return { failure: `not saved: ${cut(error)}` }
-  }
-  return before === undefined ? 'pushed' : 'resent'
+// The finished sessions marked as in the aggregate, each up to its newest record as read now.
+async function cover($: EngineInterface, view: Layout, sessions: readonly string[], at: number): Promise<void> {
+  for (const s of sessions) await $.store.set(keyOf(PUSHED, s), { at, lastAt: newestAt(view.turns.get(s) ?? []) } satisfies Pushed)
 }
 
-// Hands the batch over one session at a time. The first failure (a throw or an isError reply) stops
-// the batch, is named in the state and leaves its session unpushed: a later start retries it.
-async function pushBatch($: EngineInterface, mine: number, sid: string, batch: ReadonlyMap<string, number>, counts: { pushed: number; pending: number }): Promise<void> {
+// What one reply changes (consumer.ts rememberOutcome), and what is named in state.cortex. A merged
+// id is another memory, never recorded; a failure changes nothing and the next start retries.
+async function applyOutcome($: EngineInterface, view: Layout, finished: readonly string[], outcome: RememberOutcome): Promise<string | null> {
+  const at = await $.clock.now()
+  if (outcome.kind === 'failed') return outcome.failure
+  if (outcome.kind === 'merged') return `Cortex merged the aggregate into memory ${outcome.memoryId ?? '?'}, not ours: not recorded`
+  if (outcome.kind === 'moved') {
+    await $.store.set(AGGREGATE, outcome.memoryId === null ? { at } : { at, memoryId: outcome.memoryId })
+    return `${outcome.reason}: head ${outcome.memoryId ?? 'cleared'}, the next start updates it`
+  }
+  if (outcome.kind === 'head') await $.store.set(AGGREGATE, { at, memoryId: outcome.memoryId })
+  await cover($, view, finished, at)
+  return outcome.kind === 'redundant' ? `not stored, already represented: ${outcome.reason}` : null
+}
+
+// The aggregate updated once, after the delay: only while the claim is still exactly this one, over
+// the store as read now (a session resumed during the delay is live again, and left out).
+async function updateAggregate($: EngineInterface, mine: number, sid: string, claimAt: number): Promise<void> {
   if (pushing || mine !== generation) return
   pushing = true
   try {
-    for (const [session, claimAt] of batch) {
-      if (mine !== generation) return
-      let r: Handed
+    const claim = (await $.store.get(AGGREGATE_CLAIM)) as Claim | undefined
+    if (claim?.by !== sid || claim.at !== claimAt) return
+    const now = await $.clock.now()
+    const view = await readLayout($, await $.store.keys())
+    const plan = handoverPlan(view, sid, now)
+    if (plan.pending.length === 0) return
+    const content = aggregateSummary(plan.finished.flatMap((s) => view.turns.get(s) ?? []), now)
+    let error: string | null = null
+    if (content === null) await cover($, view, plan.finished, now) // nothing measured: nothing to say
+    else {
+      const head = aggregateOf(await $.store.get(AGGREGATE))
+      const args = { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights', ...(head.memoryId === undefined ? {} : { supersedes_id: head.memoryId }) }
+      let outcome: RememberOutcome
       try {
-        r = await handOver($, sid, session, claimAt)
+        outcome = rememberOutcome(await $.mcp.call(server, 'remember', args))
       } catch (error) {
-        r = { failure: cut(error) }
+        outcome = { kind: 'failed', failure: cut(error) }
       }
-      if (r === 'pushed') counts.pushed += 1
-      if (r === 'pushed' || r === 'resent' || r === null) counts.pending -= 1
-      const failure = r !== null && typeof r === 'object' ? r.failure.slice(0, 120) : null
-      await setCortex($, cortexOf(counts.pushed, counts.pending, failure, await $.clock.now()))
-      if (failure !== null) return
+      error = await applyOutcome($, view, plan.finished, outcome)
     }
+    const after = handoverPlan(await readLayout($, await $.store.keys()), sid, now)
+    await setCortex($, cortexOf(after.finished.length - after.pending.length, after.pending.length, error?.slice(0, 120) ?? null, await $.clock.now()))
   } finally {
     pushing = false
   }
 }
 
-// I3, at most one process hands a session over. The batch a process selects is claimed at once
-// (claim:<sid> = {by, at}); each claim is read back just before its remember, PUSH_DELAY_MS or more
-// later, and only a claim still exactly its own goes on. Selection skips a session another process
-// claimed within CLAIM_TTL_MS, so two processes both claim one only when each selected it before
-// the other's claim landed; the later write wins the key. Two processes whose claim writes land
-// more than PUSH_DELAY_MS (30 s) apart cannot both hold the claim at read-back time.
-async function claimBatch($: EngineInterface, sid: string, todo: readonly string[], now: number): Promise<Map<string, number>> {
-  const claimed = new Map<string, number>()
-  for (const session of todo.slice(0, PUSH_BATCH)) {
-    await $.store.set(keyOf(CLAIM, session), { by: sid, at: now } satisfies Claim)
-    claimed.set(session, now)
-  }
-  return claimed
+// I3, at most one process updates the aggregate per claim window. claim:aggregate is re-read from the
+// store just before it is written (never from the start snapshot), skipped when another process holds
+// it within CLAIM_TTL_MS, written, then read back after PUSH_DELAY_MS: only a claim still exactly its
+// own goes on. Two processes both reach their remember only when one stalled PUSH_DELAY_MS (30 s) or
+// more between its re-read and its write: otherwise the later write lands within 30 s of the
+// earlier one, so the earlier one reads it back and skips, or the later one re-read the earlier
+// claim and never wrote.
+async function claimAggregate($: EngineInterface, sid: string, now: number): Promise<boolean> {
+  if (claimedByOther((await $.store.get(AGGREGATE_CLAIM)) as Claim | undefined, sid, now)) return false
+  await $.store.set(AGGREGATE_CLAIM, { by: sid, at: now } satisfies Claim)
+  return true
 }
 
-// Exactly once holds when no process stalls PUSH_DELAY_MS or more between selecting a session and
-// writing its claim, a handover ends within CLAIM_TTL_MS of its claim (no claim expires mid-push),
-// and no process crashes between remember and pushed:. A throw here (the session id, the clock, the
-// store, the state) is named in state.cortex and never fails start(); nothing the timer runs can
-// leave a rejection unhandled.
+// Exactly once per change holds when no process stalls PUSH_DELAY_MS between its claim re-read and
+// write, an update ends within CLAIM_TTL_MS of its claim, and no process crashes between remember and
+// its keys (then the next start repeats the remember: at least once). A throw here (the session id,
+// the clock, the store, the state) is named in state.cortex and never fails start(); nothing the
+// timer runs can leave a rejection unhandled.
 async function schedulePush($: EngineInterface, loadError: string | null): Promise<void> {
   generation += 1
   const mine = generation
   try {
     const sid = await $.session.id()
     const now = await $.clock.now()
-    const todo = layout === null ? [] : pendingSessions(layout, sid, now, hasSummary)
-    const counts = { pushed: layout?.pushed.size ?? 0, pending: todo.length }
+    const plan = layout === null ? { finished: [], pending: [] } : handoverPlan(layout, sid, now)
+    const counts = { pushed: plan.finished.length - plan.pending.length, pending: plan.pending.length }
     await setCortex($, cortexOf(counts.pushed, counts.pending, layout === null ? (loadError ?? 'the ledger did not load') : null, null))
-    if (todo.length === 0) return
-    const batch = await claimBatch($, sid, todo, now)
+    if (plan.pending.length === 0 || !(await claimAggregate($, sid, now))) return
     $.clock.after(PUSH_DELAY_MS, () => {
-      pushBatch($, mine, sid, batch, counts)
+      updateAggregate($, mine, sid, now)
         .catch((error) => setCortex($, cortexOf(counts.pushed, counts.pending, cut(error), null)))
         .catch(() => undefined) // the state itself refused: there is nothing left to name it in
     })
@@ -272,10 +253,16 @@ async function expandHome($: EngineInterface, path: string): Promise<string> {
   return placed.path
 }
 
-// I5: the legacy single-key ledger and pushed list moved to the per-session keys, then deleted.
+// I5: the legacy single-key ledger and pushed list moved to legacy:<sid> and pushed:<sid>, then deleted.
 async function migrate($: EngineInterface, keys: readonly string[]): Promise<string | null> {
   if (!keys.includes(LEGACY_TURNS) && !keys.includes(LEGACY_PUSHED)) return null
-  const plan = migrationPlan(await $.store.get(LEGACY_TURNS), await $.store.get(LEGACY_PUSHED), new Set(keys))
+  const legacyPushed = await $.store.get(LEGACY_PUSHED)
+  const held = new Map<string, TurnRecord[]>()
+  for (const id of Array.isArray(legacyPushed) ? legacyPushed : []) {
+    const raw = typeof id === 'string' ? await $.store.get(keyOf(TURNS, id)) : undefined
+    if (Array.isArray(raw)) held.set(id as string, raw as TurnRecord[])
+  }
+  const plan = migrationPlan(await $.store.get(LEGACY_TURNS), legacyPushed, new Set(keys), (id) => held.get(id))
   for (const [key, value] of plan.sets) await $.store.set(key, value)
   for (const key of plan.deletes) await $.store.delete(key)
   return plan.malformed ? `the store's ${LEGACY_TURNS} was not a list, it was dropped` : null
@@ -451,33 +438,45 @@ async function recordTurn($: EngineInterface): Promise<void> {
   await saved($, sid, [...own, record])
 }
 
-// I4: the own records written under the byte budget, measured over every turns:* key as read now.
-// Finished sessions are evicted when the own write would not fit (ledger.ts evictions), then keys
-// left without their session; a live session is never touched (I2). A store that refuses is named
-// in the panel, never left to fail silently on every turn.
+// I4: the own records written under the byte budget, measured over every records key as read now.
+// Ended sessions are evicted when the own write would not fit (ledger.ts evictions), then keys left
+// without their session. A session without ended: is never deleted here (I2); when the own write
+// cannot fit without that, it is refused and named in the panel, never left to fail silently.
+// The one race left (I2): this process reads ended:S, then S's process resumes and deletes it, then
+// this process evicts S, within the few store calls between that read and the deletes (milliseconds).
+// S loses its stored records until its next own write rewrites turns:S from the module copy, which
+// holds them all, except after a hot reload before S's first turn (the module copy is empty then).
 async function saved($: EngineInterface, sid: string, next: TurnRecord[]): Promise<void> {
   try {
     const keys = await $.store.keys()
-    const now = await $.clock.now()
     const ended = new Set(keys.map((k) => sessionOfKey(k, ENDED)).filter((x): x is string => x !== null))
-    const pushed = new Set(keys.map((k) => sessionOfKey(k, PUSHED)).filter((x): x is string => x !== null))
-    // Evicted first: sessions whose pushed: covers every record they hold (nothing left to send).
-    const sized: Sized[] = []
+    const bySession = new Map<string, { bytes: number; records: TurnRecord[] }>()
+    let ownLegacy = 0
     for (const key of keys) {
-      const session = sessionOfKey(key, TURNS)
-      if (session === null || session === sid) continue
+      const session = sessionOfKey(key, TURNS) ?? sessionOfKey(key, LEGACY)
+      if (session === null) continue
       const raw = await $.store.get(key)
       if (!Array.isArray(raw)) continue
-      const records = raw as TurnRecord[]
-      const newest = newestAt(records)
-      const covered = pushed.has(session) && isCovered(pushedOf(await $.store.get(keyOf(PUSHED, session))), newest)
-      sized.push({ session, bytes: keyBytes(session, records), newest, finished: isFinished(session, ended, newest, now), pushed: covered })
+      if (session === sid) {
+        if (key !== keyOf(TURNS, sid)) ownLegacy += keyBytes(key, raw as TurnRecord[]) // legacy:<own>, written by the migration only
+        continue
+      }
+      const s = bySession.get(session) ?? { bytes: 0, records: [] }
+      bySession.set(session, { bytes: s.bytes + keyBytes(key, raw as TurnRecord[]), records: [...s.records, ...(raw as TurnRecord[])] })
     }
-    const plan = evictions(sized, keyBytes(sid, next))
-    for (const session of plan.evict) for (const prefix of SESSION_PREFIXES) await $.store.delete(keyOf(prefix, session))
+    const sized: Sized[] = []
+    for (const [session, s] of bySession) {
+      const newest = newestAt(s.records)
+      const covered = isCovered(pushedOf(await $.store.get(keyOf(PUSHED, session))), newest)
+      sized.push({ session, bytes: s.bytes, newest, ended: ended.has(session), pushed: covered })
+    }
+    const mine = ownWithin(sid, next)
+    const evict = evictions(sized, keyBytes(keyOf(TURNS, sid), mine) + ownLegacy)
+    if (evict === null) throw new Error('the live sessions leave no room for this session within the ledger budget')
+    for (const session of evict) for (const prefix of SESSION_PREFIXES) await $.store.delete(keyOf(prefix, session))
     for (const key of orphans(keys, sid)) await $.store.delete(key)
-    if (plan.evict.length > 0) others = others.filter((r) => !plan.evict.includes(r.session))
-    own = ownWithin(sid, next, plan.ownRoom)
+    if (evict.length > 0) others = others.filter((r) => !evict.includes(r.session))
+    own = mine
     await $.store.set(keyOf(TURNS, sid), own)
     await update($, insights, (s) => ({ ...s, ledgerError: null }))
   } catch (error) {
@@ -490,7 +489,7 @@ async function saved($: EngineInterface, sid: string, next: TurnRecord[]): Promi
 // so no ended: key outlives a session that never had a turns: key.
 async function markEnded($: EngineInterface, sid: string): Promise<void> {
   try {
-    const has = ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined
+    const has = ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined || (await $.store.get(keyOf(LEGACY, sid))) !== undefined
     if (has) await $.store.set(keyOf(ENDED, sid), { at: await $.clock.now() })
   } catch (error) {
     await update($, insights, (s) => ({ ...s, ledgerError: `not marked ended (finished after ${STALE_MS / 3_600_000} h idle instead): ${cut(error)}` }))

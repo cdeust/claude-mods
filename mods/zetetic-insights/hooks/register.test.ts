@@ -351,7 +351,7 @@ test('prompt.compose: the text stays the same after a turn changed the ledger, a
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   const first = (await compose($)).sections[1]!.text
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  expect((w.store['turns:old'] as unknown[]).length + (w.store['turns:sess-1'] as unknown[]).length).toBe(3)
+  expect((w.store['legacy:old'] as unknown[]).length + (w.store['turns:sess-1'] as unknown[]).length).toBe(3)
   const second = await compose($)
   expect(second.sections.length).toBe(2)
   expect(second.sections[1]!.text).toBe(first)
@@ -373,7 +373,10 @@ test('prompt.compose: an empty ledger adds no section', async ($, on) => {
 // The handoff to Cortex: each finished session, once, from a later start, never inside a hook.
 const SERVER = 'plugin_hypermnesia-mcp_cortex'
 type Call = { server: string; tool: string; args: Record<string, unknown> }
-const cortex = (on: Parameters<TestBody>[1], reply: { isError: boolean } = { isError: false }) => {
+// reply: isError, or the structured dict Cortex returns (shapes from remember_response.py 69-123,
+// remember_helpers.py 821-873, write_gate.py 145-166); by default a new stored or superseded row.
+type Reply = { isError: boolean; structured?: Record<string, unknown> }
+const cortex = (on: Parameters<TestBody>[1], reply: Reply = { isError: false }) => {
   const calls: Call[] = []
   const answer = { reply }
   on('mcp.call', ($, e, next) => {
@@ -381,8 +384,7 @@ const cortex = (on: Parameters<TestBody>[1], reply: { isError: boolean } = { isE
     if (server !== SERVER) return next(e)
     calls.push({ server, tool, args })
     if (answer.reply.isError) return { value: { content: [{ type: 'text' as const, text: 'down' }], isError: true } }
-    // Cortex's reply shape: remember_response.py:78, a new memory id per stored row.
-    const structured = { stored: true, memory_id: 100 + calls.length, action: 'supersedes_id' in args ? 'superseded' : 'stored' }
+    const structured = answer.reply.structured ?? { stored: true, memory_id: 100 + calls.length, action: 'supersedes_id' in args ? 'superseded' : 'stored', reason: 'novel' }
     return { value: { content: [{ type: 'text' as const, text: JSON.stringify(structured) }], isError: false, structuredContent: structured } }
   })
   return { calls, answer }
@@ -403,7 +405,7 @@ const ENDED_PAST = { 'ended:old-a': { at: 11 }, 'ended:old-b': { at: 21 } }
 const pushedKeys = (store: Record<string, unknown>) => Object.keys(store).filter((k) => k.startsWith('pushed:')).sort()
 const START = { surface: 'terminal', isInteractive: true, cwd: '/r' } as const
 
-test('cortex: after start the 2 past sessions are remembered, oldest first, the current one is not', async ($, on) => {
+test('cortex: after start one aggregate over the 2 past sessions is remembered, the current one is not', async ($, on) => {
   const w: World = { files: {}, written: {}, store: { turns: LEDGER(), ...ENDED_PAST } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
@@ -412,9 +414,10 @@ test('cortex: after start the 2 past sessions are remembered, oldest first, the 
   expect(calls.length).toBe(0)
   expect(seen.cortex).toEqual({ pushed: 0, pending: 2, lastError: null, lastAt: null })
   await clock.advance(60_000)
-  expect(calls.map((c) => c.tool)).toEqual(['remember', 'remember'])
-  expect(calls.map((c) => String(c.args.content).slice(0, 36))).toEqual(['Self-calibration of session old-a (1', 'Self-calibration of session old-b (1'])
+  expect(calls.map((c) => c.tool)).toEqual(['remember'])
+  expect(String(calls[0]?.args.content).split('\n')[0]).toBe('Self-calibration (zetetic-insights, last 2 finished sessions, as of 1970-01-01):')
   expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['agent_topic', 'content', 'origin_tool', 'source', 'tags'])
+  expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 101 })
   expect(calls[0]?.args).toMatchObject({ tags: ['archival', 'self-calibration', 'zetetic-insights'], agent_topic: 'self-calibration', source: 'tool', origin_tool: 'zetetic-insights' })
   expect(pushedKeys(w.store)).toEqual(['pushed:old-a', 'pushed:old-b'])
   expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0, lastError: null })
@@ -426,10 +429,10 @@ test('cortex: a second start remembers nothing more', async ($, on) => {
   const { calls } = cortex(on)
   await $.session.start(START)
   await clock.advance(60_000)
-  expect(calls.length).toBe(2)
+  expect(calls.length).toBe(1)
   await $.session.start(START)
   await clock.advance(60_000)
-  expect(calls.length).toBe(2)
+  expect(calls.length).toBe(1)
 })
 
 test('cortex: an isError reply stops the batch, is named in the state, and the next start retries', async ($, on) => {
@@ -447,7 +450,7 @@ test('cortex: an isError reply stops the batch, is named in the state, and the n
   answer.reply = { isError: false }
   await $.session.start(START)
   await clock.advance(60_000)
-  expect(calls.length).toBe(3)
+  expect(calls.length).toBe(2)
   expect(pushedKeys(w.store)).toEqual(['pushed:old-a', 'pushed:old-b'])
   expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0 })
 })
@@ -458,7 +461,7 @@ test('cortex: a state stored by an older version, without pushed, reads as empty
   const { calls } = cortex(on)
   await $.session.start(START)
   await clock.advance(60_000)
-  expect(calls.length).toBe(2)
+  expect(calls.length).toBe(1)
 })
 
 test('cortex: no mcp.call happens inside a session.end hook', async ($, on) => {
@@ -536,16 +539,16 @@ test('D2 I3 a session live in another process is not handed over; after its ende
   w.store['ended:B'] = { at: 2_000 } // B's process ended it
   await $.session.start(START)
   await clock.advance(60_000)
-  expect(calls.map((c) => String(c.args.content).slice(0, 29))).toEqual(['Self-calibration of session B'])
+  expect(calls.map((c) => String(c.args.content).slice(0, 49))).toEqual(['Self-calibration (zetetic-insights, last 1 finish'])
   expect(w.store['pushed:B']).toBeDefined()
-  expect((w.store['claim:B'] as { by: string }).by).toBe('sess-1')
+  expect((w.store['claim:aggregate'] as { by: string }).by).toBe('sess-1')
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(1)
 })
 
 test('I3 a claim by another process younger than the TTL makes A skip; one taken during the delay too; an expired one does not', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 }, 'claim:B': { by: 'C', at: 900 } } }
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 }, 'claim:aggregate': { by: 'C', at: 900 } } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
   await $.session.start(START)
@@ -554,7 +557,7 @@ test('I3 a claim by another process younger than the TTL makes A skip; one taken
   // The claim expires (TTL 10 min): the next start schedules B, but C claims it again during the delay.
   await clock.advance(10 * 60_000)
   await $.session.start(START)
-  w.store['claim:B'] = { by: 'C', at: clock.now() }
+  w.store['claim:aggregate'] = { by: 'C', at: clock.now() }
   await clock.advance(60_000)
   expect(calls.length).toBe(0)
   expect(w.store['pushed:B']).toBeUndefined()
@@ -607,8 +610,8 @@ test('I5 migration from the legacy turns and pushed keys, run twice: the same st
   stubs(on, w)
   await $.session.start(START)
   const once = JSON.parse(JSON.stringify(w.store))
-  expect(Object.keys(once).sort()).toEqual(['pushed:old-a', 'turns:old-a', 'turns:old-b', 'turns:sess-1'])
-  expect(once['turns:old-b']).toEqual([pastSession('old-b', 20)])
+  expect(Object.keys(once).sort()).toEqual(['legacy:old-a', 'legacy:old-b', 'legacy:sess-1', 'pushed:old-a'])
+  expect(once['legacy:old-b']).toEqual([pastSession('old-b', 20)])
   await $.session.start(START)
   expect(w.store).toEqual(once)
 })
@@ -650,13 +653,13 @@ test('the clock.after callback leaves no rejection unhandled when the state itse
   refuse = true
   await clock.advance(60_000)
   expect(calls.length).toBe(1)
-  expect(pushedKeys(w.store)).toEqual(['pushed:old-a'])
+  expect(pushedKeys(w.store)).toEqual(['pushed:old-a', 'pushed:old-b'])
 })
 
 test('I3 a claim C writes between A\'s claim and A\'s read-back wins: A does not remember', async ($, on) => {
   const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
   w.afterSet = (key) => {
-    if (key === 'claim:B') w.store['claim:B'] = { by: 'C', at: 1_000 }
+    if (key === 'claim:aggregate') w.store['claim:aggregate'] = { by: 'C', at: 1_000 }
   }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
@@ -665,7 +668,7 @@ test('I3 a claim C writes between A\'s claim and A\'s read-back wins: A does not
   await clock.advance(60_000)
   expect(calls.length).toBe(0)
   expect(w.store['pushed:B']).toBeUndefined()
-  expect(seen.cortex).toMatchObject({ pushed: 0, pending: 0, lastError: null })
+  expect(seen.cortex).toMatchObject({ pushed: 0, pending: 1, lastError: null })
 })
 
 test('I3 a session resumed during the delay (its process removed its ended:) is live again: not handed over', async ($, on) => {
@@ -679,28 +682,30 @@ test('I3 a session resumed during the delay (its process removed its ended:) is 
   expect(w.store['pushed:B']).toBeUndefined()
 })
 
-test('I3 the claim is set at selection; B overwrites it during the delay, so A skips', async ($, on) => {
+test('I3 two processes through claim:aggregate: the claim is set at selection; B2 overwrites it during the delay, so only B2 may remember', async ($, on) => {
   const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
   await $.session.start(START)
-  expect(w.store['claim:B']).toEqual({ by: 'sess-1', at: 1_000 })
+  expect(w.store['claim:aggregate']).toEqual({ by: 'sess-1', at: 1_000 })
   await clock.advance(10_000)
-  w.store['claim:B'] = { by: 'B2', at: clock.now() } // another process, its claim landing 10 s after A's
+  w.store['claim:aggregate'] = { by: 'B2', at: clock.now() } // another process, its claim landing 10 s after A's
   await clock.advance(50_000)
   expect(calls.length).toBe(0)
   expect(w.store['pushed:B']).toBeUndefined()
 })
 
-test('a session resumed after its handover: new turns and a new ended:, then sent again superseding its memory', async ($, on) => {
+const ARGS = ['agent_topic', 'content', 'origin_tool', 'source', 'tags']
+test('the first aggregate is stored; a session resumed after it makes the next one supersede it, with the exact args', async ($, on) => {
   const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
   const clock = stubs(on, w)
   const { calls } = cortex(on)
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(1)
-  expect('supersedes_id' in calls[0]!.args).toBe(false)
-  expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901, memoryId: 101 })
+  expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(ARGS)
+  expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901 })
+  expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 101 })
   // B's process resumes it (its start drops ended:B), records a turn, and ends it again.
   delete w.store['ended:B']
   w.store['turns:B'] = [bTurn(1), { ...bTurn(2), at: 40_000 }]
@@ -709,12 +714,73 @@ test('a session resumed after its handover: new turns and a new ended:, then sen
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(2)
+  expect(Object.keys(calls[1]?.args ?? {}).sort()).toEqual([...ARGS, 'supersedes_id'].sort())
   expect(calls[1]?.args.supersedes_id).toBe(101)
-  expect(String(calls[1]?.args.content)).toMatch(/^Self-calibration of session B/)
-  expect(w.store['pushed:B']).toMatchObject({ lastAt: 40_000, memoryId: 102 })
+  expect(w.store['pushed:B']).toEqual({ at: 691_000, lastAt: 40_000 })
+  expect(w.store.aggregate).toEqual({ at: 691_000, memoryId: 102 })
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(2)
+})
+
+// One finished session B, a head 50 known; the reply under test, then what the store and state hold.
+const replied = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], structured: Record<string, unknown>) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 }, aggregate: { at: 1, memoryId: 50 } } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on, { isError: false, structured })
+  const seen = watch(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+  expect(calls[0]?.args.supersedes_id).toBe(50)
+  return { w, seen }
+}
+
+test('a merged reply (another memory) records nothing and is named with its id', async ($, on) => {
+  const { w, seen } = await replied($, on, { stored: true, memory_id: 7, action: 'merged', reason: 'merged_with_existing' })
+  expect(w.store.aggregate).toEqual({ at: 1, memoryId: 50 })
+  expect(w.store['pushed:B']).toBeUndefined()
+  expect(seen.cortex).toMatchObject({ pushed: 0, pending: 1 })
+  expect(seen.cortex?.lastError).toMatch(/merged .*memory 7/)
+})
+
+test('a write-gate rejection leaves the head and covers the sessions, named', async ($, on) => {
+  const { w, seen } = await replied($, on, { stored: false, action: 'rejected', reason: 'low_novelty', importance: 0.2 })
+  expect(w.store.aggregate).toEqual({ at: 1, memoryId: 50 })
+  expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901 })
+  expect(seen.cortex).toMatchObject({ pushed: 1, pending: 0 })
+  expect(seen.cortex?.lastError).toMatch(/low_novelty/)
+})
+
+test('supersede_target_not_found clears the head; the sessions stay uncovered', async ($, on) => {
+  const { w } = await replied($, on, { stored: false, action: 'rejected', reason: 'supersede_target_not_found', supersede_target_id: 50 })
+  expect(w.store.aggregate).toEqual({ at: 31_000 })
+  expect(w.store['pushed:B']).toBeUndefined()
+})
+
+test('supersede_target_already_superseded moves the head to current_superseded_by_id', async ($, on) => {
+  const { w } = await replied($, on, { stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', supersede_target_id: 50, current_superseded_by_id: 60 })
+  expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 60 })
+  expect(w.store['pushed:B']).toBeUndefined()
+})
+
+test('superseded_conflict moves the head to current_head_id', async ($, on) => {
+  const { w } = await replied($, on, { stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', supersede_target_id: 50, current_head_id: 61 })
+  expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 61 })
+  expect(w.store['pushed:B']).toBeUndefined()
+})
+
+test('a live session (no ended:, fresh) is not in the aggregate', async ($, on) => {
+  const live = { ...pastSession('L', 990), turnId: 'L-t', mainModel: 'claude-haiku-5-5' }
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 }, 'turns:L': [live] } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+  expect(String(calls[0]?.args.content)).toMatch(/last 1 finished sessions/)
+  expect(String(calls[0]?.args.content)).not.toMatch(/haiku/)
+  expect(w.store['pushed:L']).toBeUndefined()
 })
 
 test('a legacy pushed list: the migrated pushed: covers every legacy record, nothing is sent again', async ($, on) => {
@@ -727,4 +793,68 @@ test('a legacy pushed list: the migrated pushed: covers every legacy record, not
   await $.session.start(START)
   await clock.advance(60_000)
   expect(calls.length).toBe(0)
+})
+
+// F4: a pushed: without a numeric lastAt (the legacy {at: 0}, or junk) covers nothing: re-sent once, then covered.
+test('F4 a legacy or malformed pushed: is re-sent once, then covered', async ($, on) => {
+  const c1 = { ...pastSession('C', 902), turnId: 'C-t1' }
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 }, 'pushed:B': { at: 0 }, 'turns:C': [c1], 'ended:C': { at: 950 }, 'pushed:C': 'junk' } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+  expect(String(calls[0]?.args.content)).toMatch(/last 2 finished sessions/)
+  expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901 })
+  expect(w.store['pushed:C']).toEqual({ at: 31_000, lastAt: 902 })
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+})
+
+// F3: the claims are re-read just before claiming, not taken from the start snapshot.
+test('F3 a claim another process writes after the ledger snapshot, before claimBatch, is honoured', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  on('state.set', ($, e, next) => {
+    if (w.store['claim:aggregate'] === undefined) w.store['claim:aggregate'] = { by: 'C', at: 1_000 } // lands after loadLedger read the store
+    return next(e)
+  })
+  await $.session.start(START)
+  expect(w.store['claim:aggregate']).toEqual({ by: 'C', at: 1_000 })
+  await clock.advance(60_000)
+  expect(calls.length).toBe(0)
+  expect(w.store['pushed:B']).toBeUndefined()
+})
+
+// F2: another process deletes only a session that has ended:. ~16 KB per record() (measured).
+const DAY = 24 * 3_600_000
+const many = (session: string, n: number, from = 0) => Array.from({ length: n }, (_, i) => record(from + i, session))
+test('F2 under pressure the ended+pushed go first, then the ended+unpushed; an idle live session (24 h, no ended:) never', async ($, on) => {
+  const w: World = {
+    files: {},
+    written: {},
+    store: { 'turns:P': many('P', 20), 'ended:P': { at: 30 }, 'pushed:P': { at: 40, lastAt: 19 }, 'turns:U': many('U', 20, 5_000), 'ended:U': { at: 5_100 }, 'turns:L': many('L', 180) },
+  }
+  stubs(on, w, PHASES, DAY + 10_000)
+  await $.session.start(START)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect(Object.keys(w.store).filter((k) => k.startsWith('turns:')).sort()).toEqual(['turns:L', 'turns:sess-1'])
+  expect((w.store['turns:L'] as unknown[]).length).toBe(180)
+})
+
+test('F2 only live sessions over the budget: the own write is refused and named, the idle live one kept', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { 'turns:L': many('L', 200) } }
+  stubs(on, w, PHASES, DAY + 10_000)
+  const seen: { ledgerError?: string | null } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') seen.ledgerError = (e as unknown as { value: { ledgerError: string | null } }).value.ledgerError
+    return next(e)
+  })
+  await $.session.start(START)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect((w.store['turns:L'] as unknown[]).length).toBe(200)
+  expect(w.store['turns:sess-1']).toBeUndefined()
+  expect(seen.ledgerError).toMatch(/^not saved: .*live sessions/)
 })
