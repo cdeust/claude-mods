@@ -93,7 +93,7 @@ export const delegationLines = (scene: Scene): Piece[][] => {
       lines.push([{ text: `${r.type.slice(0, 14).padEnd(14)} ${familyOf(r.model)} ${r.effort ?? '-'} ${r.steps}st ${r.errors}x  ${r.flags.join(',')}`, color: INK_2 }])
   }
   if (m != null)
-    lines.push([{ text: m.share == null ? 'main on opus/fable: no heavy step yet' : `main on opus/fable: ${pct(m.share)} reading (analysis) over ${m.sessions} sessions`, color: m.share == null ? MUTED : INK_2 }])
+    lines.push([{ text: m.share == null ? 'main opus/fable: no measured step yet' : `main opus/fable: ${pct(m.share)} steps only Read/Grep/Glob, ${m.sessions} sessions`, color: m.share == null ? MUTED : INK_2 }])
   return lines
 }
 

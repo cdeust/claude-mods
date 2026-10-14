@@ -19,7 +19,7 @@ const PHASES = {
       model: 'claude-opus-5-5',
       effort: 'medium',
       phase: 'test',
-      runs: [{ phase: 'test', effort: 'medium', steps: 40, errors: 12, since: 5 }],
+      runs: [{ phase: 'test', effort: 'medium', steps: 40, errors: 12, since: 5, reads: 25 }],
       status: 'running',
       advisorCalls: 0,
       wrote: true,
@@ -69,6 +69,15 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES) 
   on('turn.complete', () => ({ text: '' }))
 }
 
+test('a run without reads is kept without them', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  const bare = { ...PHASES, loops: [{ ...PHASES.loops[0]!, runs: [{ phase: 'test', effort: 'medium', steps: 4, errors: 0, since: 5 }] }] }
+  stubs(on, w, bare)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  expect((w.store.turns as { main: unknown[] }[])[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 4, errors: 0 }])
+})
+
 test('observe: a main turn is kept in the ledger and its evidence proposed, not applied', async ($, on) => {
   const w: World = { files: {}, written: {}, store: {} }
   stubs(on, w)
@@ -79,6 +88,7 @@ test('observe: a main turn is kept in the ledger and its evidence proposed, not 
   expect(ledger[0]?.session).toBe('sess-1')
   expect(ledger[0]?.taskClass).toBe('bugfix')
   expect(ledger[0]?.mainModel).toBe('claude-opus-5-5')
+  expect(ledger[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 40, errors: 12, reads: 25 }])
   expect(w.written[CAL]).toBe(undefined)
   const shown = await $.command.run({ command: 'calibrate' } as never)
   expect(shown.text).toMatch(/^Ledger: 1 turns over 1 sessions, 0 judged by \/insights\./)
@@ -292,7 +302,7 @@ const past = (i: number) => ({
   at: i,
   taskClass: null,
   mainModel: 'claude-opus-5-5',
-  main: [{ phase: 'analysis', effort: 'medium', steps: 3, errors: 0 }],
+  main: [{ phase: 'analysis', effort: 'medium', steps: 3, errors: 0, reads: 3 }],
   agents: [],
   advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 },
   stuck: 0,
@@ -314,7 +324,7 @@ test('prompt.compose: the brief is appended last, on the session side, and the e
   expect(last.text).toBe(
     [
       'Self-calibration (zetetic-insights ledger, last 1 sessions). Measured, not prescribed:',
-      '- main thread on opus/fable: 100% of its steps were reading (analysis); a haiku or sonnet delegation could have done them.',
+      '- main thread on opus/fable: 100% of its measured steps only read files (Read, Grep, Glob); those reads need no heavy model.',
       '- steps by model: opus 100%.',
     ].join('\n'),
   )

@@ -5,7 +5,9 @@
 export type Phase = 'planning' | 'analysis' | 'design' | 'implementation' | 'verification' | 'test' | 'review' | 'report'
 export type Effort = 'low' | 'medium' | 'high'
 
-export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number }
+// `reads` mirrors the autopilot's PhaseRun.reads: steps whose every call was Read, Grep or Glob.
+// Absent on records written before it was kept: such records are not measured.
+export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number }
 
 // The design contract a delegation was dispatched under, read from the DESIGN block of its prompt
 // (the dispatch-contract skill): the model and effort the orchestrator chose and the genius shape it
@@ -98,10 +100,13 @@ export type ModelSteps = { family: ModelFamily; steps: number }
 // One session's steps by family, main's and its agents' together; families with no step left out.
 export type SessionModels = { session: string; at: number; steps: ModelSteps[] }
 
-// Main's mechanical work on heavy models over the last sessions (hooks/brief.ts): steps of main
-// in the analysis phase (reading tools: Read, Grep, Glob, listing) run on opus or fable, against
-// all of main's steps on those models. The work a cheaper model could have done.
-export type MechanicalShare = { sessions: number; heavyAnalysis: number; heavySteps: number; share: number | null }
+// Main's mechanical work on heavy models over the brief's sessions (hooks/brief.ts): main steps on
+// opus or fable whose every tool call was a file read (Read, Grep, Glob), against all of main's
+// measured steps on those models. Not the analysis phase: that phase also holds delegations,
+// recall and research (zetetic-autopilot phases.ts toolPhase).
+// heavySteps counts only main steps of records that carry `reads`, so share = heavyReads / heavySteps
+// compares like with like; unmeasured counts the heavy steps of older records left out.
+export type MechanicalShare = { sessions: number; heavyReads: number; heavySteps: number; unmeasured: number; share: number | null }
 
 export type InsightsState = {
   mode: 'observe' | 'enforce'

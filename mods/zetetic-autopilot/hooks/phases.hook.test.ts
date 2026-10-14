@@ -119,7 +119,7 @@ test("a subagent's steps between two of main's leave main's row whole", { option
   await drain($.turn.step({ turnId: 'g1', index: 0, model: 'claude-haiku-5-5', effort: 'low', messageCount: 1, agentId: 'a9' }))
   await drain($.turn.step({ turnId: 'm1', index: 1, model: 'claude-opus-5-5', effort: 'medium', messageCount: 2 }))
   const main = seen.value?.loops.find((l) => l.id === 'main')
-  expect(main?.runs).toEqual([{ phase: 'analysis', effort: 'medium', steps: 2, errors: 0, since: 1_000_000 }])
+  expect(main?.runs).toEqual([{ phase: 'analysis', effort: 'medium', steps: 2, errors: 0, since: 1_000_000, reads: 2 }])
   expect(seen.value?.turnId).toBe('m1')
 })
 

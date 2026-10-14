@@ -39,7 +39,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   trends: [],
   models: [],
   delegations: emptyDelegations(),
-  mechanical: { sessions: 0, heavyAnalysis: 0, heavySteps: 0, share: null },
+  mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null },
   brief: null,
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
@@ -203,8 +203,9 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   const facetsError = await loadOutcomes($)
   const g = await readGoals($)
   const c = await readCalibration($)
-  // The only place the brief is computed: recompute keeps it, so the system prompt stays the same for
-  // the whole session and its cache holds.
+  // The only place the brief is computed: recompute keeps it, so the system prompt stays the same
+  // within a start. /resume and fork call start() again: the resumed session gets fresh evidence, at
+  // the cost of one cache miss.
   const brief = briefOf(ledger)
   await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error, brief })
 }
@@ -223,7 +224,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
     turnId: phases.turnId ?? '',
     at: await $.clock.now(),
     taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
-    main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors })),
+    main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
     mainModel: main.model,
     agents: pending.agents,
     ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),

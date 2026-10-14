@@ -115,7 +115,7 @@ test('DELEGATIONS: the header, the counts with their names, the newest rows firs
     'overkill 2  underpowered 0  undesigned 1  rerouted 0',
     'zetetic-team-s haiku - 4st 0x  undesigned',
     'Explore        opus high 12st 1x  overkill',
-    'main on opus/fable: 25% reading (analysis) over 5 sessions',
+    'main opus/fable: 25% steps only Read/Grep/Glob, 5 sessions',
   ])
 })
 
@@ -137,6 +137,16 @@ test('an insights state with neither delegations nor mechanical (0.3.0) draws a 
 })
 
 test('a null share says no heavy step yet; a non-zero count is the only CRITICAL one', () => {
-  const s = sceneOf(PHASES, { ...INSIGHTS, mechanical: { sessions: 0, heavyAnalysis: 0, heavySteps: 0, share: null } }, 100_000)
-  expect(paintCells(s, 70).glyphRows().some((r) => r.startsWith('main on opus/fable: no heavy step yet'))).toBe(true)
+  const s = sceneOf(PHASES, { ...INSIGHTS, mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null } }, 100_000)
+  expect(paintCells(s, 70).glyphRows().some((r) => r.startsWith('main opus/fable: no measured step yet'))).toBe(true)
+})
+
+test('a mechanical share from an insights without the new fields still draws its line', () => {
+  const old = { sessions: 3, heavyAnalysis: 3, heavySteps: 12, share: 0.25 } as unknown as NonNullable<typeof INSIGHTS['mechanical']>
+  const s = sceneOf(PHASES, { ...INSIGHTS, mechanical: old }, 100_000)
+  expect(paintCells(s, 70).glyphRows().some((r) => r.startsWith('main opus/fable: 25% steps only Read/Grep/Glob, 3 sessions'))).toBe(true)
+})
+
+test('DELEGATIONS: at 60 columns the whole share line is present', () => {
+  expect(paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())).toContain('main opus/fable: 25% steps only Read/Grep/Glob, 5 sessions')
 })

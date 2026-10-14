@@ -11,12 +11,12 @@ export const BRIEF_SESSIONS = 10 // source: own choice, the last sessions the me
 export const BRIEF_MAX_LINES = 6 // source: own choice, a system-prompt section the model reads on every request stays short
 export const BRIEF_LINE_CAP = 200 // source: own choice, characters kept of a line; a long agent type or flag list must not grow the prompt
 
-// Why 'analysis' measures mechanical work: zetetic-autopilot's `toolPhase` (hooks/phases.ts) maps the
-// reading tools (READING_TOOLS: Read, Grep, Glob, WebFetch, WebSearch, LSP, ToolSearch) to 'analysis'.
-// The one predicate of "mechanical work": a main step in the analysis phase on opus or fable.
+// The one predicate of "mechanical work" is zetetic-autopilot's (phases.ts isFileReadStep): a step whose
+// every tool call is Read, Grep or Glob. The autopilot counts it per run (`reads`); this file only
+// sums the counts of main's steps on opus or fable. Not the analysis phase: that phase also holds
+// delegations, Cortex recalls, skills and read-only Bash.
 const HEAVY: readonly ModelFamily[] = ['opus', 'fable'] // source: delegations.ts overkill, the families a cheaper model could replace
 const isHeavy = (r: TurnRecord): boolean => HEAVY.includes(familyOf(r.mainModel ?? ''))
-const isMechanical = (phase: string): boolean => phase === 'analysis'
 
 // The order the families are listed in (models.ts ORDER).
 const ORDER: readonly ModelFamily[] = ['haiku', 'sonnet', 'opus', 'fable', 'other', 'unknown'] // source: models.ts ORDER
@@ -35,20 +35,26 @@ export const windowOf = (records: readonly TurnRecord[], sessions: number = BRIE
   return { records: records.filter((r) => keep.has(r.session)), sessions: keep.size }
 }
 
-// Main's steps on opus or fable over the records' sessions (the newest `sessions` of them), and the
-// part of them in the analysis phase.
+// Main's file-read steps on opus or fable over the records' sessions (the newest `sessions` of them),
+// against the steps of the same records that were measured. A run without `reads` (recorded before it
+// was counted) is unmeasured: its steps are in `unmeasured`, never in heavySteps as zero reads.
+// heavySteps + unmeasured = all of main's steps on those models.
 export const mechanicalShare = (records: readonly TurnRecord[], sessions: number = BRIEF_SESSIONS): MechanicalShare => {
   const window = windowOf(records, sessions)
   let heavySteps = 0
-  let heavyAnalysis = 0
+  let heavyReads = 0
+  let unmeasured = 0
   for (const r of window.records) {
     if (!isHeavy(r)) continue
     for (const run of r.main) {
-      heavySteps += run.steps
-      if (isMechanical(run.phase)) heavyAnalysis += run.steps
+      if (run.reads === undefined) unmeasured += run.steps
+      else {
+        heavySteps += run.steps
+        heavyReads += run.reads
+      }
     }
   }
-  return { sessions: window.sessions, heavyAnalysis, heavySteps, share: heavySteps === 0 ? null : heavyAnalysis / heavySteps }
+  return { sessions: window.sessions, heavyReads, heavySteps, unmeasured, share: heavySteps === 0 ? null : heavyReads / heavySteps }
 }
 
 const percent = (part: number, whole: number): string => {
@@ -73,7 +79,9 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
   if (steps.total === 0 && d.total === 0 && m.share === null) return null
   const lines = [`Self-calibration (zetetic-insights ledger, last ${m.sessions} sessions). Measured, not prescribed:`]
   if (m.share !== null)
-    lines.push(`- main thread on opus/fable: ${Math.round(100 * m.share)}% of its steps were reading (analysis); a haiku or sonnet delegation could have done them.`)
+    lines.push(
+      `- main thread on opus/fable: ${Math.round(100 * m.share)}% of its measured steps only read files (Read, Grep, Glob); those reads need no heavy model.${m.unmeasured > 0 ? ` (${m.unmeasured} older steps unmeasured)` : ''}`,
+    )
   if (d.total > 0)
     lines.push(
       `- delegations: ${d.total} (${d.designed} with a DESIGN block); overkill ${d.flags.overkill}, underpowered ${d.flags.underpowered}, undesigned ${d.flags.undesigned}, rerouted ${d.flags.rerouted}.`,
