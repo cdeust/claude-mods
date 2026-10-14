@@ -43,9 +43,10 @@ view, the axis is laid once per scene, and the tmux claim cites what was measure
 
 ## Gates
 
-mission-control 14 tests (every cell checked against the Raster's glyph rule, `cells` length, a
+mission-control 16 tests (every cell checked against the Raster's glyph rule, `cells` length, a
 readable golden of the lanes, idle cuts, mark merging, the renderer choice, the pixel pictures
-under 2 MiB, the pane mounted through the engine on all four surfaces, the history wiring);
+under 2 MiB and inside 1..2048 pixels a side, the pane mounted in pixels mode at 300 and 20 columns,
+the pane mounted through the engine on all four surfaces, the history wiring);
 zetetic-insights 25 (the trend series); cortex-cockpit 87; `claude plugin validate` passes for
 every mod; `tsc --noEmit` (typescript 5.9.3, strict) exit 0 for mission-control, zetetic-insights
 and cortex-cockpit with the engine's 2.1.296 types; `check-shared.sh` identical; codex check passes.

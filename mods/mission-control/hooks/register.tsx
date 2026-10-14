@@ -18,7 +18,17 @@ const INSIGHTS = { plugin: 'zetetic-insights', key: 'insights' } as const
 
 const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
 
+// A failure leaves the atom's default (cells, which draw everywhere) and says why, never a session
+// start that throws.
 async function choose($: EngineInterface, setting: unknown): Promise<void> {
+  try {
+    await chosen($, setting)
+  } catch (error) {
+    $.ui.toast(`mission-control: renderer not chosen, cells: ${cut(error).slice(0, 80)}`)
+  }
+}
+
+async function chosen($: EngineInterface, setting: unknown): Promise<void> {
   const choice = chooseRenderer(setting, {
     tmux: await $.env.get('TMUX'),
     term: await $.env.get('TERM'),
@@ -40,12 +50,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // /clear, /resume and /branch reset $.state and never fire session.start again.
+  // /clear, /resume and /branch reset $.state and never fire session.start again. Classic hooks do
+  // not run where an organization manages Claude Code: there the renderer stays cells after them.
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     await choose($, options.renderer)
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'mission' }, async ($) => {
     const { isPlaced } = await $.ui.open({ id: PANE, title: TITLE })
