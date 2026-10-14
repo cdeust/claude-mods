@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { LOOPS_CAP, emptyPhases, erred, finished, spawned, startTurn, stepPhase, stepped, toolPhase, typePhase } from './phases'
+import { LOOPS_CAP, emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped, toolPhase, typePhase } from './phases'
 
 const use = (name: string, input: unknown = {}) => ({ name, input })
 
@@ -58,6 +58,7 @@ const step = (loopId: string, phase: Parameters<typeof stepped>[1]['phase'], adv
   model: 'claude-opus-5-5',
   effort: 'medium',
   phase,
+  fileRead: false,
   advisorCalls,
   at,
 })
@@ -93,7 +94,7 @@ test('steps that come in before the spawn answers are kept on the row the spawn 
   const a = s.loops.find((l) => l.id === 'a2')
   expect(a?.type).toBe('zetetic-team-subagents:test-engineer')
   expect(a?.phase).toBe('test')
-  expect(a?.runs).toEqual([{ phase: 'test', effort: 'medium', steps: 2, errors: 0, since: 2 }])
+  expect(a?.runs).toEqual([{ phase: 'test', effort: 'medium', steps: 2, errors: 0, since: 2, reads: 0 }])
 })
 
 test('the advisor is counted with when it was called', () => {
@@ -127,4 +128,34 @@ test('a run is one phase at one effort; a failed call counts on the run it happe
     ['analysis', 'medium', 1, 1],
     ['analysis', 'low', 1, 0],
   ])
+})
+
+test('a file-read step calls tools and every call is Read, Grep or Glob; a delegation or a recall is not', () => {
+  expect(isFileReadStep([use('Read'), use('Grep')])).toBe(true)
+  expect(isFileReadStep([use('Read'), use('Agent', { subagent_type: 'Explore' })])).toBe(false)
+  expect(isFileReadStep([use('Agent', { subagent_type: 'Explore' })])).toBe(false)
+  expect(isFileReadStep([use('mcp__plugin_hypermnesia-mcp_cortex__recall')])).toBe(false)
+  expect(isFileReadStep([use('Bash', { command: 'ls' })])).toBe(false)
+  expect(isFileReadStep([])).toBe(false)
+})
+
+test('reads counts the file-read steps of a run; an Agent(Explore) step is analysis but not a read', () => {
+  const at = (uses: { name: string; input: unknown }[]) => ({ ...step('main', stepPhase(uses, '')), fileRead: isFileReadStep(uses) })
+  let s = startTurn(emptyPhases(), 't1', 'claude-opus-5-5', 1)
+  s = stepped(s, at([use('Read'), use('Grep')]))
+  expect(s.loops[0]?.runs.map((r) => [r.phase, r.steps, r.reads])).toEqual([['analysis', 1, 1]])
+  s = stepped(s, at([use('Read'), use('Agent', { subagent_type: 'Explore' })]))
+  s = stepped(s, at([use('Agent', { subagent_type: 'Explore' })]))
+  expect(s.loops[0]?.runs.map((r) => [r.phase, r.steps, r.reads])).toEqual([['analysis', 3, 1]])
+})
+
+test('merged keeps the sum of reads; a run recorded before reads existed stays unmeasured', () => {
+  let s = stepped(emptyPhases(), { ...step('a3', 'analysis'), fileRead: true })
+  s = stepped(s, { ...step('a3', 'analysis'), effort: 'low', fileRead: true })
+  s = stepped(s, { ...step('a3', 'analysis'), effort: 'low' })
+  s = spawned(s, { id: 'a3', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 })
+  expect(s.loops.find((l) => l.id === 'a3')?.runs).toEqual([{ phase: 'analysis', effort: 'low', steps: 3, errors: 0, since: 2, reads: 2 }])
+  const old = { ...s, loops: s.loops.map((l) => ({ ...l, id: 'a4', runs: [{ phase: 'analysis' as const, effort: 'low', steps: 5, errors: 0, since: 1 }] })) }
+  const grown = stepped(old, { ...step('a4', 'analysis'), effort: 'low', fileRead: true })
+  expect(grown.loops.find((l) => l.id === 'a4')?.runs[0]).toEqual({ phase: 'analysis', effort: 'low', steps: 6, errors: 0, since: 1 })
 })

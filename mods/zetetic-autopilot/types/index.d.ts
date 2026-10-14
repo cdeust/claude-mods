@@ -47,7 +47,9 @@ export type PolicyState = {
 export type Phase = 'planning' | 'analysis' | 'design' | 'implementation' | 'verification' | 'test' | 'review' | 'report'
 
 // A stretch of consecutive steps in one phase at one effort, and the tool calls that failed in it.
-export type PhaseRun = { phase: Phase; effort: string | null; steps: number; errors: number; since: number }
+// `reads`: the run's steps whose every tool call was a file read (Read, Grep, Glob), the work any
+// model could do; absent on runs recorded before it was counted.
+export type PhaseRun = { phase: Phase; effort: string | null; steps: number; errors: number; since: number; reads?: number }
 
 // One loop of this session: main (its row starts again each turn) or a subagent.
 export type LoopPhases = {

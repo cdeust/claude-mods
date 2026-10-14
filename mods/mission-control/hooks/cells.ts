@@ -3,7 +3,7 @@
 
 import { Grid, MAX_COLUMNS } from './grid'
 import { CRITICAL, GRID, INK, INK_2, MUTED, SURFACE, familyColor, phaseColor } from './palette'
-import { FAMILIES, type Curve, type Gauge, type Lane, type ModelFamily, type ModelSteps, type Scene, WINDOW_MS, columnOf, cutsOf, rung } from './scene'
+import { FAMILIES, type Curve, type Gauge, type Lane, type ModelFamily, type ModelSteps, type Scene, WINDOW_MS, columnOf, cutsOf, familyOf, rung } from './scene'
 
 export const LABEL = 15 // source: own choice, the longest phase name ("implementation") is 14, and a space
 const RIGHT = 10 // the curves' value column
@@ -26,7 +26,7 @@ const duration = (ms: number): string => {
 const pct = (r: number): string => `${Math.round(r * 100)}%`
 
 const heightOf = (scene: Scene): number =>
-  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length
+  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length + 1 + delegationLines(scene).length
 
 // The room the printed shares take to the right of a model bar (two spaces, three families).
 const SHARES = 24 // source: own choice, "  haiku 12% sonnet 30% opus 58%" is 31 and is cut at the edge
@@ -68,6 +68,40 @@ export const modelRows = (scene: Scene): { label: string; steps: ModelSteps[] }[
 export const familiesPresent = (scene: Scene): ModelFamily[] => {
   const seen = new Set(modelRows(scene).flatMap((r) => r.steps.map((s) => s.family)))
   return FAMILIES.filter((f) => seen.has(f))
+}
+
+// The DELEGATIONS section as lines of coloured pieces, shared by both painters. Every number is the
+// insights field it names; the colour never carries the meaning alone (the count is printed).
+export type Piece = { text: string; color: number }
+const FLAGS = ['overkill', 'underpowered', 'undesigned', 'rerouted'] as const
+const RECENT = 4 // source: own choice, the newest flagged delegations that fit under the counts
+
+export const delegationLines = (scene: Scene): Piece[][] => {
+  const d = scene.delegations
+  const m = scene.mechanical
+  const lines: Piece[][] = [[{ text: 'DELEGATIONS (judged against their DESIGN block)', color: INK }]]
+  if (d == null) lines.push([{ text: 'no delegation judged yet', color: MUTED }])
+  else {
+    lines.push([{ text: `${d.total} delegations, ${d.designed} designed`, color: INK_2 }])
+    const counts: Piece[] = []
+    FLAGS.forEach((f, i) => {
+      const n = d.flags?.[f] ?? 0
+      counts.push({ text: `${i === 0 ? '' : '  '}${f} ${n}`, color: n > 0 ? CRITICAL : MUTED })
+    })
+    lines.push(counts)
+    for (const r of (d.recent ?? []).slice(-RECENT).reverse())
+      lines.push([{ text: `${r.type.slice(0, 14).padEnd(14)} ${familyOf(r.model)} ${r.effort ?? '-'} ${r.steps}st ${r.errors}x  ${r.flags.join(',')}`, color: INK_2 }])
+  }
+  if (m != null)
+    lines.push([{ text: m.share == null ? 'main opus/fable: no measured step yet' : `main opus/fable: ${pct(m.share)} steps only Read/Grep/Glob, ${m.sessions} sessions`, color: m.share == null ? MUTED : INK_2 }])
+  return lines
+}
+
+function delegations(g: Grid, scene: Scene, top: number): void {
+  delegationLines(scene).forEach((line, i) => {
+    let x = 0
+    for (const p of line) x = g.text(x, top + i, p.text, p.color)
+  })
 }
 
 function models(g: Grid, scene: Scene, top: number): void {
@@ -188,6 +222,8 @@ export const paintCells = (scene: Scene, columns: number): Grid => {
   y += 1
   if (scene.curves.length === 0) g.text(0, y, 'no phase has two points yet: the ledger fills as turns complete', MUTED)
   scene.curves.forEach((c, i) => curve(g, c, y + i * (CURVE_ROWS + 1)))
-  models(g, scene, y + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 1)
+  const m = y + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 1
+  models(g, scene, m)
+  delegations(g, scene, m + 2 + modelRows(scene).length + 1)
   return g
 }

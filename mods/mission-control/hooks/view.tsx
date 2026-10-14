@@ -3,7 +3,7 @@
 
 import type { Elements } from 'claude-code'
 
-import { LABEL, familiesPresent, modelRows, paintCells, segmentWidths, shareText } from './cells'
+import { LABEL, delegationLines, familiesPresent, modelRows, paintCells, segmentWidths, shareText } from './cells'
 import { GRID, INK, INK_2, MUTED, familyColor, phaseColor } from './palette'
 import { MAX_IMAGE_COLUMNS } from './bitmap'
 import { curvePicture, lanesPicture } from './pixels'
@@ -74,6 +74,22 @@ const Models = (ui: Ui, scene: Scene, columns: number) => {
   )
 }
 
+// DELEGATIONS as text rows: the same pieces and colours as the cells' section.
+const Delegations = (ui: Ui, scene: Scene) => {
+  const { Box, Text } = ui
+  return (
+    <Box flexDirection="column">
+      {delegationLines(scene).map((line) => (
+        <Text>
+          {line.map((p) => (
+            <Text color={hex(p.color)}>{p.text}</Text>
+          ))}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
 export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
   const { Box, Text, Image } = ui
   // Image boxes are 1 to 255 columns (ImageProps): a wider pane leaves the rest of the row empty.
@@ -114,6 +130,8 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
       ))}
       <Text> </Text>
       {Models(ui, scene, columns)}
+      <Text> </Text>
+      {Delegations(ui, scene)}
     </Box>
   )
 }

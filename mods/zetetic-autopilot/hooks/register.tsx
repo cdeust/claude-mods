@@ -5,7 +5,7 @@ import type { ContextHealth, PhasesState, PolicyDecision, PolicyState } from '..
 import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
 import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, definitionPaths, parseDefinition } from './agents'
 import { placePath } from './paths'
-import { emptyPhases, erred, finished, spawned, startTurn, stepPhase, stepped } from './phases'
+import { emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped } from './phases'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
 import {
   CHARS_PER_TOKEN,
@@ -202,6 +202,7 @@ async function* tracked(
       // the insights ledger never keeps an effort it cannot calibrate.
       effort: sent.effort === undefined ? defaultEffort(r.usage?.model ?? sent.model) : String(sent.effort),
       phase: stepPhase(r.toolUses, r.answer),
+      fileRead: isFileReadStep(r.toolUses),
       advisorCalls,
       at,
     }),

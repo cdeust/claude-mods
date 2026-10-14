@@ -52,6 +52,8 @@ test('failed calls of runs closer than a mark are summed into one count, never p
     gauges: [],
     curves: [],
     models: { window: [], sessions: [] },
+    delegations: null,
+    mechanical: null,
   }
   const marks = paintCells(crowded, 60).glyphRows()[3]!.trim()
   expect(marks).toBe('test                                    x7')
@@ -60,7 +62,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
 test('a long pause is cut from the axis: two bursts share the track, a dashed mark between them', () => {
   const seg = (t0: number, t1: number) => ({ phase: 'analysis' as const, effort: 'medium', t0, t1, steps: 1, errors: 0 })
   const lanes = [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 30_000), seg(630_000, 660_000)], advisor: [] }]
-  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [] } }
+  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [] }, delegations: null, mechanical: null }
   const rows = paintCells(bursts, 15 + 100).glyphRows()
   const bar = rows[2]!.slice(15)
   const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[3]!.slice(15).indexOf('┊')
@@ -89,7 +91,7 @@ test('segmentWidths always sums to the track, every family with steps getting a 
 test('STEPS BY MODEL: a header, a legend, the window then one row per session', () => {
   const rows = paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())
   const at = rows.findIndex((r) => r.startsWith('STEPS BY MODEL'))
-  const section = rows.slice(at)
+  const section = rows.slice(at, at + 5)
   expect(section).toEqual([
     'STEPS BY MODEL (this window, then the last sessions)',
     '               █ haiku  █ sonnet  █ opus',
@@ -102,4 +104,49 @@ test('STEPS BY MODEL: a header, a legend, the window then one row per session', 
 test('a row with no step prints no step yet', () => {
   const rows = paintCells(sceneOf(null, null, 5), 50).glyphRows().map((r) => r.trimEnd())
   expect(rows.find((r) => r.startsWith('window'))).toBe('window         no step yet')
+})
+
+test('DELEGATIONS: the header, the counts with their names, the newest rows first, the heavy share', () => {
+  const rows = paintCells(scene, 70).glyphRows().map((r) => r.trimEnd())
+  const at = rows.findIndex((r) => r.startsWith('DELEGATIONS'))
+  expect(rows.slice(at)).toEqual([
+    'DELEGATIONS (judged against their DESIGN block)',
+    '9 delegations, 7 designed',
+    'overkill 2  underpowered 0  undesigned 1  rerouted 0',
+    'zetetic-team-s haiku - 4st 0x  undesigned',
+    'Explore        opus high 12st 1x  overkill',
+    'main opus/fable: 25% steps only Read/Grep/Glob, 5 sessions',
+  ])
+})
+
+test('DELEGATIONS: at 60 columns every flag name is still in the glyph rows', () => {
+  const text = paintCells(scene, 60).glyphRows().join('\n')
+  for (const f of ['overkill', 'underpowered', 'undesigned', 'rerouted']) expect(text).toContain(f)
+})
+
+test('an insights state with neither delegations nor mechanical (0.3.0) draws a placeholder and no crash', () => {
+  const { delegations: _d, mechanical: _m, ...old } = INSIGHTS as unknown as Record<string, unknown>
+  const s = sceneOf(PHASES, old as unknown as typeof INSIGHTS, 100_000)
+  expect(s.delegations).toBeNull()
+  expect(s.mechanical).toBeNull()
+  const rows = paintCells(s, 70).glyphRows().map((r) => r.trimEnd())
+  expect(rows.slice(rows.findIndex((r) => r.startsWith('DELEGATIONS'))).filter((r) => r !== '')).toEqual([
+    'DELEGATIONS (judged against their DESIGN block)',
+    'no delegation judged yet',
+  ])
+})
+
+test('a null share says no heavy step yet; a non-zero count is the only CRITICAL one', () => {
+  const s = sceneOf(PHASES, { ...INSIGHTS, mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null } }, 100_000)
+  expect(paintCells(s, 70).glyphRows().some((r) => r.startsWith('main opus/fable: no measured step yet'))).toBe(true)
+})
+
+test('a mechanical share from an insights without the new fields still draws its line', () => {
+  const old = { sessions: 3, heavyAnalysis: 3, heavySteps: 12, share: 0.25 } as unknown as NonNullable<typeof INSIGHTS['mechanical']>
+  const s = sceneOf(PHASES, { ...INSIGHTS, mechanical: old }, 100_000)
+  expect(paintCells(s, 70).glyphRows().some((r) => r.startsWith('main opus/fable: 25% steps only Read/Grep/Glob, 3 sessions'))).toBe(true)
+})
+
+test('DELEGATIONS: at 60 columns the whole share line is present', () => {
+  expect(paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())).toContain('main opus/fable: 25% steps only Read/Grep/Glob, 5 sessions')
 })

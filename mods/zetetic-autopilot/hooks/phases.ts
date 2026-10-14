@@ -58,6 +58,12 @@ export const typePhase = (type: string): Phase | undefined => BY_TYPE.find(([re]
 const PLANNING_TOOLS = new Set(['EnterPlanMode', 'ExitPlanMode', 'TaskCreate', 'TaskUpdate', 'TodoWrite'])
 const READING_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'LSP', 'ToolSearch'])
 const WRITING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
+// source: Claude Code tool names; the file reads any model can do. Not READING_TOOLS, which also holds
+// web and search tools, and not the analysis phase, which also holds delegations, recalls and skills.
+export const FILE_READ_TOOLS = new Set(['Read', 'Grep', 'Glob'])
+
+// The one definition of a mechanical step: it calls tools and every call is a file read.
+export const isFileReadStep = (uses: readonly { name: string }[]): boolean => uses.length > 0 && uses.every((u) => FILE_READ_TOOLS.has(u.name))
 
 // Each pattern names a command by its head, the first words of a segment (`a && b`, `a; b`, `a | b`),
 // so a word inside an argument (`grep pytest`, `git commit -m "fix tsc"`) names nothing.
@@ -181,13 +187,15 @@ export const startTurn = (s: PhasesState, turnId: string, model: string, at: num
     updatedAt: at,
   })
 
-// The runs an agent made before its type was known, as one run of the type's phase.
+// The runs an agent made before its type was known, as one run of the type's phase. `reads` is the
+// sum when every run carries it; a run recorded before it was counted leaves the sum absent.
 const merged = (runs: readonly PhaseRun[], phase: Phase, at: number): PhaseRun => ({
   phase,
   effort: runs[runs.length - 1]?.effort ?? null,
   steps: runs.reduce((n, r) => n + r.steps, 0),
   errors: runs.reduce((n, r) => n + r.errors, 0),
   since: runs[0]?.since ?? at,
+  ...(runs.every((r) => r.reads !== undefined) ? { reads: runs.reduce((n, r) => n + (r.reads ?? 0), 0) } : {}),
 })
 
 // A started subagent's row. Its steps may come in before the spawn answers (the engine runs the
@@ -213,7 +221,7 @@ export const spawned = (
     model: a.model,
     effort: null,
     phase,
-    runs: phase === null ? [] : [{ phase, effort: null, steps: 0, errors: 0, since: a.at }],
+    runs: phase === null ? [] : [{ phase, effort: null, steps: 0, errors: 0, since: a.at, reads: 0 }],
     status: 'running',
     advisorCalls: 0,
     wrote: false,
@@ -240,6 +248,7 @@ export type Step = {
   model: string
   effort: string | null
   phase: Phase | undefined
+  fileRead: boolean // isFileReadStep of the step's tool calls
   advisorCalls: number
   at: number
 }
@@ -255,8 +264,8 @@ export const stepped = (s: PhasesState, st: Step): PhasesState => {
     phase === null
       ? loop.runs
       : last !== undefined && last.phase === phase && last.effort === st.effort
-        ? [...loop.runs.slice(0, -1), { ...last, steps: last.steps + 1 }]
-        : [...loop.runs, { phase, effort: st.effort, steps: 1, errors: 0, since: st.at }]
+        ? [...loop.runs.slice(0, -1), { ...last, steps: last.steps + 1, ...(last.reads === undefined ? {} : { reads: last.reads + (st.fileRead ? 1 : 0) }) }]
+        : [...loop.runs, { phase, effort: st.effort, steps: 1, errors: 0, since: st.at, reads: st.fileRead ? 1 : 0 }]
   const advisor = loop.type === 'main' && st.advisorCalls > 0 ? adviced(s.advisor, s.turnId, loop, st) : s.advisor
   return {
     ...withLoop(s, {
