@@ -265,3 +265,20 @@ test('a resumed agent: the design outlives its first turn, each record keeps its
   expect(state.delegations?.total).toBe(1)
   expect(state.agents?.[0]?.steps).toBe(5)
 })
+
+test('a resumed agent whose row was evicted and reopened: the restarted row counts all its steps', async ($, on) => {
+  const row = (since: number, steps: number) => ({ ...PHASES.loops[0]!, id: 'r1', type: 'Explore', model: 'claude-opus-5-5', phase: 'analysis', runs: [{ phase: 'analysis', effort: 'low', steps, errors: 0, since }] })
+  const w: World = { files: {}, written: {}, store: {} }
+  let current = row(10, 3)
+  stubs(on, w, { ...PHASES, get loops() { return [...PHASES.loops, current] } })
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'r1' }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.agent.spawn({ prompt: DESIGNED } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'r1' } as never)
+  current = row(500, 2)
+  await $.turn.complete({ turnId: 'g2', reason: 'answer', agentId: 'r1' } as never)
+  const agents = (w.store.turns as { agents: { agentId?: string; steps: number }[] }[])[0]!.agents
+  expect(agents.map((a) => a.agentId)).toEqual(['r1', 'r1'])
+  expect(agents.map((a) => a.steps)).toEqual([3, 2])
+})

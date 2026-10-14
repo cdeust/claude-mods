@@ -63,9 +63,10 @@ let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped:
 // resumed agent completes more than one turn). Bounded: the oldest entry is dropped past the cap.
 export const DESIGN_MAP_CAP = 200 // source: own choice, far above the agents running at once, small enough to hold in memory
 const designs = new Map<string, Design | null>()
-// The steps and failed calls already recorded per agentId: loop.runs hold the agent's cumulative
-// runs, a record keeps this turn's delta only. Same cap.
-const recorded = new Map<string, { steps: number; errors: number }>()
+// The steps and failed calls already recorded per agentId, and the row they belong to (the since of
+// its first run): loop.runs hold the agent's cumulative runs, a record keeps this turn's delta only.
+// A row the autopilot evicted and reopened starts again from empty, so its baseline is 0. Same cap.
+const recorded = new Map<string, { steps: number; errors: number; since: number | undefined }>()
 
 const bounded = <V,>(map: Map<string, V>, key: string, value: V): void => {
   map.delete(key)
@@ -246,9 +247,11 @@ async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage
   const phases = (await $.state.get(AUTOPILOT_PHASES)).value
   const loop = phases?.loops.find((l) => l.id === agentId)
   if (phases === undefined || loop === undefined) return
+  const since = loop.runs[0]?.since
   const total = { steps: loop.runs.reduce((n, r) => n + r.steps, 0), errors: loop.runs.reduce((n, r) => n + r.errors, 0) }
-  const before = recorded.get(agentId) ?? { steps: 0, errors: 0 }
-  bounded(recorded, agentId, total)
+  const known = recorded.get(agentId)
+  const before = known !== undefined && known.since === since ? known : { steps: 0, errors: 0 }
+  bounded(recorded, agentId, { ...total, since })
   const agent: AgentRecord = {
     agentId,
     type: loop.type,
