@@ -2,6 +2,7 @@
 // subagent runs on, and whether main drops under quota. Families are matched by substring, so
 // an alias (`haiku`) and a full id of any release (4.5, 5.5) resolve the same way.
 
+import { type Definition, pinnedModel } from './agents'
 import { type Pressure, agentModelFor } from './policy'
 
 // Mirrors the zetetic-genius contract (its types/index.d.ts): a mod never imports across mods,
@@ -38,20 +39,25 @@ const REVIEW_TYPES = /code-reviewer|security-auditor|architect|advisor|reviewer-
 // Classes whose execution is mechanical once the request is read (classify.ts).
 const MECHANICAL_CLASSES: readonly TaskClass[] = ['routine', 'planned']
 
-// Pressure first (policy.ts, the owner's rule: opus/fable one notch down to sonnet, nothing
-// protected). Then, with no explicit model on the call or the agent definition and a heavy
-// parent, the type's own routing, sharpened by the turn's task class when it is known.
+// The model a subagent would run on: the call's `model`, else its definition's, else the parent's.
+// `definition` undefined means the file could not be read: the effective model is then unknown and
+// nothing is routed (the decision row names why). Pressure first (policy.ts, one notch down from
+// that model, never up). Without pressure a model the call or the definition pinned stands; an
+// inheriting type is routed by its kind, sharpened by the turn's task class when it is known.
 export const routeAgentModel = (
   subagentType: string,
-  declared: string | undefined,
+  call: string | undefined,
+  definition: Definition | undefined,
   parentModel: string,
   pressure: Pressure,
   taskClass?: TaskClass,
 ): string | undefined => {
-  const down = agentModelFor(declared, parentModel, pressure)
-  if (down !== undefined) return down
+  if (call === undefined && definition === undefined) return undefined
+  const pinned = call ?? (definition === undefined ? undefined : pinnedModel(definition))
+  const down = agentModelFor(pinned ?? parentModel, pressure)
+  if (down !== undefined || pressure !== 'none' || pinned !== undefined) return down
   const parent = familyOf(parentModel)
-  if (declared !== undefined || parent === undefined || parent === HAIKU || parent === SONNET) return undefined
+  if (parent === undefined || parent === HAIKU || parent === SONNET) return undefined
   const isMechanical = taskClass !== undefined && MECHANICAL_CLASSES.includes(taskClass)
   if (MECHANICAL_TYPES.test(subagentType)) return isMechanical ? HAIKU : SONNET
   if (CODING_TYPES.test(subagentType)) return taskClass === 'planned' ? HAIKU : SONNET

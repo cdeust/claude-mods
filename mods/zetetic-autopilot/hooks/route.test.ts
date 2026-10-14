@@ -15,37 +15,49 @@ test('families are matched by substring, alias or full id of any release', () =>
   expect(familyOf('gpt-x')).toBe(undefined)
 })
 
-test('search subagents: haiku on a mechanical turn, sonnet otherwise', () => {
-  expect(routeAgentModel('Explore', undefined, FABLE, 'none', 'routine')).toBe('haiku')
-  expect(routeAgentModel('Explore', undefined, FABLE, 'none', 'planned')).toBe('haiku')
-  expect(routeAgentModel('Explore', undefined, FABLE, 'none', 'analysis')).toBe('sonnet')
-  expect(routeAgentModel('general-purpose', undefined, OPUS, 'none')).toBe('sonnet')
+// An inheriting type (the built-ins, a definition with no model line) pins nothing.
+const INHERIT = {}
+const SONNET_DEF = { model: 'sonnet', effort: 'medium' }
+
+test('search subagents that inherit: haiku on a mechanical turn, sonnet otherwise', () => {
+  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'none', 'routine')).toBe('haiku')
+  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'none', 'planned')).toBe('haiku')
+  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'none', 'analysis')).toBe('sonnet')
+  expect(routeAgentModel('general-purpose', undefined, INHERIT, OPUS, 'none')).toBe('sonnet')
+  expect(routeAgentModel('Plan', undefined, INHERIT, FABLE, 'none')).toBe('opus')
+  expect(routeAgentModel('Plan', undefined, INHERIT, OPUS, 'none')).toBe(undefined)
 })
 
-test('coding subagents: haiku only when the plan is written, else sonnet', () => {
-  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, FABLE, 'none', 'planned')).toBe('haiku')
-  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, FABLE, 'none', 'routine')).toBe('sonnet')
-  expect(routeAgentModel('zetetic-team-subagents:refactorer', undefined, OPUS, 'none', 'analysis')).toBe('sonnet')
+test("a model the definition pins stands: the router never overrides the agent's author", () => {
+  // advisor and orchestrator are defined on fable; under a fable parent they used to go to opus.
+  expect(routeAgentModel('zetetic-team-subagents:advisor', undefined, { model: 'fable', effort: 'high' }, FABLE, 'none')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:orchestrator', undefined, { model: 'fable' }, FABLE, 'none')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:code-reviewer', undefined, SONNET_DEF, FABLE, 'none')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, SONNET_DEF, FABLE, 'none', 'planned')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:architect', undefined, { model: 'inherit' }, FABLE, 'none')).toBe('opus')
 })
 
-test('review subagents stay heavy: opus under a fable parent, kept under opus', () => {
-  expect(routeAgentModel('zetetic-team-subagents:code-reviewer', undefined, FABLE, 'none')).toBe('opus')
-  expect(routeAgentModel('zetetic-team-subagents:security-auditor', undefined, FABLE, 'none', 'critical')).toBe('opus')
-  expect(routeAgentModel('Plan', undefined, OPUS, 'none')).toBe(undefined)
-  expect(routeAgentModel('zetetic-team-subagents:advisor', undefined, OPUS, 'none')).toBe(undefined)
+test('an explicit model, a sonnet or haiku parent, an unknown type and an unread definition route nothing', () => {
+  expect(routeAgentModel('Explore', 'opus', undefined, FABLE, 'none', 'routine')).toBe(undefined)
+  expect(routeAgentModel('Explore', undefined, INHERIT, 'claude-sonnet-5-5', 'none', 'routine')).toBe(undefined)
+  expect(routeAgentModel('Explore', undefined, INHERIT, 'claude-haiku-5-5', 'none', 'routine')).toBe(undefined)
+  expect(routeAgentModel('brand-voice:discover-brand', undefined, INHERIT, FABLE, 'none')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, undefined, FABLE, 'quota')).toBe(undefined)
 })
 
-test('an explicit model, a sonnet or haiku parent, and an unknown type route nothing', () => {
-  expect(routeAgentModel('Explore', 'opus', FABLE, 'none', 'routine')).toBe(undefined)
-  expect(routeAgentModel('Explore', undefined, 'claude-sonnet-5-5', 'none', 'routine')).toBe(undefined)
-  expect(routeAgentModel('Explore', undefined, 'claude-haiku-5-5', 'none', 'routine')).toBe(undefined)
-  expect(routeAgentModel('brand-voice:discover-brand', undefined, FABLE, 'none')).toBe(undefined)
+test('pressure sends a heavy subagent one notch down from the model it would run on', () => {
+  expect(routeAgentModel('zetetic-team-subagents:security-auditor', undefined, { model: 'opus' }, OPUS, 'quota')).toBe('sonnet')
+  expect(routeAgentModel('zetetic-team-subagents:security-auditor', undefined, { model: 'opus' }, OPUS, 'none')).toBe(undefined)
+  expect(routeAgentModel('Explore', 'opus', undefined, FABLE, 'context')).toBe('sonnet')
+  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'quota')).toBe('sonnet')
+  expect(routeAgentModel('Explore', 'haiku', undefined, FABLE, 'quota')).toBe(undefined)
 })
 
-test('pressure sends every heavy subagent one notch down, whatever its type', () => {
-  expect(routeAgentModel('zetetic-team-subagents:code-reviewer', undefined, FABLE, 'quota')).toBe('sonnet')
-  expect(routeAgentModel('Explore', 'opus', FABLE, 'context')).toBe('sonnet')
-  expect(routeAgentModel('Explore', 'haiku', FABLE, 'quota')).toBe(undefined)
+test('pressure never raises: a haiku or sonnet definition under a heavy parent stays where it is', () => {
+  // memory-writer, latex-engineer and professor are defined on haiku; pressure used to send them to sonnet.
+  expect(routeAgentModel('zetetic-team-subagents:memory-writer', undefined, { model: 'haiku', effort: 'low' }, OPUS, 'quota')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:professor', undefined, { model: 'haiku' }, FABLE, 'context')).toBe(undefined)
+  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, SONNET_DEF, FABLE, 'quota')).toBe(undefined)
 })
 
 test('main drops to sonnet under quota pressure only, and only from opus or fable', () => {

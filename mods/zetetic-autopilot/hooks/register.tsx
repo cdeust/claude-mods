@@ -1,13 +1,15 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PluginState, Register } from 'claude-code'
 
 import type { ContextHealth, PolicyDecision, PolicyState } from '../types'
+import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, definitionPaths, parseDefinition } from './agents'
 import { placePath } from './paths'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
 import {
   CHARS_PER_TOKEN,
   LEAN_TOOLS,
   STUCK_ERRORS,
+  agentEffortFor,
   currentEffort,
   effortFor,
   escalate,
@@ -54,14 +56,54 @@ async function expandHome($: EngineInterface, path: string): Promise<string> {
   return placed.path
 }
 
-// The current grade, when the genius mod is loaded and has one bound to a turn.
+// The current grade. A genius mod that is not loaded leaves the value undefined, a known state
+// (no grade); a read that fails is another condition, named in a decision row (issue #6).
 async function gradeOf($: EngineInterface): Promise<Grade | undefined> {
+  let value: PluginState['zetetic-genius']['state'] | undefined
   try {
-    const { value } = await $.state.get(geniusState)
-    const c = value?.classified
-    return c === null || c === undefined ? undefined : { turnId: c.turnId, taskClass: c.taskClass, effort: c.effort }
-  } catch {
+    value = (await $.state.get(geniusState)).value
+  } catch (error) {
+    await note($, 'zetetic-genius state', `unreadable: ${String(error).slice(0, 100)}`)
     return undefined
+  }
+  const c = value?.classified
+  return c === null || c === undefined ? undefined : { turnId: c.turnId, taskClass: c.taskClass, effort: c.effort }
+}
+
+// A failed read, logged once until its reason changes: the POLICY panel shows it, routing goes on
+// without what could not be read.
+async function note($: EngineInterface, subject: string, reason: string): Promise<void> {
+  const p = await read($, policy)
+  const last = p.decisions.findLast((d) => d.kind === 'unread' && d.subject === subject)
+  if (last?.to === reason) return
+  const at = await $.clock.now()
+  await update($, policy, (s) => decide(s, { at, kind: 'unread', subject, from: '', to: reason, applied: false }))
+}
+
+// Agent definitions, read once per type and session: what the type's file pins, or why it could
+// not be read. The built-ins measured to inherit pin nothing and have no file.
+const definitions = new Map<string, Definition | { unread: string }>()
+
+async function definitionOf($: EngineInterface, type: string): Promise<Definition | { unread: string }> {
+  const known = definitions.get(type)
+  if (known !== undefined) return known
+  const found = INHERITING_BUILT_INS.includes(type) ? {} : await readDefinition($, type)
+  definitions.set(type, found)
+  return found
+}
+
+async function readDefinition($: EngineInterface, type: string): Promise<Definition | { unread: string }> {
+  try {
+    const claudeDir = (await expandHome($, '~/.claude')).replace(/\/$/, '')
+    const installed = type.includes(':') ? await $.fs.read(await expandHome($, INSTALLED_PLUGINS_PATH)) : undefined
+    const paths = definitionPaths(type, installed, claudeDir, await $.session.cwd())
+    for (const path of paths) {
+      const text = await $.fs.read(path).then(String, () => undefined)
+      if (text !== undefined) return parseDefinition(text)
+    }
+    return { unread: paths.length === 0 ? 'no installed plugin provides it' : `no file at ${paths.join(', ')}` }
+  } catch (error) {
+    return { unread: String(error).slice(0, 120) }
   }
 }
 
@@ -128,6 +170,7 @@ export const register: Register = (on, options) => {
   const configured = (p: PolicyState): PolicyState => ({ ...p, mode, quotaPercent, resultCapChars })
 
   on('session.start', async ($, e, next) => {
+    definitions.clear()
     await update($, policy, configured)
     await refreshContext($)
 
@@ -136,6 +179,7 @@ export const register: Register = (on, options) => {
 
   // /clear, /resume and /branch reset $.state and never fire session.start again.
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
+    definitions.clear()
     await update($, policy, configured)
     await refreshContext($)
 
@@ -159,15 +203,18 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The effort ladder from the graded rung, the stuck escalation, and main's model under
-  // quota: observed, or applied under enforce. A generator, as the event streams.
+  // Main: the effort ladder from the graded rung, the stuck escalation, and the model under
+  // quota. A subagent: the effort its definition pinned, capped under pressure. Observed, or
+  // applied under enforce. A generator, as the event streams.
   on('turn.step', async function* ($, e, next) {
     const p = await read($, policy)
     const isMain = e.agentId === undefined
     const grade = isMain ? await gradeOf($) : undefined
     const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
     const have = currentEffort(e.model, e.effort)
-    let target = effortFor(e.model, e.index, e.effort, p.pressure, g?.effort) ?? have
+    let target =
+      (isMain ? effortFor(e.model, e.index, e.effort, p.pressure, g?.effort) : agentEffortFor(e.model, e.effort, p.pressure)) ??
+      have
     let kind: PolicyDecision['kind'] = 'effort'
     if (isMain && p.errorsInRow >= STUCK_ERRORS) {
       const raised = escalate(target)
@@ -198,19 +245,23 @@ export const register: Register = (on, options) => {
     })
   })
 
-  // Subagents: the family the type and the turn's class call for, one notch down under pressure.
+  // Subagents: the model the call or the definition pinned stands, one notch down under pressure;
+  // an inheriting type runs on the family its kind and the turn's class call for.
   on('agent.spawn', async ($, e, next) => {
     const p = await read($, policy)
     const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
     const cls = grade !== undefined && grade.turnId !== null ? grade.taskClass : undefined
-    const target = routeAgentModel(e.subagentType, e.model, e.parentModel, p.pressure, cls)
+    const found = e.model === undefined ? await definitionOf($, e.subagentType) : {}
+    if ('unread' in found) await note($, `${e.subagentType} definition`, found.unread)
+    const definition = 'unread' in found ? undefined : found
+    const target = routeAgentModel(e.subagentType, e.model, definition, e.parentModel, p.pressure, cls)
     if (target === undefined) return next(e)
     const applied = p.mode === 'enforce'
     const d: PolicyDecision = {
       at: await $.clock.now(),
       kind: 'model',
       subject: `${e.subagentType}${cls === undefined ? '' : ` · ${cls}`}`,
-      from: e.model ?? `inherit ${e.parentModel}`,
+      from: e.model ?? definition?.model ?? `inherit ${e.parentModel}`,
       to: target,
       applied,
     }

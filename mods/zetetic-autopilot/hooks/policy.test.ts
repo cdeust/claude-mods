@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { agentModelFor, defaultEffort, effortFor, leanText, pressureOf } from './policy'
+import { agentEffortFor, agentModelFor, defaultEffort, effortFor, leanText, pressureOf } from './policy'
 
 test("the default effort follows the API's per-model default", () => {
   expect(defaultEffort('claude-fable-5-1')).toBe('high')
@@ -46,12 +46,19 @@ test('pressure comes from the five-hour window first, then the context band', ()
   expect(pressureOf([], 80, 'unknown')).toBe('none')
 })
 
-test('subagents go one notch down under pressure only', () => {
-  expect(agentModelFor('opus', 'claude-fable-5-1', 'quota')).toBe('sonnet')
-  expect(agentModelFor(undefined, 'claude-fable-5-1', 'context')).toBe('sonnet')
-  expect(agentModelFor('sonnet', 'claude-fable-5-1', 'quota')).toBe(undefined)
-  expect(agentModelFor('haiku', 'claude-opus-5-5', 'quota')).toBe(undefined)
-  expect(agentModelFor('opus', 'claude-fable-5-1', 'none')).toBe(undefined)
+test('subagents go one notch down from their effective model, under pressure only', () => {
+  expect(agentModelFor('opus', 'quota')).toBe('sonnet')
+  expect(agentModelFor('claude-fable-5-1', 'context')).toBe('sonnet')
+  expect(agentModelFor('sonnet', 'quota')).toBe(undefined)
+  expect(agentModelFor('haiku', 'quota')).toBe(undefined)
+  expect(agentModelFor('opus', 'none')).toBe(undefined)
+})
+
+test("a subagent keeps its definition's effort on every step; pressure caps it at medium", () => {
+  expect(agentEffortFor('claude-opus-5-5', 'high', 'none')).toBe(undefined)
+  expect(agentEffortFor('claude-haiku-5-5', 'low', 'none')).toBe(undefined)
+  expect(agentEffortFor('claude-opus-5-5', 'high', 'quota')).toBe('medium')
+  expect(agentEffortFor('claude-haiku-5-5', 'low', 'context')).toBe(undefined)
 })
 
 test('a long result keeps its head and tail and names the cut', () => {
