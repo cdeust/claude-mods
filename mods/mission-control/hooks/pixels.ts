@@ -3,8 +3,8 @@
 // reader; the pictures carry what text cannot: bars, marks, lines.
 
 import { Bitmap, CELL_H, CELL_W } from './bitmap'
-import { CRITICAL, INK, MUTED, SURFACE, phaseColor } from './palette'
-import { type Curve, type Scene, columnOf, rung } from './scene'
+import { CRITICAL, GRID, INK, SURFACE, phaseColor } from './palette'
+import { type Curve, type Scene, columnOf, cutsOf, rung } from './scene'
 
 const GAP = 2 // source: dataviz skill marks spec, a 2px surface gap between adjacent fills
 
@@ -15,7 +15,7 @@ export const lanesPicture = (scene: Scene, columns: number): Bitmap => {
   const bmp = new Bitmap(w, Math.max(1, scene.lanes.length) * 2 * CELL_H, SURFACE)
   scene.lanes.forEach((lane, i) => {
     const base = (i * 2 + 1) * CELL_H // the bar row's bottom edge
-    bmp.rect(0, base, w, 1, MUTED)
+    bmp.rect(0, base, w, 1, GRID)
     for (const s of lane.segments) {
       const x0 = columnOf(scene, s.t0, w)
       const x1 = Math.max(x0 + 2, columnOf(scene, s.t1, w))
@@ -39,6 +39,8 @@ export const lanesPicture = (scene: Scene, columns: number): Bitmap => {
       }
     }
   })
+  // A dashed rule down the lanes where a pause was cut from the axis.
+  for (const x of cutsOf(scene, w).columns) for (let y = 0; y < bmp.height; y += 6) bmp.rect(x, y, 1, 3, GRID)
   return bmp
 }
 
@@ -54,7 +56,7 @@ export const curvePicture = (c: Curve, columns: number, rows: number): Bitmap =>
     pad + (i * (w - 2 * pad)) / (c.rates.length - 1),
     h - pad - (c.rates[i]! / scale) * (h - 2 * pad),
   ]
-  bmp.rect(0, h - 1, w, 1, MUTED)
+  bmp.rect(0, h - 1, w, 1, GRID)
   if (c.moveAt !== null) {
     const [x] = at(c.moveAt)
     for (let y = 0; y < h; y += 6) bmp.rect(x, y, 1, 3, INK)

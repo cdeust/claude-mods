@@ -54,3 +54,18 @@ test('/mission opens the pane and says which renderer and why', { options: { ren
   const r = await $.command.run({ command: 'mission' } as never)
   expect(r.text).toBe('Mission control opened; drawn in cells (set in the renderer option).')
 })
+
+test("main's turn is kept when it completes, an agent's is not", async ($, on) => {
+  deps(on)
+  on('turn.complete', () => ({ text: '' }))
+  let kept: { turnId: string }[] = []
+  on('state.set', ($$, e, next) => {
+    if ((e as { key?: string }).key === 'history') kept = (e as unknown as { value: typeof kept }).value
+    return next(e)
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'a1' } as never)
+  expect(kept).toEqual([])
+  await $.turn.complete({ turnId: 'turn-0001-abcd', reason: 'answer' } as never)
+  expect(kept.map((t) => t.turnId)).toEqual(['turn-0001-abcd'])
+})

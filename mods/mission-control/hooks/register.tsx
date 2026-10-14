@@ -2,12 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { type Choice, chooseRenderer } from './renderer'
-import { sceneOf } from './scene'
+import type { PastTurn } from '../types'
+import { pastTurn, remembered, sceneOf } from './scene'
 import { CellsView, PixelsView, TextView } from './view'
 
 const PANE = 'mission-control'
 const TITLE = 'Mission'
 const renderer = atom({ plugin: 'mission-control', key: 'renderer' } as const, { renderer: 'cells', reason: 'not chosen yet' } as Choice)
+
+const history = atom({ plugin: 'mission-control', key: 'history' } as const, [] as PastTurn[])
 
 // The dependencies' state, as their contracts declare it.
 const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
@@ -50,11 +53,25 @@ export const register: Register = (on, options) => {
     return { text: `Mission control ${isPlaced ? 'opened' : 'waits for room (144 columns, or 110 in fullscreen)'}; drawn in ${r.renderer} (${r.reason}).` }
   })
 
+  // Main's turn as it ended, before the autopilot starts its row afresh.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const phases = (await $.state.get(AUTOPILOT_PHASES)).value
+      const main = phases?.loops.find((l) => l.id === 'main')
+      if (phases?.turnId != null && main !== undefined && main.runs.length > 0) {
+        const turn = pastTurn(main, phases.turnId, await $.clock.now())
+        await update($, history, (h) => remembered(h, turn))
+      }
+    }
+
+    return next(e)
+  })
+
   // Redrawn whenever the autopilot's phases or the insights change: the reads subscribe it.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const phases = (await $.state.get(AUTOPILOT_PHASES)).value ?? null
     const insights = (await $.state.get(INSIGHTS)).value ?? null
-    const scene = sceneOf(phases, insights, await $.clock.now())
+    const scene = sceneOf(phases, insights, await $.clock.now(), await read($, history))
     if (e.surface !== 'terminal') return TextView($.ui.resolve(e) as never, scene)
     const ui = $.ui.resolve(e)
     const r = await read($, renderer)

@@ -4,9 +4,9 @@
 import type { Elements } from 'claude-code'
 
 import { LABEL, paintCells } from './cells'
-import { INK, INK_2, MUTED, phaseColor } from './palette'
+import { GRID, INK, INK_2, MUTED, phaseColor } from './palette'
 import { curvePicture, lanesPicture } from './pixels'
-import { type Scene, rung } from './scene'
+import { type Scene, WINDOW_MS, rung } from './scene'
 
 export type Ui = Elements['terminal']
 
@@ -30,7 +30,7 @@ const Gauges = (ui: Ui, scene: Scene) => {
           <Text>
             <Text color={hex(INK_2)}>{g.phase.padEnd(LABEL)}</Text>
             <Text color={hex(phaseColor(g.phase))}>{'████'.repeat(level)}</Text>
-            <Text color={hex(MUTED)}>{'░░░░'.repeat(4 - level)}</Text>
+            <Text color={hex(GRID)}>{'░░░░'.repeat(4 - level)}</Text>
             <Text color={hex(g.calibrated === null ? MUTED : INK_2)}>{`  ${g.calibrated ?? 'medium (default)'} / ${g.ran ?? '-'}`}</Text>
           </Text>
         )
@@ -47,7 +47,7 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
   return (
     <Box flexDirection="column">
       <Text color={hex(INK)}>
-        MISSION CONTROL <Text color={hex(MUTED)}>{`turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length} lanes`}</Text>
+        MISSION CONTROL <Text color={hex(MUTED)}>{`turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}, last ${WINDOW_MS / 60_000} min`}</Text>
       </Text>
       <Text> </Text>
       <Box flexDirection="row">
@@ -62,7 +62,7 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
       <Text> </Text>
       {Gauges(ui, scene)}
       <Text> </Text>
-      <Text color={hex(INK)}>FAILED CALLS PER TURN, BY PHASE (insights ledger)</Text>
+      <Text color={hex(INK)}>FAILED CALLS PER STEP, BY PHASE (insights ledger)</Text>
       {scene.curves.length === 0 && <Text color={hex(MUTED)}>no phase has two points yet: the ledger fills as turns complete</Text>}
       {scene.curves.map((c) => (
         <Box flexDirection="row">

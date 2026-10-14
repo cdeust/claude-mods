@@ -22,7 +22,7 @@ test('every cell is a glyph the Raster accepts, and cells holds exactly columns 
 
 test('the lanes, effort and curves read as drawn', () => {
   const rows = paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())
-  expect(rows[0]).toBe('MISSION CONTROL turn turn-000 - 3 lanes')
+  expect(rows[0]).toBe('MISSION CONTROL turn turn-000 - 3 lanes, last 10 min')
   // main: analysis at high (▆), implementation at medium (▄), test at medium; the advisor star
   // under analysis, 3 failed calls at the end of test.
   expect(rows[2]).toMatch(/^main {11}▆{12,14}▄+$/)
@@ -39,4 +39,33 @@ test('an empty session draws its placeholders, not an empty grid', () => {
   const rows = paintCells(sceneOf(null, null, 5), 50).glyphRows().join('\n')
   expect(rows).toMatch(/no step recorded yet this turn/)
   expect(rows).toMatch(/no phase has two points yet/)
+})
+
+test('failed calls of runs closer than a mark are summed into one count, never printed over each other', () => {
+  const seg = (t0: number, t1: number, errors: number) => ({ phase: 'test' as const, effort: 'low', t0, t1, steps: 2, errors })
+  const crowded = {
+    t0: 0,
+    t1: 1000,
+    spans: [{ t0: 0, t1: 1000 }],
+    turnId: 't',
+    lanes: [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 900, 1), seg(900, 910, 4), seg(950, 1000, 2)], advisor: [] }],
+    gauges: [],
+    curves: [],
+  }
+  const marks = paintCells(crowded, 60).glyphRows()[3]!.trim()
+  expect(marks).toBe('test                                    x7')
+})
+
+test('a long pause is cut from the axis: two bursts share the track, a dashed mark between them', () => {
+  const seg = (t0: number, t1: number) => ({ phase: 'analysis' as const, effort: 'medium', t0, t1, steps: 1, errors: 0 })
+  const lanes = [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 30_000), seg(630_000, 660_000)], advisor: [] }]
+  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [] }
+  const rows = paintCells(bursts, 15 + 100).glyphRows()
+  const bar = rows[2]!.slice(15)
+  const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[3]!.slice(15).indexOf('┊')
+  // 60 s of work over 100 columns, the cut taking 4 % of it: each burst ~48 columns, not 5.
+  expect(bar.split('').filter((c) => c === '▄').length).toBeGreaterThan(90)
+  expect(cut).toBeGreaterThan(40)
+  expect(cut).toBeLessThan(60)
+  expect(rows[4]).toMatch(/1m00s of work, 1 pause cut/)
 })
