@@ -23,6 +23,7 @@ import {
   withAgent,
 } from './learn'
 import { placePath } from './paths'
+import { trends } from './trend'
 
 const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, {
   mode: 'observe',
@@ -32,6 +33,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   ledgerError: null,
   facetsError: null,
   phases: [],
+  trends: [],
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
   goals: [],
@@ -154,6 +156,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
     phases,
     agents: agentStats(ledger),
     advisor: advisorStats(ledger),
+    trends: trends(ledger, calibration.changes),
     calibration,
     proposals: ps,
     updatedAt: at,
