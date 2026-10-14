@@ -48,6 +48,14 @@ export type Calibration = {
   updatedAt: number | null
 }
 
+// One phase's learning curve: failed-call rate per bucket of consecutive turns, oldest first, and
+// the calibration's last move of that phase (hooks/trend.ts).
+export type PhaseTrend = {
+  phase: Phase
+  points: { at: number; steps: number; rate: number }[]
+  move: { at: number; from: Effort; to: Effort } | null
+}
+
 export type InsightsState = {
   mode: 'observe' | 'enforce'
   turns: number
@@ -56,6 +64,7 @@ export type InsightsState = {
   ledgerError: string | null
   facetsError: string | null
   phases: PhaseStat[]
+  trends: PhaseTrend[]
   agents: AgentStat[]
   advisor: { heavyTurns: number; heavyBeforeWrite: number; heavyAtCompletion: number; lightTurns: number; lightWithAdvisor: number }
   goals: { name: string; status: string }[]

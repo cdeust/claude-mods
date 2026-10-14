@@ -137,6 +137,7 @@ const FULL = {
     ledgerError: null,
     facetsError: null,
     phases: [{ phase: 'test', effort: 'medium', steps: 40, errors: 12, sessions: 2, judged: 2, achieved: 1 }],
+    trends: [],
     agents: [],
     advisor: { heavyTurns: 4, heavyBeforeWrite: 3, heavyAtCompletion: 2, lightTurns: 8, lightWithAdvisor: 1 },
     goals: [],
