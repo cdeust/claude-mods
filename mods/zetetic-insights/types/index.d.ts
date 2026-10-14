@@ -108,6 +108,10 @@ export type SessionModels = { session: string; at: number; steps: ModelSteps[] }
 // compares like with like; unmeasured counts the heavy steps of older records left out.
 export type MechanicalShare = { sessions: number; heavyReads: number; heavySteps: number; unmeasured: number; share: number | null }
 
+// The consumer that hands each finished session's calibration to Cortex (hooks/consumer.ts): how
+// many sessions were remembered there, how many wait, and the last failure, named.
+export type CortexHandoff = { pushed: number; pending: number; lastError: string | null; lastAt: number | null }
+
 export type InsightsState = {
   mode: 'observe' | 'enforce'
   turns: number
@@ -126,6 +130,7 @@ export type InsightsState = {
   // session start and frozen for the session (a changing system prompt would void its cache);
   // null when the ledger has nothing to say yet.
   brief: string | null
+  cortex: CortexHandoff
   agents: AgentStat[]
   advisor: { heavyTurns: number; heavyBeforeWrite: number; heavyAtCompletion: number; lightTurns: number; lightWithAdvisor: number }
   goals: { name: string; status: string }[]

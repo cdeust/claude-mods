@@ -142,6 +142,7 @@ const FULL = {
     delegations: { total: 0, designed: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] },
     mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null },
     brief: null,
+    cortex: { pushed: 0, pending: 0, lastError: null, lastAt: null },
     agents: [],
     advisor: { heavyTurns: 4, heavyBeforeWrite: 3, heavyAtCompletion: 2, lightTurns: 8, lightWithAdvisor: 1 },
     goals: [],

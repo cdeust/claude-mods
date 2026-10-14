@@ -4,11 +4,10 @@
 
 import type { AgentRecord, AgentStat, Calibration, Effort, Phase, PhaseStat, Proposal, TurnRecord } from '../types'
 
-export const LEDGER_KEY = 'turns'
 export const LEDGER_CAP = 3000 // source: own choice, the turns the rates are read from
 // source: claude-code types, `$.store.set` "rejects ... a store over 4 MiB of JSON text in all"
-// (every key of the mod's store). The ledger keeps 3 MiB of it as the file writes it, the rest is
-// margin.
+// (every key of the mod's store). The ledger, all turns:* keys together (ledger.ts), keeps 3 MiB of
+// it as the file writes it, the rest is margin.
 export const LEDGER_BYTES = 3 * 1024 * 1024
 // source: own choice, the agents one record keeps (~200 bytes each); the rest are counted.
 export const MAX_AGENTS = 50
