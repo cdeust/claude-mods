@@ -1,9 +1,10 @@
 import type { Elements, RenderChildren } from 'claude-code'
 
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
-import type { ContextHealth, GeniusState, PhasesState, PolicyState, Refusal } from './deps'
+import type { ContextHealth, GeniusState, InsightsState, PhasesState, PolicyState, Refusal } from './deps'
 import { ageLabel, cacheShare, countBy, group, heatCells } from './model'
 import { ContextPanel, HygienePanel, PipelinePanel, PolicyPanel, RefusalsPanel, clock } from './panels'
+import { type InsightsActions, InsightsPanel } from './insightsview'
 import { PhasesPanel } from './phasesview'
 import { HEAT_TRACK, type Surface, tone } from './tokens'
 
@@ -25,6 +26,8 @@ export type CockpitData = {
   policy: PolicyState | null
   genius: GeniusState | null
   phases: PhasesState | { error: string } | null
+  insights?: InsightsState | { error: string } | null
+  insightsActions?: InsightsActions
   onRefresh: () => void
   onConsolidate: () => void
   onCurateWiki: () => void
@@ -172,6 +175,11 @@ export const Cockpit = (ui: Ui, d: CockpitData) => {
         <Text dimColor>{'─'.repeat(Math.max(8, d.columns))}</Text>
       </Box>
       {Section(ui, 'PHASES', PhasesPanel(ui, d.surface, d.phases))}
+      {Section(
+        ui,
+        'INSIGHTS',
+        InsightsPanel(ui, d.surface, d.insights, d.insightsActions ?? { onRunInsights: () => {}, onApply: () => {}, onGoal: () => {} }),
+      )}
       {Section(ui, 'CONTEXT', ContextPanel(ui, d.surface, d.context, d.now))}
       {Section(ui, 'MEMORY', Memory(ui, d))}
       {Section(ui, 'PIPELINE SPEC → CODE', PipelinePanel(ui, d.surface, d.stages))}

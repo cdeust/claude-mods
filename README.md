@@ -10,7 +10,8 @@ The Claude mods keep one concern per mod, state shared through
 | `cortex-wiki` | `/wiki <wiki/**.md>` to PDF | nothing |
 | `zetetic-genius` | `state`: the request grade (task class → effort), the genius patterns and skills it matches | nothing |
 | `zetetic-autopilot` | `context`, `policy`, `phases`: effort ladder, model routing (a subagent's own definition first), pressure, lean results; the phase each loop is in and the advisor calls | `zetetic-genius` |
-| `cortex-cockpit` | `stats`, `ledger`, `tally`, `stages`, `hygiene`; the `/cortex` pane draws the rest | the three above |
+| `zetetic-insights` | `insights`: the turn ledger across sessions ($.store), joined with `/insights` session outcomes and `.zetetic/goals`; per-phase effort proposals, `/calibrate apply\|reset`, the calibration file the autopilot reads | `zetetic-autopilot`, `zetetic-genius` |
+| `cortex-cockpit` | `stats`, `ledger`, `tally`, `stages`, `hygiene`; the `/cortex` pane draws the rest (PHASES, INSIGHTS, POLICY...) | the four above |
 | `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
 | `superpowers` | third-party skills library (obra/superpowers, MIT), pinned to v7.0.0 `bb92a77`: listed here so it installs with the mods; which skills we keep is decided after measurement | nothing |
 
@@ -65,15 +66,16 @@ claude \
   --plugin-dir $MODS/cortex-wiki \
   --plugin-dir $MODS/zetetic-genius \
   --plugin-dir $MODS/zetetic-autopilot \
+  --plugin-dir $MODS/zetetic-insights \
   --plugin-dir $MODS/cortex-cockpit \
   --plugin-dir $MODS/harness-fleet
 
 # or one variable, colon separated
-CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/cortex-cockpit:$MODS/harness-fleet claude
+CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/zetetic-insights:$MODS/cortex-cockpit:$MODS/harness-fleet claude
 
 # an alias in the shell profile: it sets MODS itself, because the alias body is single-quoted and
 # is expanded each time it runs, not when the profile is read
-alias claude-mods='MODS=/path/to/claude-mods/mods; CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/cortex-cockpit:$MODS/harness-fleet claude'
+alias claude-mods='MODS=/path/to/claude-mods/mods; CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/zetetic-insights:$MODS/cortex-cockpit:$MODS/harness-fleet claude'
 ```
 
 Which form to prefer: an interactive session may ask for a login when `CLAUDE_CONFIG_DIR` points at

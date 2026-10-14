@@ -2,7 +2,7 @@
 // The owner's list (2026-10-14): planning, analysis, design, verification, test, review, report;
 // implementation is added for the steps that write code, which none of the seven names.
 
-import type { AdvisorUse, LoopPhases, Phase, PhasesState } from '../types'
+import type { AdvisorUse, LoopPhases, Phase, PhaseRun, PhasesState } from '../types'
 
 export const PHASES: readonly Phase[] = [
   'planning',
@@ -181,6 +181,15 @@ export const startTurn = (s: PhasesState, turnId: string, model: string, at: num
     updatedAt: at,
   })
 
+// The runs an agent made before its type was known, as one run of the type's phase.
+const merged = (runs: readonly PhaseRun[], phase: Phase, at: number): PhaseRun => ({
+  phase,
+  effort: runs[runs.length - 1]?.effort ?? null,
+  steps: runs.reduce((n, r) => n + r.steps, 0),
+  errors: runs.reduce((n, r) => n + r.errors, 0),
+  since: runs[0]?.since ?? at,
+})
+
 // A started subagent's row. Its steps may come in before the spawn answers (the engine runs the
 // loop meanwhile): a row they opened is completed here, its runs and status kept.
 export const spawned = (
@@ -195,7 +204,7 @@ export const spawned = (
       type: a.type,
       description: a.description,
       phase: phase ?? before.phase,
-      runs: phase === null ? before.runs : [{ phase, steps: before.runs.reduce((n, r) => n + r.steps, 0), since: before.runs[0]?.since ?? a.at }],
+      runs: phase === null ? before.runs : [merged(before.runs, phase, a.at)],
     })
   return withLoop(s, {
     id: a.id,
@@ -204,7 +213,7 @@ export const spawned = (
     model: a.model,
     effort: null,
     phase,
-    runs: phase === null ? [] : [{ phase, steps: 0, since: a.at }],
+    runs: phase === null ? [] : [{ phase, effort: null, steps: 0, errors: 0, since: a.at }],
     status: 'running',
     advisorCalls: 0,
     wrote: false,
@@ -245,9 +254,9 @@ export const stepped = (s: PhasesState, st: Step): PhasesState => {
   const runs =
     phase === null
       ? loop.runs
-      : last !== undefined && last.phase === phase
+      : last !== undefined && last.phase === phase && last.effort === st.effort
         ? [...loop.runs.slice(0, -1), { ...last, steps: last.steps + 1 }]
-        : [...loop.runs, { phase, steps: 1, since: st.at }]
+        : [...loop.runs, { phase, effort: st.effort, steps: 1, errors: 0, since: st.at }]
   const advisor = loop.type === 'main' && st.advisorCalls > 0 ? adviced(s.advisor, s.turnId, loop, st) : s.advisor
   return {
     ...withLoop(s, {
@@ -272,6 +281,15 @@ const adviced = (a: PhasesState['advisor'], turnId: string | null, loop: LoopPha
   const when: AdvisorUse['when'] = st.phase === 'report' ? 'at-completion' : loop.wrote ? 'after-write' : 'before-write'
   const use: AdvisorUse = { at: st.at, turnId, phase: loop.phase, when, calls: st.advisorCalls }
   return { session: a.session + st.advisorCalls, uses: [...a.uses, use].slice(-USES_CAP) }
+}
+
+// A tool call of the loop failed or was refused: counted on the run it happened in, the evidence
+// the insights mod learns each phase's effort from.
+export const erred = (s: PhasesState, loopId: string): PhasesState => {
+  const loop = s.loops.find((l) => l.id === loopId)
+  const last = loop?.runs[loop.runs.length - 1]
+  if (loop === undefined || last === undefined) return s
+  return withLoop(s, { ...loop, runs: [...loop.runs.slice(0, -1), { ...last, errors: last.errors + 1 }] })
 }
 
 export const finished = (s: PhasesState, loopId: string, at: number): PhasesState => {

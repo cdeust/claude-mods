@@ -3,10 +3,11 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { CortexEntry, CortexStats, HygieneSnapshot, StageTally, TurnTally } from '../types'
 import { placePath } from './paths'
-import type { ContextHealth, GeniusState, PhasesState, PolicyState, Refusal } from './deps'
+import type { ContextHealth, GeniusState, InsightsState, PhasesState, PolicyState, Refusal } from './deps'
 import { OWNERSHIP_PATH, type Ownership, parseOwnership, psRefusal, testProcesses, worktrees } from './hygiene'
 import { type Machine, runChecks } from './machinecheck'
 import { begin, emptyTally, finish, group, isCortexTool, parseStats, shortTool } from './model'
+import { CALIBRATION_GOAL } from './insightline'
 import { bandText } from './phaseline'
 import { bump, emptyStages, stageOf } from './pipeline'
 import { inputGist, outputText, parseRecall } from './recall'
@@ -56,6 +57,7 @@ const AUTOPILOT_CONTEXT = { plugin: 'zetetic-autopilot', key: 'context' } as con
 const AUTOPILOT_POLICY = { plugin: 'zetetic-autopilot', key: 'policy' } as const
 const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
 const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
+const INSIGHTS = { plugin: 'zetetic-insights', key: 'insights' } as const
 
 async function peekRefusals($: EngineInterface): Promise<readonly Refusal[]> {
   try {
@@ -94,6 +96,14 @@ async function peekGenius($: EngineInterface): Promise<GeniusState | null> {
 async function peekPhases($: EngineInterface): Promise<PhasesState | { error: string } | null> {
   try {
     return (await $.state.get(AUTOPILOT_PHASES)).value ?? null
+  } catch (error) {
+    return { error: cut(error) }
+  }
+}
+
+async function peekInsights($: EngineInterface): Promise<InsightsState | { error: string } | null> {
+  try {
+    return (await $.state.get(INSIGHTS)).value ?? null
   } catch (error) {
     return { error: cut(error) }
   }
@@ -286,6 +296,12 @@ export const register: Register = (on, options) => {
       policy: await peekPolicy($),
       genius: await peekGenius($),
       phases: await peekPhases($),
+      insights: await peekInsights($),
+      insightsActions: {
+        onRunInsights: () => void $.prompt.submit({ text: '/insights' }),
+        onApply: () => void $.command.run({ command: 'calibrate', args: 'apply' }).then((r) => $.ui.toast(r.text ?? 'calibrate: done')),
+        onGoal: () => void $.prompt.submit({ text: CALIBRATION_GOAL }),
+      },
       refusals: await peekRefusals($),
       onRefresh: () => {
         void refreshStats($)

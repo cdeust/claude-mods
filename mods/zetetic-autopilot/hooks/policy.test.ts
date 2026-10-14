@@ -71,3 +71,11 @@ test('a long result keeps its head and tail and names the cut', () => {
   expect(lean?.text).toContain('zetetic-autopilot cut 2150 characters')
   expect(leanText('short', 1000)).toBe(undefined)
 })
+
+test('a calibrated loop rung replaces medium for the phase, under the base and never above it', () => {
+  expect(effortFor('claude-fable-5-1', 2, 'high', 'none', undefined, 'high')).toBe(undefined)
+  expect(effortFor('claude-fable-5-1', 2, 'high', 'none', undefined, 'low')).toBe('low')
+  expect(effortFor('claude-fable-5-1', 2, 'high', 'none', 'medium', 'high')).toBe('medium')
+  expect(effortFor('claude-fable-5-1', 0, 'high', 'none', undefined, 'low')).toBe(undefined)
+  expect(effortFor('claude-fable-5-1', 2, 'high', 'quota', undefined, 'high')).toBe('low')
+})

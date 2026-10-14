@@ -31,7 +31,7 @@ test('a model id is shown as family and release', () => {
 })
 
 test('the strip marks the current phase and the ones already visited', () => {
-  const l = loop({ phase: 'test', runs: [{ phase: 'analysis', steps: 3, since: 0 }, { phase: 'test', steps: 1, since: 1 }] })
+  const l = loop({ phase: 'test', runs: [{ phase: 'analysis', effort: 'medium', steps: 3, errors: 0, since: 0 }, { phase: 'test', effort: 'medium', steps: 1, errors: 0, since: 1 }] })
   expect(strip(l).map((c) => `${c.label}:${c.state}`)).toEqual([
     'plan:ahead',
     'anly:visited',

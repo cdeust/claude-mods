@@ -124,10 +124,26 @@ const FULL = {
   phases: {
     turnId: 't1',
     loops: [
-      { id: 'main', type: 'main', description: 'main loop', model: 'claude-opus-5-5', effort: 'medium', phase: 'implementation', runs: [{ phase: 'analysis', steps: 3, since: 1 }, { phase: 'implementation', steps: 1, since: 2 }], status: 'running', advisorCalls: 1, wrote: true, updatedAt: 2 },
-      { id: 'a1', type: 'zetetic-team-subagents:code-reviewer', description: 'review #10', model: 'claude-sonnet-5-5', effort: 'medium', phase: 'review', runs: [{ phase: 'review', steps: 4, since: 1 }], status: 'running', advisorCalls: 0, wrote: false, updatedAt: 2 },
+      { id: 'main', type: 'main', description: 'main loop', model: 'claude-opus-5-5', effort: 'medium', phase: 'implementation', runs: [{ phase: 'analysis', effort: 'medium', steps: 3, errors: 0, since: 1 }, { phase: 'implementation', effort: 'medium', steps: 1, errors: 0, since: 2 }], status: 'running', advisorCalls: 1, wrote: true, updatedAt: 2 },
+      { id: 'a1', type: 'zetetic-team-subagents:code-reviewer', description: 'review #10', model: 'claude-sonnet-5-5', effort: 'medium', phase: 'review', runs: [{ phase: 'review', effort: 'medium', steps: 4, errors: 0, since: 1 }], status: 'running', advisorCalls: 0, wrote: false, updatedAt: 2 },
     ],
     advisor: { session: 1, uses: [{ at: 1, turnId: 't1', phase: 'analysis', when: 'before-write', calls: 1 }] },
+  },
+  insights: {
+    mode: 'observe',
+    turns: 12,
+    sessions: 3,
+    judgedSessions: 2,
+    facetsError: null,
+    phases: [{ phase: 'test', effort: 'medium', steps: 40, errors: 12, sessions: 2, judged: 2, achieved: 1 }],
+    agents: [],
+    advisor: { heavyTurns: 4, heavyBeforeWrite: 3, heavyAtCompletion: 2, lightTurns: 8, lightWithAdvisor: 1 },
+    goals: [],
+    goalsError: null,
+    calibration: { version: 1, phases: {}, evidence: {}, updatedAt: null },
+    calibrationError: null,
+    proposals: [{ phase: 'test', from: 'medium', to: 'high', evidence: '12 failed calls in 40 steps at medium over 2 sessions' }],
+    updatedAt: 2,
   },
   genius: {
     mode: 'observe',
@@ -196,6 +212,10 @@ test('the populated cockpit validates and shows exact numbers', async ($, on) =>
     expect(await ui.find({ type: 'Text', text: /\[impl\]/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /anly 3 › impl 1/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /advisor: 1 calls this session · 1 before writing/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /12 turns over 3 sessions · 2 judged by \/insights/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /propose test medium → high/ })).toBeDefined()
+    expect(await ui.find({ key: 'apply' })).toBeDefined()
+    expect(await ui.find({ key: 'insights' })).toBeDefined()
     await ui.unmount()
   }
 })
