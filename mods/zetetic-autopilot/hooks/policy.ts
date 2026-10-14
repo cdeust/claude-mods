@@ -56,18 +56,20 @@ export const pressureOf = (
   return 'none'
 }
 
-// Subagents under pressure go one notch down, opus/fable to sonnet; sonnet and haiku stay.
-// Owner choice 2026-10-07: no protected agent type.
+// Subagents under pressure go one notch down from the model they would run on, opus/fable to
+// sonnet; sonnet and haiku stay, so pressure never raises one. Owner choice 2026-10-07: no
+// protected agent type.
 const HEAVY = /opus|fable/i
 
-export const agentModelFor = (
-  declared: string | undefined,
-  parentModel: string,
-  pressure: Pressure,
-): string | undefined => {
-  if (pressure === 'none') return undefined
-  const effective = declared ?? parentModel
-  return HEAVY.test(effective) ? 'sonnet' : undefined
+export const agentModelFor = (effective: string, pressure: Pressure): string | undefined =>
+  pressure !== 'none' && HEAVY.test(effective) ? 'sonnet' : undefined
+
+// A subagent's requests keep the effort its definition pinned (the engine sends it on every step,
+// measured 2026-10-14: security-auditor `high`, memory-writer `low`); the main loop's ladder is
+// not theirs. Under pressure the effort is capped at medium.
+export const agentEffortFor = (model: string, current: unknown, pressure: Pressure): Effort | undefined => {
+  const have = currentEffort(model, current)
+  return pressure !== 'none' && RANK[have] > RANK.medium ? 'medium' : undefined
 }
 
 // Memory leaning: a tool result past the cap keeps its head and tail; the cut is named so the

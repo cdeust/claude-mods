@@ -21,10 +21,11 @@ export type ContextHealth = {
 
 export type Pressure = 'none' | 'quota' | 'context'
 
-// What the policy decided this session: observed, or applied under `enforce`.
+// What the policy decided this session: observed, or applied under `enforce`. `unread` names a
+// source routing went on without (a dependency's state, an agent definition) and why.
 export type PolicyDecision = {
   at: number
-  kind: 'effort' | 'model' | 'lean' | 'stuck'
+  kind: 'effort' | 'model' | 'lean' | 'stuck' | 'unread'
   subject: string
   from: string
   to: string
