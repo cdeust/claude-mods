@@ -42,11 +42,51 @@ export type PolicyState = {
   errorsInRow: number
 }
 
+// The phase a loop is in, read off what it does (hooks/phases.ts). Implementation is the eighth,
+// added to the owner's seven for the steps that write code.
+export type Phase = 'planning' | 'analysis' | 'design' | 'implementation' | 'verification' | 'test' | 'review' | 'report'
+
+// A stretch of consecutive steps in one phase.
+export type PhaseRun = { phase: Phase; steps: number; since: number }
+
+// One loop of this session: main (its row starts again each turn) or a subagent.
+export type LoopPhases = {
+  id: string
+  type: string
+  description: string
+  model: string
+  effort: string | null
+  // An agent whose type names a phase stays in it; main and other types follow their steps.
+  phase: Phase | null
+  runs: PhaseRun[]
+  status: 'running' | 'done'
+  advisorCalls: number
+  // The turn wrote something (implementation, design, test) before now.
+  wrote: boolean
+  updatedAt: number
+}
+
+// One step of main in which the advisor (a server tool the API runs) was called.
+export type AdvisorUse = {
+  at: number
+  turnId: string | null
+  phase: Phase | null
+  when: 'before-write' | 'after-write' | 'at-completion'
+  calls: number
+}
+
+export type PhasesState = {
+  turnId: string | null
+  loops: LoopPhases[]
+  advisor: { session: number; uses: AdvisorUse[] }
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'zetetic-autopilot': {
       context: ContextHealth | null
       policy: PolicyState
+      phases: PhasesState
     }
   }
 }

@@ -1,9 +1,13 @@
 {
   "name": "cortex-cockpit",
-  "version": "0.3.1",
-  "description": "The harness cockpit, a viewer: Cortex memory health and grooming, the context window against the Stop guard's thresholds (from zetetic-autopilot), the spec-to-code pipeline as observed, worktree and test-process hygiene, the autopilot's and genius router's decisions, and the guard's refusals. /cortex opens the pane.",
+  "version": "0.4.0",
+  "description": "The harness cockpit, a viewer: the phase every agent is in (PHASES panel, and main and the running agents in the band above the prompt), the advisor calls, Cortex memory health and grooming, the context window against the Stop guard's thresholds (from zetetic-autopilot), the spec-to-code pipeline as observed, worktree and test-process hygiene, the autopilot's and genius router's decisions, and the guard's refusals. /cortex opens the pane.",
   "types": "./types/index.d.ts",
-  "dependencies": ["cortex-guard", "zetetic-autopilot", "zetetic-genius"],
+  "dependencies": [
+    "cortex-guard",
+    "zetetic-autopilot",
+    "zetetic-genius"
+  ],
   "userConfig": {
     "surface": {
       "type": "string",

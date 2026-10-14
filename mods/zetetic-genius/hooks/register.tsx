@@ -9,6 +9,7 @@ import {
   type Shape,
   classifierPrompt,
   classifierSystem,
+  advisorContext,
   isClassifiable,
   parseClassification,
   parseShapes,
@@ -169,7 +170,8 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (!isClassifiable(e.text, e.origin)) return next(e)
     const c = await classify($, e.text)
-    if (c === undefined || (c.geniuses.length === 0 && c.shapes.length === 0)) return next(e)
+    const advice = c === undefined ? undefined : advisorContext(c.taskClass)
+    if (c === undefined || (c.geniuses.length === 0 && c.shapes.length === 0 && advice === undefined)) return next(e)
     const applied = (await read($, state)).mode === 'enforce'
     for (const g of c.geniuses)
       await update($, state, (s) =>
@@ -185,18 +187,22 @@ export const register: Register = (on, options) => {
           applied,
         }),
       )
+    if (advice !== undefined)
+      await update($, state, (s) => decide(s, { at: c.at, kind: 'advisor', subject: c.taskClass, to: 'advisor before the first edit and before done', applied }))
     if (!applied) return next(e)
-    const blocks = await contextFor($, c)
+    const blocks = [...(await contextFor($, c)), ...(advice === undefined ? [] : [advice])]
     return blocks.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...blocks] })
   })
 
   // prompt.submit's turnId is the turn that was running, not the one the prompt starts: the
-  // grade binds to its turn here, by the prompt's opening; a turn of its own carries none.
+  // grade binds to its turn here, by the prompt's opening. turn.start also fires for a subagent's
+  // turn, with no loop id (measured 2026-10-14): any other text leaves the grade as it is, bound
+  // to its own turn, which the autopilot matches by id.
   on('turn.start', async ($, e, next) => {
     const s = await read($, state)
     const c = s.classified
     const isOurs = c !== null && c.turnId === null && sameRequest(c.text, e.text)
-    const bound = isOurs && c !== null ? { ...c, turnId: e.turnId } : c?.turnId === null ? c : null
+    const bound = isOurs && c !== null ? { ...c, turnId: e.turnId } : c
     await update($, state, (st) => ({ ...st, classified: bound }))
 
     return next(e)

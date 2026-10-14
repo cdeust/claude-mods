@@ -9,7 +9,7 @@ The Claude mods keep one concern per mod, state shared through
 | `cortex-guard` | `refusals`: wiki pages only through `wiki_write`, worktrees inside `<repo>/.claude/worktrees/` | nothing |
 | `cortex-wiki` | `/wiki <wiki/**.md>` to PDF | nothing |
 | `zetetic-genius` | `state`: the request grade (task class → effort), the genius patterns and skills it matches | nothing |
-| `zetetic-autopilot` | `context`, `policy`: effort ladder, model routing, pressure, lean results | `zetetic-genius` |
+| `zetetic-autopilot` | `context`, `policy`, `phases`: effort ladder, model routing (a subagent's own definition first), pressure, lean results; the phase each loop is in and the advisor calls | `zetetic-genius` |
 | `cortex-cockpit` | `stats`, `ledger`, `tally`, `stages`, `hygiene`; the `/cortex` pane draws the rest | the three above |
 | `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
 | `superpowers` | third-party skills library (obra/superpowers, MIT), pinned to v7.0.0 `bb92a77`: listed here so it installs with the mods; which skills we keep is decided after measurement | nothing |

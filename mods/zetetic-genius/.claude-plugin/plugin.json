@@ -1,7 +1,7 @@
 {
   "name": "zetetic-genius",
-  "version": "0.1.1",
-  "description": "Grades every request before its turn starts (task class → effort rung, in one low-effort completion) and routes it to the genius reasoning patterns and problem-shaped skills whose trigger it matches, from the installed zetetic-team-subagents index; under enforce, the matched pattern's workflow rides beside the prompt.",
+  "version": "0.2.0",
+  "description": "Grades every request before its turn starts (task class → effort rung, in one low-effort completion) and routes it to the genius reasoning patterns and problem-shaped skills whose trigger it matches, from the installed zetetic-team-subagents index; under enforce, the matched pattern's workflow rides beside the prompt. An analysis or critical request also carries one line asking for the advisor before the first edit and before done.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "mode": {

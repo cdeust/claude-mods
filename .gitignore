@@ -3,3 +3,6 @@ node_modules/
 
 .Codex/worktrees/
 tasks/
+
+# compiled output of the TypeScript mods: the engine loads the .ts/.tsx sources (issue #7)
+mods/*/hooks/*.js
