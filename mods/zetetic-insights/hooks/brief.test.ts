@@ -131,3 +131,38 @@ test('one window: the brief counts the newest 10 sessions only, the 11th (oldest
   expect(all).toMatch(/100% of its measured steps only read files/)
   expect(all).toMatch(/overkill 1/)
 })
+
+const FRICTION = { kind: 'hook-block' as const, signature: 'Owned cleanup remains: [{<Q>: <Q>}]', sessions: 3, count: 7 }
+
+test('the top recurring friction is the last line, and the brief is then exactly BRIEF_MAX_LINES long', () => {
+  const text = composeBrief({ delegations: DELEGATIONS, models: sessionModels(LEDGER), mechanical: mechanicalShare(LEDGER), frictions: [FRICTION, { ...FRICTION, signature: 'second', sessions: 2, count: 2 }] }) ?? ''
+  const lines = text.split('\n')
+  expect(lines).toHaveLength(BRIEF_MAX_LINES)
+  expect(lines[5]).toBe('- recurring friction: Owned cleanup remains: [{<Q>: <Q>}] (hook-block, 3 sessions, 7 times)')
+  expect(lines.slice(0, 5).join('\n')).toBe(composeBrief({ delegations: DELEGATIONS, models: sessionModels(LEDGER), mechanical: mechanicalShare(LEDGER) }))
+})
+
+test('no recurring friction, no line; a friction alone is enough to compose; an absent field is none', () => {
+  const base = { delegations: emptyDelegations(), models: [], mechanical: NONE }
+  expect(composeBrief({ ...base, frictions: [] })).toBeNull()
+  expect(composeBrief(base)).toBeNull()
+  expect(composeBrief({ ...base, frictions: [FRICTION] })?.split('\n')).toEqual([
+    'Self-calibration (zetetic-insights ledger, last 0 sessions). Measured, not prescribed:',
+    '- recurring friction: Owned cleanup remains: [{<Q>: <Q>}] (hook-block, 3 sessions, 7 times)',
+  ])
+})
+
+test('briefOf counts the frictions of the window sessions only: a session outside the 10 newest does not make a row recur', () => {
+  const f = (signature: string) => [{ kind: 'hook-error' as const, signature, count: 1 }]
+  const rest = Array.from({ length: 10 }, (_, i) => turn(`s${i + 1}`, 10 + i, 'claude-haiku-5-5', [run('implementation', 4)]))
+  const oldest = turn('s00', 1, 'claude-haiku-5-5', [run('implementation', 4)])
+  const stored = new Map([['s00', f('x')], ['s1', f('x')], ['s2', f('y')], ['s3', f('y')]])
+  const text = briefOf([oldest, ...rest], stored) ?? ''
+  expect(text.split('\n').filter((l) => l.startsWith('- recurring friction'))).toEqual(['- recurring friction: y (hook-error, 2 sessions, 2 times)'])
+  expect(briefOf([oldest, ...rest]) ?? '').not.toMatch(/recurring friction/)
+})
+
+test('a friction line is cut to BRIEF_LINE_CAP like the others', () => {
+  const text = composeBrief({ delegations: emptyDelegations(), models: [], mechanical: NONE, frictions: [{ ...FRICTION, signature: 'z'.repeat(190) }] }) ?? ''
+  expect(text.split('\n')[1]).toHaveLength(BRIEF_LINE_CAP)
+})

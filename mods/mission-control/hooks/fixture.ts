@@ -37,6 +37,11 @@ export const INSIGHTS = {
       { at: 2000, type: 'zetetic-team-subagents:code-reviewer', model: 'claude-haiku-5-5', effort: null, shape: null, steps: 4, errors: 0, flags: ['undesigned'] },
     ],
   },
+  frictions: [
+    { kind: 'hook-block', signature: 'Owned cleanup remains: [{<Q>: <Q>}]', sessions: 4, count: 16 },
+    { kind: 'harness-refusal', signature: 'Permission to use Bash with command rm -rf <PATH> has been denied.', sessions: 3, count: 5 },
+    { kind: 'hook-error', signature: 'Failed to run: Plugin directory does not exist: <PATH> (p@m run <PATH> to reinstall)', sessions: 2, count: 17 },
+  ],
   mechanical: { sessions: 5, heavyReads: 30, heavySteps: 120, unmeasured: 0, share: 0.25 },
   calibration: { version: 1, phases: { test: 'high' }, evidence: {}, changes: {}, updatedAt: 1 },
   models: [

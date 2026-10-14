@@ -2,9 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
 import type { AgentRecord, Calibration, Design, InsightsState, TurnRecord } from '../types'
-import { briefOf, mechanicalShare } from './brief'
+import { briefOf, mechanicalShare, windowOf, windowSessions } from './brief'
 import { type RememberOutcome, aggregateSummary, rememberOutcome } from './consumer'
 import { delegationStats, emptyDelegations, parseDesign } from './delegations'
+import { FRICTION_MAX_BYTES, type Unavailable, frictionsOf, recurringOver } from './friction'
 import {
   CALIBRATION_PATH,
   FACETS_DIR,
@@ -29,6 +30,7 @@ import {
   CLAIM,
   type Claim,
   ENDED,
+  FRICTIONS,
   LEGACY,
   LEGACY_PUSHED,
   LEGACY_TURNS,
@@ -38,10 +40,12 @@ import {
   SESSION_PREFIXES,
   STALE_MS,
   type Sized,
+  TRANSCRIPT,
   TURNS,
   aggregateOf,
   claimedByOther,
   evictions,
+  frictionTargets,
   handoverPlan,
   isCovered,
   keyBytes,
@@ -71,6 +75,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   delegations: emptyDelegations(),
   mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null },
   brief: null,
+  frictions: [],
   cortex: { pushed: 0, pending: 0, lastError: null, lastAt: null },
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
@@ -97,6 +102,8 @@ let others: TurnRecord[] = []
 let layout: Layout | null = null
 let outcomes = new Map<string, Outcome>()
 let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped: 0 }
+// The frictions that could not be measured at the last attempt, named; kept so a turn's save does not erase it.
+let frictionError: string | null = null
 
 // Every session's records in time order, the newest LEDGER_CAP, as the single-key ledger held them.
 const ledger = (): TurnRecord[] => [...others, ...own].sort((a, b) => a.at - b.at).slice(-LEDGER_CAP)
@@ -178,7 +185,7 @@ async function updateAggregate($: EngineInterface, mine: number, sid: string, cl
     const view = await readLayout($, await $.store.keys())
     const plan = handoverPlan(view, sid, now)
     if (plan.pending.length === 0) return
-    const content = aggregateSummary(plan.finished.flatMap((s) => view.turns.get(s) ?? []), now)
+    const content = aggregateSummary(plan.finished.flatMap((s) => view.turns.get(s) ?? []), now, view.frictions)
     let error: string | null = null
     if (content === null) await cover($, view, plan.finished, now) // nothing measured: nothing to say
     else {
@@ -212,6 +219,15 @@ async function claimAggregate($: EngineInterface, sid: string, now: number): Pro
   return true
 }
 
+// The deferred work of one start, in this order: the frictions of the finished sessions are measured
+// first, so the aggregate (when this process holds its claim) says what they found. Neither runs in a
+// hook; each names its own failure and never stops the other.
+async function afterDelay($: EngineInterface, mine: number, sid: string, claimAt: number, claimed: boolean, counts: { pushed: number; pending: number }): Promise<void> {
+  await measureFrictions($, mine, sid)
+  if (!claimed) return
+  await updateAggregate($, mine, sid, claimAt).catch((error) => setCortex($, cortexOf(counts.pushed, counts.pending, cut(error), null)))
+}
+
 // Exactly once per change holds when no process stalls PUSH_DELAY_MS between its claim re-read and
 // write, an update ends within CLAIM_TTL_MS of its claim, and no process crashes between remember and
 // its keys (then the next start repeats the remember: at least once). A throw here (the session id,
@@ -226,10 +242,11 @@ async function schedulePush($: EngineInterface, loadError: string | null): Promi
     const plan = layout === null ? { finished: [], pending: [] } : handoverPlan(layout, sid, now)
     const counts = { pushed: plan.finished.length - plan.pending.length, pending: plan.pending.length }
     await setCortex($, cortexOf(counts.pushed, counts.pending, layout === null ? (loadError ?? 'the ledger did not load') : null, null))
-    if (plan.pending.length === 0 || !(await claimAggregate($, sid, now))) return
+    const claimed = plan.pending.length > 0 && (await claimAggregate($, sid, now))
+    const toMeasure = layout === null ? [] : frictionTargets(layout, windowSessions(windowOf(recordsOf(layout)).records), sid)
+    if (!claimed && toMeasure.length === 0) return
     $.clock.after(PUSH_DELAY_MS, () => {
-      updateAggregate($, mine, sid, now)
-        .catch((error) => setCortex($, cortexOf(counts.pushed, counts.pending, cut(error), null)))
+      afterDelay($, mine, sid, now, claimed, counts)
         .catch(() => undefined) // the state itself refused: there is nothing left to name it in
     })
   } catch (error) {
@@ -242,6 +259,73 @@ async function schedulePush($: EngineInterface, loadError: string | null): Promi
 }
 
 const BRIEF_SECTION = 'zetetic-insights:self-calibration'
+
+const recordsOf = (view: Layout): TurnRecord[] => [...view.turns.values()].flat()
+const FRICTION_NOT_MEASURED = 'frictions not measured'
+
+// The frictions recurring over the sessions of the brief's window (the own, live one is not measured).
+const recurringIn = (view: Layout | null, records: readonly TurnRecord[]): InsightsState['frictions'] =>
+  view === null ? [] : recurringOver(view.frictions, [...windowSessions(windowOf(records).records)].filter((s) => s !== ownSid))
+
+// Reads the transcripts of at most FRICTION_BATCH finished sessions of the window, each at most once:
+// frictionsOf is a pure function of the file, so frictions:<s> holds the same value whichever process
+// writes it (ledger.ts, the exception to I1). A transcript that cannot be read is named in the state
+// and left unmarked, so the next start tries again. Only ever called from the deferred timer.
+async function measureFrictions($: EngineInterface, mine: number, sid: string): Promise<void> {
+  if (mine !== generation) return
+  try {
+    const view = await readLayout($, await $.store.keys())
+    const failed: string[] = []
+    const large: string[] = []
+    for (const t of frictionTargets(view, windowSessions(windowOf(recordsOf(view)).records), sid)) {
+      try {
+        // The session may resume while its transcript is read (its process deletes ended: and the
+        // frictions: it measured): nothing is written unless ended:<s> is exactly what it was when
+        // the measurement began, so a resumed session is measured afresh when it ends again.
+        const endedKey = keyOf(ENDED, t.session)
+        const began = JSON.stringify(await $.store.get(endedKey)) ?? ''
+        // The pre-check and the set are two awaits apart: a resume that runs entirely between them deletes ended: and
+        // frictions:, and the set would then land stale. So after the set the ended: is read again, and if it is absent
+        // or changed the frictions: just written is deleted. This bounds the stale window to the moments between the
+        // set and that delete; the next resume deletion or the next measurement corrects it.
+        const stillEnded = async (): Promise<boolean> => began !== '' && JSON.stringify(await $.store.get(endedKey)) === began
+        const write = async (value: unknown): Promise<void> => {
+          if (!(await stillEnded())) return
+          await $.store.set(keyOf(FRICTIONS, t.session), value)
+          if (!(await stillEnded())) await $.store.delete(keyOf(FRICTIONS, t.session))
+        }
+        if (!(await $.fs.exists(t.transcript))) await write({ unavailable: 'missing' } satisfies Unavailable) // gone for good: a fact, the same for every writer
+        else {
+          const { size } = await $.fs.stat(t.transcript)
+          if (size > FRICTION_MAX_BYTES) {
+            await write({ unavailable: 'too-large' } satisfies Unavailable)
+            large.push(`${t.session.slice(0, 8)} ${size} bytes`)
+          } else await write(frictionsOf(await $.fs.read(t.transcript)))
+        }
+      } catch (error) {
+        failed.push(`${t.session.slice(0, 8)}: ${cut(error)}`)
+      }
+    }
+    const named = [
+      ...(failed.length === 0 ? [] : [`${FRICTION_NOT_MEASURED}, retried at the next start: ${failed.join('; ')}`]),
+      ...(large.length === 0 ? [] : [`${FRICTION_NOT_MEASURED}, transcript over ${FRICTION_MAX_BYTES} bytes: ${large.join('; ')}`]),
+    ]
+    frictionError = named.length === 0 ? null : named.join(' | ').slice(0, 240)
+    const after = await readLayout($, await $.store.keys())
+    await update($, insights, (s) => ({
+      ...s,
+      frictions: recurringIn(after, recordsOf(after)),
+      ledgerError: frictionError ?? (s.ledgerError?.startsWith(FRICTION_NOT_MEASURED) === true ? null : s.ledgerError),
+    }))
+  } catch (error) {
+    frictionError = `${FRICTION_NOT_MEASURED}: ${cut(error)}`
+    try {
+      await update($, insights, (s) => ({ ...s, ledgerError: frictionError }))
+    } catch {
+      // the state itself refused: there is nothing left to name it in, and the aggregate must still run
+    }
+  }
+}
 
 const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
 
@@ -290,6 +374,7 @@ async function loadLedger($: EngineInterface): Promise<string | null> {
     const migrated = await migrate($, await $.store.keys())
     const view = await readLayout($, await $.store.keys())
     if (view.ended.has(sid)) await $.store.delete(keyOf(ENDED, sid))
+    for (const prefix of [TRANSCRIPT, FRICTIONS]) if (view.transcripts.has(sid) || view.frictions.has(sid)) await $.store.delete(keyOf(prefix, sid)) // its transcript grows again: named and measured afresh when it ends
     own = [...(view.turns.get(sid) ?? [])]
     others = [...view.turns].filter(([s]) => s !== sid).flatMap(([, records]) => records)
     layout = view
@@ -398,6 +483,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
 async function start($: EngineInterface, mode: InsightsState['mode']): Promise<void> {
   pending = { agents: [], dropped: 0 }
   recorded.clear()
+  frictionError = null
   const ledgerError = await loadLedger($)
   const facetsError = await loadOutcomes($)
   const g = await readGoals($)
@@ -405,8 +491,19 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   // The only place the brief is computed: recompute keeps it, so the system prompt stays the same
   // within a start. /resume and fork call start() again: the resumed session gets fresh evidence, at
   // the cost of one cache miss.
-  const brief = briefOf(ledger())
-  await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error, brief })
+  const frictions = layout === null ? undefined : new Map([...layout.frictions].filter(([s]) => s !== ownSid))
+  const brief = briefOf(ledger(), frictions)
+  await recompute($, {
+    mode,
+    ledgerError,
+    facetsError,
+    goals: g.goals,
+    goalsError: g.error,
+    calibration: c.calibration,
+    calibrationError: c.error,
+    brief,
+    frictions: recurringIn(layout, ledger()),
+  })
   await schedulePush($, ledgerError)
 }
 
@@ -481,21 +578,35 @@ async function saved($: EngineInterface, sid: string, next: TurnRecord[]): Promi
     if (evict.length > 0) others = others.filter((r) => !evict.includes(r.session))
     own = mine
     await $.store.set(keyOf(TURNS, sid), own)
-    await update($, insights, (s) => ({ ...s, ledgerError: null }))
+    await update($, insights, (s) => ({ ...s, ledgerError: frictionError }))
   } catch (error) {
     await update($, insights, (s) => ({ ...s, ledgerError: `not saved: ${cut(error)}` }))
   }
 }
 
-// session.end, also fired with the old id by /clear: the session is finished, other processes may
-// hand it over. One local set, well inside the hook's 1.5 s. Only a session with records is marked,
-// so no ended: key outlives a session that never had a turns: key.
+// session.end, also fired with the old id by /clear: the session is finished and other processes may
+// hand it over. One local set of ended:<sid> = { at }, well inside the hook's 1.5 s. Only a session
+// with records is marked, so no ended: key outlives a session without a turns: key.
+// classic.SessionEnd writes ONLY transcript:<sid> = { path } (the source of the session's frictions),
+// by the same guard. The two hooks share no key, so nothing depends on which runs first, or on one
+// not running: the measurement reads both keys. Classic hooks do not run under organisation-managed
+// settings: then no transcript: key exists and the session's frictions are simply not measured.
+const hasRecords = async ($: EngineInterface, sid: string): Promise<boolean> =>
+  ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined || (await $.store.get(keyOf(LEGACY, sid))) !== undefined
+
 async function markEnded($: EngineInterface, sid: string): Promise<void> {
   try {
-    const has = ownSid === sid ? own.length > 0 : (await $.store.get(keyOf(TURNS, sid))) !== undefined || (await $.store.get(keyOf(LEGACY, sid))) !== undefined
-    if (has) await $.store.set(keyOf(ENDED, sid), { at: await $.clock.now() })
+    if (await hasRecords($, sid)) await $.store.set(keyOf(ENDED, sid), { at: await $.clock.now() })
   } catch (error) {
     await update($, insights, (s) => ({ ...s, ledgerError: `not marked ended (finished after ${STALE_MS / 3_600_000} h idle instead): ${cut(error)}` }))
+  }
+}
+
+async function markTranscript($: EngineInterface, sid: string, path: string): Promise<void> {
+  try {
+    if (path !== '' && (await hasRecords($, sid))) await $.store.set(keyOf(TRANSCRIPT, sid), { path })
+  } catch (error) {
+    await update($, insights, (s) => ({ ...s, ledgerError: `transcript not named (its frictions are not measured): ${cut(error)}` }))
   }
 }
 
@@ -563,6 +674,12 @@ export const register: Register = (on, options) => {
   server = String(options.cortex_server ?? server)
   ownSid = null // a load or a hot reload: the module holds no ledger until it reads the store again
 
+  on('classic.SessionEnd', async ($, e, next) => {
+    await markTranscript($, e.session_id, e.transcript_path)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('session.end', async ($, e, next) => {
     await markEnded($, e.sessionId)
 
@@ -585,7 +702,7 @@ export const register: Register = (on, options) => {
     await start($, mode)
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) await recordAgent($, e.agentId, e.usage)

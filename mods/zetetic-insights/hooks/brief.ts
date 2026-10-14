@@ -3,8 +3,9 @@
 // Pure, so the register and the tests share it. The register computes it once at session start and
 // freezes it: a system prompt that changed mid-session would void its prompt cache on every request.
 
-import type { DelegationStats, MechanicalShare, ModelFamily, SessionModels, TurnRecord } from '../types'
+import type { DelegationStats, FrictionRow, MechanicalShare, ModelFamily, SessionModels, TurnRecord } from '../types'
 import { delegationStats } from './delegations'
+import { type Friction, recurringOver } from './friction'
 import { familyOf, sessionModels } from './models'
 
 export const BRIEF_SESSIONS = 10 // source: own choice, the last sessions the mechanical share is measured over; recent habits, enough turns for a share
@@ -72,11 +73,14 @@ const stepsByModel = (models: readonly SessionModels[]): { total: number; line: 
 }
 
 // At most BRIEF_MAX_LINES lines of BRIEF_LINE_CAP characters; null when nothing is measured: no
-// session with a step, no judged delegation and no share.
-export const composeBrief = (o: { delegations: DelegationStats; models: readonly SessionModels[]; mechanical: MechanicalShare }): string | null => {
+// session with a step, no judged delegation, no share and no recurring friction. The friction line is
+// the last one: with the header and the four measures above it the brief is exactly BRIEF_MAX_LINES,
+// and were a line ever added, this is the one that yields (the slice cuts from the end).
+export const composeBrief = (o: { delegations: DelegationStats; models: readonly SessionModels[]; mechanical: MechanicalShare; frictions?: readonly FrictionRow[] }): string | null => {
   const { delegations: d, mechanical: m } = o
+  const top = o.frictions?.[0]
   const steps = stepsByModel(o.models)
-  if (steps.total === 0 && d.total === 0 && m.share === null) return null
+  if (steps.total === 0 && d.total === 0 && m.share === null && top === undefined) return null
   const lines = [`Self-calibration (zetetic-insights ledger, last ${m.sessions} sessions). Measured, not prescribed:`]
   if (m.share !== null)
     lines.push(
@@ -90,6 +94,7 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
   if (last !== undefined)
     lines.push(`- latest flagged: ${last.type} on ${last.model} (${last.effort ?? 'effort unset'}), ${last.steps} steps, ${last.errors} failed: ${last.flags.join(', ')}.`)
   if (steps.line !== null) lines.push(steps.line)
+  if (top !== undefined) lines.push(`- recurring friction: ${top.signature} (${top.kind}, ${top.sessions} sessions, ${top.count} times)`)
 
   return lines
     .slice(0, BRIEF_MAX_LINES)
@@ -98,9 +103,18 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
 }
 
 // The brief of a ledger: every line is computed from the same BRIEF_SESSIONS newest sessions, so the
-// header's count is true of all of them. The panel's own delegations and models stay on the whole ledger.
-export const briefOf = (records: readonly TurnRecord[]): string | null => {
+// header's count is true of all of them, the frictions' too (`frictions`: what was measured, by session).
+// The panel's own delegations and models stay on the whole ledger.
+export const briefOf = (records: readonly TurnRecord[], frictions: ReadonlyMap<string, readonly Friction[]> = new Map()): string | null => {
   const w = windowOf(records)
 
-  return composeBrief({ delegations: delegationStats(w.records), models: sessionModels(w.records), mechanical: mechanicalShare(w.records) })
+  return composeBrief({
+    delegations: delegationStats(w.records),
+    models: sessionModels(w.records),
+    mechanical: mechanicalShare(w.records),
+    frictions: recurringOver(frictions, windowSessions(w.records)),
+  })
 }
+
+// The sessions of a window's records.
+export const windowSessions = (records: readonly TurnRecord[]): Set<string> => new Set(records.map((r) => r.session))

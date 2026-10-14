@@ -112,6 +112,13 @@ export type MechanicalShare = { sessions: number; heavyReads: number; heavySteps
 // many sessions were remembered there, how many wait, and the last failure, named.
 export type CortexHandoff = { pushed: number; pending: number; lastError: string | null; lastAt: number | null }
 
+// A friction: something in the harness that got in the model's way, read from a finished session's
+// transcript (hooks/friction.ts): a hook that blocked or failed, a harness refusal of a tool call,
+// a tool misused, an MCP server failing. A command's plain non-zero exit is not one.
+export type FrictionKind = 'hook-block' | 'hook-error' | 'hook-cancelled' | 'harness-refusal' | 'tool-misuse' | 'mcp-failure'
+// One normalised signature over the brief's sessions: in how many of them it occurred, how often.
+export type FrictionRow = { kind: FrictionKind; signature: string; sessions: number; count: number }
+
 export type InsightsState = {
   mode: 'observe' | 'enforce'
   turns: number
@@ -131,6 +138,8 @@ export type InsightsState = {
   // null when the ledger has nothing to say yet.
   brief: string | null
   cortex: CortexHandoff
+  // The frictions recurring over the brief's sessions, most sessions first (at most 10).
+  frictions: FrictionRow[]
   agents: AgentStat[]
   advisor: { heavyTurns: number; heavyBeforeWrite: number; heavyAtCompletion: number; lightTurns: number; lightWithAdvisor: number }
   goals: { name: string; status: string }[]

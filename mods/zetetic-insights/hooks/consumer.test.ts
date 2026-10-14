@@ -58,3 +58,13 @@ test('rememberOutcome: a gate rejection is rejected; a missing or foreign head i
   expect(sc({ stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', supersede_target_id: 5, current_superseded_by_id: 9 })).toEqual({ kind: 'cleared', reason: 'supersede_target_already_superseded', foreignId: 9 })
   expect(sc({ stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', supersede_target_id: 5, current_head_id: 11 })).toEqual({ kind: 'cleared', reason: 'supersede_chain_head_moving', foreignId: 11 })
 })
+
+test('the aggregate carries the friction recurring over its sessions, and only those', () => {
+  const row = (signature: string) => [{ kind: 'hook-block' as const, signature, count: 2 }]
+  const records = [turn('aaaaaaaa-0', AT - 5000), turn('bbbbbbbb-1', AT)]
+  const stored = new Map([['aaaaaaaa-0', row('Owned cleanup remains')], ['bbbbbbbb-1', row('Owned cleanup remains')], ['other', row('Owned cleanup remains')]])
+  const text = aggregateSummary(records, AT, stored) ?? ''
+  expect(text.split('\n').pop()).toBe('- recurring friction: Owned cleanup remains (hook-block, 2 sessions, 4 times)')
+  expect(aggregateSummary(records, AT, new Map([['aaaaaaaa-0', row('x')], ['other', row('x')]]))).not.toMatch(/recurring friction/)
+  expect(aggregateSummary(records, AT)).not.toMatch(/recurring friction/)
+})
