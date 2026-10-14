@@ -46,6 +46,21 @@ test('pixels when the option asks: Images for the lanes and each curve, text aro
   await ui.unmount()
 })
 
+test('pixels at the widest and the narrowest pane stay inside the Image bounds', { options: { renderer: 'pixels' } }, async ($, on) => {
+  deps(on)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  for (const bodyColumns of [300, 20]) {
+    const ui = await $.ui.mount({ plugin: 'mission-control', surface: 'terminal', ...PANE, props: { ...PANE.props, bodyColumns } })
+    const lanes = (await ui.find({ key: 'lanes' })) as { props: { columns: number; source: { width: number } } } | undefined
+    const curve = (await ui.find({ key: 'curve-test' })) as { props: { columns: number; source: { width: number } } } | undefined
+    for (const img of [lanes, curve]) {
+      expect(img!.props.columns >= 1 && img!.props.columns <= 255).toBe(true)
+      expect(img!.props.source.width >= 1 && img!.props.source.width <= 2048).toBe(true)
+    }
+    await ui.unmount()
+  }
+})
+
 test('/mission opens the pane and says which renderer and why', { options: { renderer: 'cells' } }, async ($, on) => {
   deps(on)
   on('command.register', () => ({ value: undefined as never }))

@@ -2,7 +2,7 @@
 // around them (lane names, phase names, values) stay text, so they are sharp and read by a screen
 // reader; the pictures carry what text cannot: bars, marks, lines.
 
-import { Bitmap, CELL_H, CELL_W } from './bitmap'
+import { Bitmap, CELL_H, CELL_W, MAX_SIDE } from './bitmap'
 import { CRITICAL, GRID, INK, SURFACE, phaseColor } from './palette'
 import { type Curve, type Scene, columnOf, cutsOf, rung } from './scene'
 
@@ -10,9 +10,13 @@ const GAP = 2 // source: dataviz skill marks spec, a 2px surface gap between adj
 
 // One lane per two cell rows: its bar in the upper row, its marks in the lower one, as the cell
 // painter lays them, so the lane names beside the picture line up the same way.
+// The terminal scales a picture to its box, so a wide box gets fewer pixels per cell, never more
+// than an Image takes.
+const sideOf = (cells: number, perCell: number): number => Math.min(MAX_SIDE, Math.max(1, cells * perCell))
+
 export const lanesPicture = (scene: Scene, columns: number): Bitmap => {
-  const w = columns * CELL_W
-  const bmp = new Bitmap(w, Math.max(1, scene.lanes.length) * 2 * CELL_H, SURFACE)
+  const w = sideOf(columns, CELL_W)
+  const bmp = new Bitmap(w, sideOf(Math.max(1, scene.lanes.length) * 2, CELL_H), SURFACE)
   scene.lanes.forEach((lane, i) => {
     const base = (i * 2 + 1) * CELL_H // the bar row's bottom edge
     bmp.rect(0, base, w, 1, GRID)
@@ -47,8 +51,8 @@ export const lanesPicture = (scene: Scene, columns: number): Bitmap => {
 // One curve over `rows` cell rows: the rate per point, scaled to the curve's own top (at least
 // 10 %), a dashed rule where the calibration moved the phase.
 export const curvePicture = (c: Curve, columns: number, rows: number): Bitmap => {
-  const w = columns * CELL_W
-  const h = rows * CELL_H
+  const w = sideOf(columns, CELL_W)
+  const h = sideOf(rows, CELL_H)
   const bmp = new Bitmap(w, h, SURFACE)
   const scale = Math.max(0.1, ...c.rates)
   const pad = 3

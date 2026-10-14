@@ -3,8 +3,9 @@
 ## Engine facts measured before building on them
 
 - `Image` draws pixels only over the kitty graphics protocol, which the engine speaks to kitty and
-  Ghostty (claude-code types, ImageProps; reference.md), and tmux passes no picture through. In
-  iTerm2, or in any terminal inside tmux, an `Image` shows its `alt`. `Raster` (a grid of cells,
+  Ghostty (claude-code types, ImageProps; reference.md); in iTerm2 an `Image` shows its `alt`.
+  Inside tmux the terminal the engine sees is tmux's own (TERM=tmux-256color, TERM_PROGRAM=tmux in
+  the demo pane), so cells are the default there and `renderer: pixels` is the override. `Raster` (a grid of cells,
   24-bit colours, blocks and braille) draws everywhere. Hence two painters behind one scene.
 - Inside tmux, Claude Code draws in 256 colours: `tmux capture-pane -e` of a session whose
   process has `COLORTERM=truecolor` holds only `38;5;n` codes, its own interface included. Every
@@ -25,11 +26,20 @@ colour). Failed calls: `x` and a count in #ff0000 (4.3:1), reserved, never a pha
 
 A session ran a turn with three Explore agents, two deliberately failing `ls` calls and a read;
 `/mission` answered `Mission control opened; drawn in cells (inside tmux, which passes no picture
-through).` and docked the pane. `mission-control-2026-10-14-tmux.png` is that pane: tmux's own cell
+through; the reason now reads "inside tmux, which is neither kitty nor Ghostty").` and docked the pane. `mission-control-2026-10-14-tmux.png` is that pane: tmux's own cell
 buffer (`capture-pane -e`, glyphs and colours as stored) rendered to PNG by headless Chrome, since
 neither this shell nor cortex-vision holds the macOS Screen Recording permission. Chrome's Menlo
 spaces braille wider than a terminal does, so the curves read dotted there and continuous in iTerm2.
 The pixel painter is covered by tests, not yet by a live kitty or Ghostty run.
+
+## Review round 1 (REQUEST_CHANGES on 301a196), fixed
+
+The pixel painter ignored the Image bounds (ImageProps 1 to 255 columns; ImageSource 1 to 2048
+pixels a side): a pane past 270 columns made a 256-column, 2400-pixel picture, one under 26 a
+0-column curve. The track is clamped to 1..255 columns, a picture's sides to 2048 pixels (the
+terminal scales it to its box), and `Bitmap` refuses any side outside 1..2048. The pane is mounted
+in pixels mode at 300 and 20 columns in a test. Also: fills write a row at a time through a 32-bit
+view, the axis is laid once per scene, and the tmux claim cites what was measured.
 
 ## Gates
 

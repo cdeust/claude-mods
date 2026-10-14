@@ -5,6 +5,7 @@ import type { Elements } from 'claude-code'
 
 import { LABEL, paintCells } from './cells'
 import { GRID, INK, INK_2, MUTED, phaseColor } from './palette'
+import { MAX_IMAGE_COLUMNS } from './bitmap'
 import { curvePicture, lanesPicture } from './pixels'
 import { type Scene, WINDOW_MS, rung } from './scene'
 
@@ -41,7 +42,9 @@ const Gauges = (ui: Ui, scene: Scene) => {
 
 export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
   const { Box, Text, Image } = ui
-  const track = Math.max(10, columns - LABEL)
+  // Image boxes are 1 to 255 columns (ImageProps): a wider pane leaves the rest of the row empty.
+  const track = Math.min(MAX_IMAGE_COLUMNS, Math.max(1, columns - LABEL))
+  const curveColumns = Math.max(1, track - RIGHT)
   const lanes = lanesPicture(scene, track)
   const pct = (r: number) => `${Math.round(r * 100)}%`
   return (
@@ -71,7 +74,7 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
             <Text color={hex(MUTED)}>{`0-${pct(Math.max(0.1, ...c.rates))}`}</Text>
             {c.move !== null && <Text color={hex(INK_2)}>{c.move}</Text>}
           </Box>
-          <Image key={`curve-${c.phase}`} source={curvePicture(c, track - RIGHT, CURVE_ROWS).source()} columns={track - RIGHT} rows={CURVE_ROWS} alt={`${c.phase} ${pct(c.rates[0]!)} to ${pct(c.rates[c.rates.length - 1]!)}`} />
+          <Image key={`curve-${c.phase}`} source={curvePicture(c, curveColumns, CURVE_ROWS).source()} columns={curveColumns} rows={CURVE_ROWS} alt={`${c.phase} ${pct(c.rates[0]!)} to ${pct(c.rates[c.rates.length - 1]!)}`} />
           <Text color={hex(INK)}>{` ${pct(c.rates[0]!)}>${pct(c.rates[c.rates.length - 1]!)}`}</Text>
         </Box>
       ))}

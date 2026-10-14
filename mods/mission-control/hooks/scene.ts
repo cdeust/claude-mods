@@ -143,7 +143,16 @@ const spansOf = (lanes: readonly Lane[]): Span[] => {
 
 // The axis as laid out: active time in full, each cut pause (between spans, and from the last span
 // to now) the same small room. `at` maps an instant; a moment inside a pause sits in its cut.
+const axes = new WeakMap<Scene, ReturnType<typeof layAxis>>()
 const axisOf = (scene: Scene) => {
+  const known = axes.get(scene)
+  if (known !== undefined) return known
+  const axis = layAxis(scene)
+  axes.set(scene, axis)
+  return axis
+}
+
+const layAxis = (scene: Scene) => {
   const active = scene.spans.reduce((n, s) => n + (s.t1 - s.t0), 0)
   const cut = Math.max(1, active * CUT_SHARE)
   const last = scene.spans[scene.spans.length - 1]
