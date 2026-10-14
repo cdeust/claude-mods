@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
-import type { AgentRecord, Calibration, InsightsState, TurnRecord } from '../types'
+import type { AgentRecord, Calibration, Design, InsightsState, TurnRecord } from '../types'
+import { delegationStats, emptyDelegations, parseDesign } from './delegations'
 import {
   CALIBRATION_PATH,
   FACETS_DIR,
@@ -36,6 +37,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   phases: [],
   trends: [],
   models: [],
+  delegations: emptyDelegations(),
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
   goals: [],
@@ -56,6 +58,21 @@ const GENIUS_STATE = { plugin: 'zetetic-genius', key: 'state' } as const
 let ledger: TurnRecord[] = []
 let outcomes = new Map<string, Outcome>()
 let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped: 0 }
+
+// The design each spawned agent was dispatched under, by agentId, until the agent finishes. Bounded:
+// an agent that never finishes (or a reload) leaves an entry, the oldest is dropped past the cap.
+export const DESIGN_MAP_CAP = 200 // source: own choice, far above the agents running at once, small enough to hold in memory
+const designs = new Map<string, Design | null>()
+
+const remember = (agentId: string, design: Design | null): void => {
+  designs.delete(agentId)
+  designs.set(agentId, design)
+  while (designs.size > DESIGN_MAP_CAP) {
+    const oldest = designs.keys().next()
+    if (oldest.done === true) break
+    designs.delete(oldest.value)
+  }
+}
 
 const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
 
@@ -160,6 +177,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
     advisor: advisorStats(ledger),
     trends: trends(ledger, calibration.changes),
     models: sessionModels(ledger),
+    delegations: delegationStats(ledger),
     calibration,
     proposals: ps,
     updatedAt: at,
@@ -218,7 +236,7 @@ async function saved($: EngineInterface, next: TurnRecord[]): Promise<void> {
 
 // A finished agent goes to main's current turn. When that turn already completed (an agent that
 // ran in the background past it), it joins that turn's record instead of the next turn's.
-async function recordAgent($: EngineInterface, agentId: string): Promise<void> {
+async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage | undefined): Promise<void> {
   const phases = (await $.state.get(AUTOPILOT_PHASES)).value
   const loop = phases?.loops.find((l) => l.id === agentId)
   if (phases === undefined || loop === undefined) return
@@ -228,7 +246,13 @@ async function recordAgent($: EngineInterface, agentId: string): Promise<void> {
     model: loop.model,
     steps: loop.runs.reduce((n, r) => n + r.steps, 0),
     errors: loop.runs.reduce((n, r) => n + r.errors, 0),
+    // Absent when the spawn was never seen (a reload); null when it carried no DESIGN block.
+    ...(designs.has(agentId) ? { design: designs.get(agentId) ?? null } : {}),
+    ...(usage === undefined
+      ? {}
+      : { tokensIn: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens, tokensOut: usage.output_tokens }),
   }
+  designs.delete(agentId)
   const last = ledger[ledger.length - 1]
   if (last === undefined || phases.turnId === null || last.turnId !== phases.turnId) {
     pending = withAgent(pending, agent)
@@ -237,6 +261,7 @@ async function recordAgent($: EngineInterface, agentId: string): Promise<void> {
   const joined = withAgent({ agents: last.agents, dropped: last.agentsDropped ?? 0 }, agent)
   const record = { ...last, agents: joined.agents, ...(joined.dropped > 0 ? { agentsDropped: joined.dropped } : {}) }
   await saved($, [...ledger.slice(0, -1), record])
+  await recompute($)
 }
 
 async function calibrate($: EngineInterface, args: string): Promise<string> {
@@ -283,7 +308,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) await recordAgent($, e.agentId)
+    if (e.agentId !== undefined) await recordAgent($, e.agentId, e.usage)
     else {
       await recordTurn($)
       await recompute($)
@@ -291,6 +316,14 @@ export const register: Register = (on, options) => {
 
     return next(e)
   })
+
+  // Observes only: the result is the spawn's own, returned untouched; a throw here never blocks it.
+  on('agent.spawn', async ($, e, next) => {
+    const r = await next(e)
+    if (r.agentId !== undefined) remember(r.agentId, parseDesign(e.prompt))
+
+    return r
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'calibrate' }, async ($, e) => ({ text: await calibrate($, (e.args ?? '').trim()) }))
 }
