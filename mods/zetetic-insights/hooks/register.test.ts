@@ -416,9 +416,9 @@ test('cortex: after start one aggregate over the 2 past sessions is remembered, 
   await clock.advance(60_000)
   expect(calls.map((c) => c.tool)).toEqual(['remember'])
   expect(String(calls[0]?.args.content).split('\n')[0]).toBe('Self-calibration (zetetic-insights, last 2 finished sessions, as of 1970-01-01):')
-  expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['agent_topic', 'content', 'origin_tool', 'source', 'tags'])
+  expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['agent_topic', 'content', 'origin_tool', 'source', 'tags', 'write_class'])
   expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 101 })
-  expect(calls[0]?.args).toMatchObject({ tags: ['archival', 'self-calibration', 'zetetic-insights'], agent_topic: 'self-calibration', source: 'tool', origin_tool: 'zetetic-insights' })
+  expect(calls[0]?.args).toMatchObject({ tags: ['archival', 'self-calibration', 'zetetic-insights'], agent_topic: 'self-calibration', source: 'tool', origin_tool: 'zetetic-insights', write_class: 'deliberate' })
   expect(pushedKeys(w.store)).toEqual(['pushed:old-a', 'pushed:old-b'])
   expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0, lastError: null })
 })
@@ -695,7 +695,7 @@ test('I3 two processes through claim:aggregate: the claim is set at selection; B
   expect(w.store['pushed:B']).toBeUndefined()
 })
 
-const ARGS = ['agent_topic', 'content', 'origin_tool', 'source', 'tags']
+const ARGS = ['agent_topic', 'content', 'origin_tool', 'source', 'tags', 'write_class']
 test('the first aggregate is stored; a session resumed after it makes the next one supersede it, with the exact args', async ($, on) => {
   const w: World = { files: {}, written: {}, store: { 'turns:B': [bTurn(1)], 'ended:B': { at: 950 } } }
   const clock = stubs(on, w)
@@ -704,6 +704,7 @@ test('the first aggregate is stored; a session resumed after it makes the next o
   await clock.advance(60_000)
   expect(calls.length).toBe(1)
   expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(ARGS)
+  expect(calls[0]?.args).toEqual({ content: calls[0]?.args.content, tags: ['archival', 'self-calibration', 'zetetic-insights'], agent_topic: 'self-calibration', source: 'tool', origin_tool: 'zetetic-insights', write_class: 'deliberate' })
   expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901 })
   expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 101 })
   // B's process resumes it (its start drops ended:B), records a turn, and ends it again.
@@ -733,8 +734,12 @@ const replied = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], 
   await clock.advance(60_000)
   expect(calls.length).toBe(1)
   expect(calls[0]?.args.supersedes_id).toBe(50)
+  cortexCalls = { calls }
+  advance = (ms: number) => clock.advance(ms)
   return { w, seen }
 }
+let cortexCalls: { calls: Call[] } = { calls: [] }
+let advance: (ms: number) => Promise<unknown> = async () => undefined
 
 test('a merged reply (another memory) records nothing and is named with its id', async ($, on) => {
   const { w, seen } = await replied($, on, { stored: true, memory_id: 7, action: 'merged', reason: 'merged_with_existing' })
@@ -744,12 +749,18 @@ test('a merged reply (another memory) records nothing and is named with its id',
   expect(seen.cortex?.lastError).toMatch(/merged .*memory 7/)
 })
 
-test('a write-gate rejection leaves the head and covers the sessions, named', async ($, on) => {
-  const { w, seen } = await replied($, on, { stored: false, action: 'rejected', reason: 'low_novelty', importance: 0.2 })
+// Cortex core/write_gate.py build_rejection_response: stored false, action rejected, reason, novelty, importance.
+test('a write-gate rejection is not stored: head unchanged, nothing covered, named, sent again at the next start', async ($, on) => {
+  const novelty = { embedding: 0.1, entity: 0.1, temporal: 0.1, structural: 0.1, score: 0.1 }
+  const { w, seen } = await replied($, on, { stored: false, action: 'rejected', reason: 'low_novelty', novelty, importance: 0.2 })
   expect(w.store.aggregate).toEqual({ at: 1, memoryId: 50 })
-  expect(w.store['pushed:B']).toEqual({ at: 31_000, lastAt: 901 })
-  expect(seen.cortex).toMatchObject({ pushed: 1, pending: 0 })
+  expect(Object.keys(w.store).some((k) => k.startsWith('pushed:'))).toBe(false)
+  expect(seen.cortex).toMatchObject({ pushed: 0, pending: 1 })
   expect(seen.cortex?.lastError).toMatch(/low_novelty/)
+  const { calls } = cortexCalls
+  await $.session.start(START)
+  await advance(10 * 60_000)
+  expect(calls.length).toBe(2)
 })
 
 test('supersede_target_not_found clears the head; the sessions stay uncovered', async ($, on) => {
@@ -758,16 +769,26 @@ test('supersede_target_not_found clears the head; the sessions stay uncovered', 
   expect(w.store['pushed:B']).toBeUndefined()
 })
 
-test('supersede_target_already_superseded moves the head to current_superseded_by_id', async ($, on) => {
-  const { w } = await replied($, on, { stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', supersede_target_id: 50, current_superseded_by_id: 60 })
-  expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 60 })
+test('supersede_target_already_superseded clears the head, never adopts the foreign id; the next remember has no supersedes_id', async ($, on) => {
+  const { w, seen } = await replied($, on, { stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', supersede_target_id: 50, current_superseded_by_id: 60 })
+  expect(w.store.aggregate).toEqual({ at: 31_000 })
   expect(w.store['pushed:B']).toBeUndefined()
+  expect(seen.cortex?.lastError).toMatch(/supersede_target_already_superseded.*60/)
+  await $.session.start(START)
+  await advance(10 * 60_000)
+  expect(cortexCalls.calls.length).toBe(2)
+  expect('supersedes_id' in (cortexCalls.calls[1]?.args ?? {})).toBe(false)
 })
 
-test('superseded_conflict moves the head to current_head_id', async ($, on) => {
-  const { w } = await replied($, on, { stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', supersede_target_id: 50, current_head_id: 61 })
-  expect(w.store.aggregate).toEqual({ at: 31_000, memoryId: 61 })
+test('superseded_conflict clears the head, never adopts current_head_id; the next remember has no supersedes_id', async ($, on) => {
+  const { w, seen } = await replied($, on, { stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', supersede_target_id: 50, current_head_id: 61 })
+  expect(w.store.aggregate).toEqual({ at: 31_000 })
   expect(w.store['pushed:B']).toBeUndefined()
+  expect(seen.cortex?.lastError).toMatch(/supersede_chain_head_moving.*61/)
+  await $.session.start(START)
+  await advance(10 * 60_000)
+  expect(cortexCalls.calls.length).toBe(2)
+  expect('supersedes_id' in (cortexCalls.calls[1]?.args ?? {})).toBe(false)
 })
 
 test('a live session (no ended:, fresh) is not in the aggregate', async ($, on) => {

@@ -25,13 +25,14 @@ export const aggregateSummary = (records: readonly TurnRecord[], now: number): s
 // a text block.
 export type RememberReply = { content: readonly unknown[]; isError: boolean; structuredContent?: unknown }
 // head: the aggregate is now this memory. merged: Cortex folded the text into ANOTHER memory (not
-// ours). redundant: the write gate judged it already represented. moved: our head is gone (null) or
-// another writer moved it (its new id). failed: nothing changed, retried at the next start.
+// ours). rejected: the write gate refused it, so NOTHING is stored and no session is covered.
+// cleared: our head is gone or was superseded by a memory we did not create (foreignId, named only,
+// never adopted). failed: nothing changed, retried at the next start.
 export type RememberOutcome =
   | { kind: 'head'; memoryId: number }
   | { kind: 'merged'; memoryId: number | null }
-  | { kind: 'redundant'; reason: string }
-  | { kind: 'moved'; memoryId: number | null; reason: string }
+  | { kind: 'rejected'; reason: string }
+  | { kind: 'cleared'; reason: string; foreignId: number | null }
   | { kind: 'failed'; failure: string }
 
 const textOf = (content: readonly unknown[]): string =>
@@ -59,8 +60,8 @@ export const rememberOutcome = (r: RememberReply): RememberOutcome => {
   if (o.stored === true && o.action === 'merged') return { kind: 'merged', memoryId: id }
   if (o.stored === true) return id === null ? { kind: 'failed', failure: 'remember stored without a memory_id' } : { kind: 'head', memoryId: id }
   const reason = String(o.reason ?? o.action ?? 'not stored')
-  if (reason === 'supersede_target_not_found' || reason === 'invalid_supersedes_id') return { kind: 'moved', memoryId: null, reason }
-  if (reason === 'supersede_target_already_superseded') return { kind: 'moved', memoryId: idOf(o.current_superseded_by_id), reason }
-  if (o.action === 'superseded_conflict') return { kind: 'moved', memoryId: idOf(o.current_head_id), reason }
-  return { kind: 'redundant', reason }
+  if (reason === 'supersede_target_not_found' || reason === 'invalid_supersedes_id') return { kind: 'cleared', reason, foreignId: null }
+  if (reason === 'supersede_target_already_superseded') return { kind: 'cleared', reason, foreignId: idOf(o.current_superseded_by_id) }
+  if (o.action === 'superseded_conflict') return { kind: 'cleared', reason, foreignId: idOf(o.current_head_id) }
+  return { kind: 'rejected', reason }
 }

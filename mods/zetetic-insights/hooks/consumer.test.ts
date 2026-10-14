@@ -52,9 +52,9 @@ test('rememberOutcome: stored or superseded is the new head; merged is another m
   expect(rememberOutcome({ content: [{ type: 'text', text: 'down' }], isError: true })).toEqual({ kind: 'failed', failure: 'down' })
 })
 
-test('rememberOutcome: a gate rejection is redundant; a missing head clears it; a moved head is followed', () => {
-  expect(sc({ stored: false, action: 'rejected', reason: 'low_novelty', importance: 0.2 })).toEqual({ kind: 'redundant', reason: 'low_novelty' })
-  expect(sc({ stored: false, action: 'rejected', reason: 'supersede_target_not_found', supersede_target_id: 5 })).toEqual({ kind: 'moved', memoryId: null, reason: 'supersede_target_not_found' })
-  expect(sc({ stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', supersede_target_id: 5, current_superseded_by_id: 9 })).toEqual({ kind: 'moved', memoryId: 9, reason: 'supersede_target_already_superseded' })
-  expect(sc({ stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', supersede_target_id: 5, current_head_id: 11 })).toEqual({ kind: 'moved', memoryId: 11, reason: 'supersede_chain_head_moving' })
+test('rememberOutcome: a gate rejection is rejected; a missing or foreign head is cleared and names the foreign id', () => {
+  expect(sc({ stored: false, action: 'rejected', reason: 'low_novelty', importance: 0.2 })).toEqual({ kind: 'rejected', reason: 'low_novelty' })
+  expect(sc({ stored: false, action: 'rejected', reason: 'supersede_target_not_found', supersede_target_id: 5 })).toEqual({ kind: 'cleared', reason: 'supersede_target_not_found', foreignId: null })
+  expect(sc({ stored: false, action: 'rejected', reason: 'supersede_target_already_superseded', supersede_target_id: 5, current_superseded_by_id: 9 })).toEqual({ kind: 'cleared', reason: 'supersede_target_already_superseded', foreignId: 9 })
+  expect(sc({ stored: false, action: 'superseded_conflict', reason: 'supersede_chain_head_moving', supersede_target_id: 5, current_head_id: 11 })).toEqual({ kind: 'cleared', reason: 'supersede_chain_head_moving', foreignId: 11 })
 })

@@ -130,6 +130,8 @@ const remember = (agentId: string, design: Design | null): void => bounded(desig
 export const PUSH_DELAY_MS = 30_000 // source: own choice, the wait after start before the first remember; the session's own startup work goes first
 const REMEMBER_TAGS = ['archival', 'self-calibration', 'zetetic-insights'] // source: Cortex remember convention (agent-guidance: archival + agent_topic)
 
+// source: Cortex mcp_server/shared/write_class.py classify_write_class (source 'tool' already resolves to deliberate, ADR-0688) and mcp_server/core/write_gate.py determine_bypass (deliberate bypasses the write gate, ADR-0319): stated, not left to the default
+const REMEMBER_WRITE_CLASS = 'deliberate'
 const REMEMBER_SOURCE = 'tool' // source: Cortex mcp_server/handlers/remember_schema.py lines 205-226 (ADR-0442), `source` is an enum (session, tool, user, consolidation, import, distillation); the writer is named by origin_tool
 
 let server = 'plugin_hypermnesia-mcp_cortex' // source: cortex-cockpit plugin.json userConfig cortex_server default
@@ -154,13 +156,14 @@ async function applyOutcome($: EngineInterface, view: Layout, finished: readonly
   const at = await $.clock.now()
   if (outcome.kind === 'failed') return outcome.failure
   if (outcome.kind === 'merged') return `Cortex merged the aggregate into memory ${outcome.memoryId ?? '?'}, not ours: not recorded`
-  if (outcome.kind === 'moved') {
-    await $.store.set(AGGREGATE, outcome.memoryId === null ? { at } : { at, memoryId: outcome.memoryId })
-    return `${outcome.reason}: head ${outcome.memoryId ?? 'cleared'}, the next start updates it`
+  if (outcome.kind === 'rejected') return `not stored, rejected by Cortex: ${outcome.reason}; retried at the next start`
+  if (outcome.kind === 'cleared') {
+    await $.store.set(AGGREGATE, { at }) // the head is only ever an id we created: a foreign one is never adopted
+    return `${outcome.reason}: head cleared${outcome.foreignId === null ? '' : ` (Cortex named memory ${outcome.foreignId}, not ours)`}, the next start remembers a fresh head`
   }
-  if (outcome.kind === 'head') await $.store.set(AGGREGATE, { at, memoryId: outcome.memoryId })
+  await $.store.set(AGGREGATE, { at, memoryId: outcome.memoryId })
   await cover($, view, finished, at)
-  return outcome.kind === 'redundant' ? `not stored, already represented: ${outcome.reason}` : null
+  return null
 }
 
 // The aggregate updated once, after the delay: only while the claim is still exactly this one, over
@@ -180,7 +183,7 @@ async function updateAggregate($: EngineInterface, mine: number, sid: string, cl
     if (content === null) await cover($, view, plan.finished, now) // nothing measured: nothing to say
     else {
       const head = aggregateOf(await $.store.get(AGGREGATE))
-      const args = { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights', ...(head.memoryId === undefined ? {} : { supersedes_id: head.memoryId }) }
+      const args = { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights', write_class: REMEMBER_WRITE_CLASS, ...(head.memoryId === undefined ? {} : { supersedes_id: head.memoryId }) }
       let outcome: RememberOutcome
       try {
         outcome = rememberOutcome(await $.mcp.call(server, 'remember', args))
