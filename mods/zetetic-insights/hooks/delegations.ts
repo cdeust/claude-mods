@@ -75,32 +75,59 @@ export const emptyDelegations = (): DelegationStats => ({
   recent: [],
 })
 
-// Every agent of every record: `total` counts the agents that have a design field (null included),
-// `designed` those whose design is not null, `flags` each flag, `recent` the last RECENT_FLAGGED
-// flagged rows, newest last. O(agents).
-export const delegationStats = (records: readonly TurnRecord[]): DelegationStats => {
-  const stats = emptyDelegations()
+// One delegation is one agentId: a resumed agent writes a record per turn, summed here and judged
+// once. A record without agentId (legacy) is its own delegation.
+type Delegation = { agent: AgentRecord; at: number }
+
+const delegationsOf = (records: readonly TurnRecord[]): Delegation[] => {
+  const out: Delegation[] = []
+  const byId = new Map<string, Delegation>()
   for (const rec of records) {
     for (const a of rec.agents) {
-      if (a.design === undefined) continue
-      stats.total += 1
-      if (a.design !== null) stats.designed += 1
-      const flags = flagsOf(a)
-      if (flags.length === 0) continue
-      for (const f of FLAGS) if (flags.includes(f)) stats.flags[f] += 1
-      const row: DelegationRow = {
-        at: rec.at,
-        type: a.type,
-        model: a.model,
-        effort: a.design?.effort ?? null,
-        shape: a.design?.shape ?? null,
-        steps: a.steps,
-        errors: a.errors,
-        flags,
+      const seen = a.agentId === undefined ? undefined : byId.get(a.agentId)
+      if (seen === undefined) {
+        const d = { agent: { ...a }, at: rec.at }
+        out.push(d)
+        if (a.agentId !== undefined) byId.set(a.agentId, d)
+        continue
       }
-      stats.recent.push(row)
-      if (stats.recent.length > RECENT_FLAGGED) stats.recent.shift()
+      const s = seen.agent
+      s.steps += a.steps
+      s.errors += a.errors
+      if (a.tokensIn !== undefined) s.tokensIn = (s.tokensIn ?? 0) + a.tokensIn
+      if (a.tokensOut !== undefined) s.tokensOut = (s.tokensOut ?? 0) + a.tokensOut
+      if (s.design === undefined && a.design !== undefined) s.design = a.design
+      s.model = a.model
+      seen.at = rec.at
     }
+  }
+  return out
+}
+
+// Every delegation: `total` counts those that have a design field (null included), `designed` those
+// whose design is not null, `flags` each flag over the delegation's summed steps and errors, `recent`
+// the last RECENT_FLAGGED flagged rows, newest last. O(agents).
+export const delegationStats = (records: readonly TurnRecord[]): DelegationStats => {
+  const stats = emptyDelegations()
+  for (const { agent: a, at } of delegationsOf(records)) {
+    if (a.design === undefined) continue
+    stats.total += 1
+    if (a.design !== null) stats.designed += 1
+    const flags = flagsOf(a)
+    if (flags.length === 0) continue
+    for (const f of FLAGS) if (flags.includes(f)) stats.flags[f] += 1
+    const row: DelegationRow = {
+      at,
+      type: a.type,
+      model: a.model,
+      effort: a.design?.effort ?? null,
+      shape: a.design?.shape ?? null,
+      steps: a.steps,
+      errors: a.errors,
+      flags,
+    }
+    stats.recent.push(row)
+    if (stats.recent.length > RECENT_FLAGGED) stats.recent.shift()
   }
   return stats
 }

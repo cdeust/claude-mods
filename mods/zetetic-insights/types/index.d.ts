@@ -13,9 +13,13 @@ export type RunRecord = { phase: Phase; effort: string | null; steps: number; er
 export type Design = { model: string | null; effort: string | null; shape: string | null }
 
 export type AgentRecord = {
+  // The engine's id of the delegation: an agent resumed for another turn writes one record per turn
+  // under the same id, and a delegation is judged once over all of them. Absent on older records.
+  agentId?: string
   type: string
   phase: Phase | null
   model: string
+  // This turn's steps and failed calls only, never the agent's running total.
   steps: number
   errors: number
   // What it was dispatched under: null when the prompt carried no DESIGN block; absent on records

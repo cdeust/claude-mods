@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { AgentRecord, TurnRecord } from '../types'
+import { agentStats } from './learn'
 import { DESIGN_FIELD_CAP, OVERKILL_STEPS, RECENT_FLAGGED, delegationStats, flagsOf, parseDesign } from './delegations'
 
 const BLOCK = `DESIGN
@@ -97,4 +98,32 @@ test('recent keeps the last RECENT_FLAGGED flagged rows, newest last', () => {
 
 test('an empty ledger gives empty stats', () => {
   expect(delegationStats([])).toEqual({ total: 0, designed: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] })
+})
+
+const turnOf = (at: number, agents: AgentRecord[]): TurnRecord => ({ session: 's', turnId: `t${at}`, at, taskClass: null, main: [], agents, advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0 })
+
+test('a delegation of several turns is judged once, over its summed steps', () => {
+  const opus = { model: 'claude-opus-5-5', steps: 3, agentId: 'x' }
+  const s = delegationStats([turnOf(1, [agent({ ...opus, design: design('opus') })]), turnOf(2, [agent({ ...opus })])])
+  expect(OVERKILL_STEPS).toBe(5)
+  expect(s.total).toBe(1)
+  expect(s.flags.overkill).toBe(0)
+  expect(s.recent).toEqual([])
+})
+
+test('grouping takes the first design, the last model and the last record\'s time; legacy records stay separate', () => {
+  const a = agent({ agentId: 'x', model: 'claude-haiku-5-5', steps: 1, design: design('opus') })
+  const b = agent({ agentId: 'x', model: 'claude-opus-5-5', steps: 1 })
+  const legacy = agent({ steps: 1, design: null })
+  const s = delegationStats([turnOf(1, [a, legacy]), turnOf(2, [b, legacy])])
+  expect(s.total).toBe(3)
+  expect(s.flags.undesigned).toBe(2)
+  expect(s.flags.overkill).toBe(1)
+  expect(s.recent.find((r) => r.flags.includes('overkill'))).toMatchObject({ at: 2, model: 'claude-opus-5-5', steps: 2 })
+})
+
+test('agentStats: the records of a resumed agent hold per-turn steps, summed once', () => {
+  const a = agent({ agentId: 'x', steps: 3 })
+  const b = agent({ agentId: 'x', steps: 2 })
+  expect(agentStats([turnOf(1, [a]), turnOf(2, [b])])[0]).toMatchObject({ runs: 2, steps: 5 })
 })

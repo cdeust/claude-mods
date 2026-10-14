@@ -59,20 +59,25 @@ let ledger: TurnRecord[] = []
 let outcomes = new Map<string, Outcome>()
 let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped: 0 }
 
-// The design each spawned agent was dispatched under, by agentId, until the agent finishes. Bounded:
-// an agent that never finishes (or a reload) leaves an entry, the oldest is dropped past the cap.
+// The design each spawned agent was dispatched under, by agentId, kept for the agent's lifetime (a
+// resumed agent completes more than one turn). Bounded: the oldest entry is dropped past the cap.
 export const DESIGN_MAP_CAP = 200 // source: own choice, far above the agents running at once, small enough to hold in memory
 const designs = new Map<string, Design | null>()
+// The steps and failed calls already recorded per agentId: loop.runs hold the agent's cumulative
+// runs, a record keeps this turn's delta only. Same cap.
+const recorded = new Map<string, { steps: number; errors: number }>()
 
-const remember = (agentId: string, design: Design | null): void => {
-  designs.delete(agentId)
-  designs.set(agentId, design)
-  while (designs.size > DESIGN_MAP_CAP) {
-    const oldest = designs.keys().next()
+const bounded = <V,>(map: Map<string, V>, key: string, value: V): void => {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > DESIGN_MAP_CAP) {
+    const oldest = map.keys().next()
     if (oldest.done === true) break
-    designs.delete(oldest.value)
+    map.delete(oldest.value)
   }
 }
+
+const remember = (agentId: string, design: Design | null): void => bounded(designs, agentId, design)
 
 const cut = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 120)
 
@@ -186,6 +191,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
 
 async function start($: EngineInterface, mode: InsightsState['mode']): Promise<void> {
   pending = { agents: [], dropped: 0 }
+  recorded.clear()
   const ledgerError = await loadLedger($)
   const facetsError = await loadOutcomes($)
   const g = await readGoals($)
@@ -240,19 +246,22 @@ async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage
   const phases = (await $.state.get(AUTOPILOT_PHASES)).value
   const loop = phases?.loops.find((l) => l.id === agentId)
   if (phases === undefined || loop === undefined) return
+  const total = { steps: loop.runs.reduce((n, r) => n + r.steps, 0), errors: loop.runs.reduce((n, r) => n + r.errors, 0) }
+  const before = recorded.get(agentId) ?? { steps: 0, errors: 0 }
+  bounded(recorded, agentId, total)
   const agent: AgentRecord = {
+    agentId,
     type: loop.type,
     phase: loop.phase,
     model: loop.model,
-    steps: loop.runs.reduce((n, r) => n + r.steps, 0),
-    errors: loop.runs.reduce((n, r) => n + r.errors, 0),
+    steps: Math.max(0, total.steps - before.steps),
+    errors: Math.max(0, total.errors - before.errors),
     // Absent when the spawn was never seen (a reload); null when it carried no DESIGN block.
     ...(designs.has(agentId) ? { design: designs.get(agentId) ?? null } : {}),
     ...(usage === undefined
       ? {}
       : { tokensIn: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens, tokensOut: usage.output_tokens }),
   }
-  designs.delete(agentId)
   const last = ledger[ledger.length - 1]
   if (last === undefined || phases.turnId === null || last.turnId !== phases.turnId) {
     pending = withAgent(pending, agent)
