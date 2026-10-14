@@ -41,8 +41,8 @@ export type Models = { window: ModelSteps[]; sessions: SessionModels[] }
 export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models }
 
 // A model id as its family: the first of fable, opus, sonnet, haiku found in it, else other.
-export const familyOf = (model: string): ModelFamily => {
-  if (model === '') return 'unknown'
+export const familyOf = (model: unknown): ModelFamily => {
+  if (typeof model !== 'string' || model === '') return 'unknown'
   const m = model.toLowerCase()
   return (['fable', 'opus', 'sonnet', 'haiku'] as const).find((f) => m.includes(f)) ?? 'other'
 }
@@ -79,37 +79,43 @@ export const pastTurn = (main: LoopPhases, turnId: string, now: number): PastTur
 export const remembered = (history: readonly PastTurn[], turn: PastTurn): PastTurn[] =>
   [...history.filter((t) => t.turnId !== turn.turnId), turn].slice(-HISTORY_TURNS)
 
+// The one rule for every flow (main's past turns, main's live turn, each agent): a run is in the
+// window when it ends at or after the window's start. A run's end is its segment's t1; main's live
+// turn ends at now, so it is always in.
+const inWindow = (from: number) => (s: Segment): boolean => s.t1 >= from
+
 // Main over the window (its past turns, then the current one) and the agents that ran in it, the
 // newest kept; the advisor calls of the window on main's lane.
 const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number): { lanes: Lane[]; window: ModelSteps[] } => {
   const from = now - WINDOW_MS
+  const counted = inWindow(from)
   const main = phases.loops.find((l) => l.id === 'main')
   const pastRuns = history
     .filter((t) => t.turnId !== phases.turnId)
-    .flatMap((t) => t.runs.map((r) => ({ r, model: t.model })))
-    .filter(({ r }) => r.until >= from)
-  const past: Segment[] = pastRuns
-    .map(({ r }) => ({ phase: r.phase as Phase, effort: r.effort, t0: r.since, t1: r.until, steps: r.steps, errors: r.errors }))
-  const mainSegments = [...past, ...(main === undefined ? [] : segmentsOf(main, now))]
+    .flatMap((t) => t.runs.map((r) => ({ model: t.model, seg: { phase: r.phase as Phase, effort: r.effort, t0: r.since, t1: r.until, steps: r.steps, errors: r.errors } as Segment })))
+    .filter(({ seg }) => counted(seg))
+  const mainLive = (main === undefined ? [] : segmentsOf(main, now)).filter(counted)
+  const mainSegments = [...pastRuns.map(({ seg }) => seg), ...mainLive]
   const agents = phases.loops
     .filter((l) => l.id !== 'main' && l.runs.length > 0 && l.updatedAt >= from)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, mainSegments.length === 0 ? MAX_LANES : MAX_LANES - 1)
     .reverse()
-  const agentLanes: Lane[] = agents.map((l) => ({
+    .map((l) => ({ loop: l, segments: segmentsOf(l, now).filter(counted) }))
+  const agentLanes: Lane[] = agents.map(({ loop: l, segments }) => ({
     id: l.id,
     label: shortType(l.type),
     model: l.model,
     isRunning: l.status === 'running',
-    segments: segmentsOf(l, now),
+    segments,
     advisor: [],
   }))
-  // The window's steps by model: main's past runs under their turn's model, its current runs under
-  // main's, each shown agent under its own.
+  // The window's steps by model, counted by the one rule: main's past runs under their turn's model,
+  // its current runs under main's, each shown agent under its own.
   const window = tally([
-    ...pastRuns.map(({ r, model }) => ({ model, steps: r.steps })),
-    ...(main?.runs ?? []).map((r) => ({ model: main!.model, steps: r.steps })),
-    ...agents.flatMap((l) => l.runs.map((r) => ({ model: l.model, steps: r.steps }))),
+    ...pastRuns.map(({ model, seg }) => ({ model, steps: seg.steps })),
+    ...mainLive.map((s) => ({ model: main?.model ?? '', steps: s.steps })),
+    ...agents.flatMap(({ loop: l, segments }) => segments.map((s) => ({ model: l.model, steps: s.steps }))),
   ])
   if (mainSegments.length === 0) return { lanes: agentLanes, window }
   const mainLane: Lane = {
@@ -144,8 +150,13 @@ const curvesOf = (insights: InsightsState | null): Curve[] =>
       move: t.move === null ? null : `${t.move.from} → ${t.move.to}`,
     }))
 
+// State survives a plugin reload, so a turn written by an earlier version may have no model: read as
+// '' (unknown), the same as the insights side's `mainModel ?? ''`.
+const settled = (history: readonly PastTurn[]): PastTurn[] =>
+  history.map((t) => ({ ...t, model: typeof t.model === 'string' ? t.model : '' }))
+
 export const sceneOf = (phases: PhasesState | null, insights: InsightsState | null, now: number, history: readonly PastTurn[] = []): Scene => {
-  const { lanes, window } = phases === null ? { lanes: [], window: [] } : lanesOf(phases, history, now)
+  const { lanes, window } = phases === null ? { lanes: [], window: [] } : lanesOf(phases, settled(history), now)
   const starts = lanes.flatMap((l) => l.segments.map((s) => s.t0))
   const ends = lanes.flatMap((l) => l.segments.map((s) => s.t1))
   return {

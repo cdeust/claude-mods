@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
+import type { PastTurn } from '../types'
 import { INSIGHTS, PHASES } from './fixture'
 import { HISTORY_TURNS, MODEL_ROWS, WINDOW_MS, familyOf, pastTurn, remembered, sceneOf } from './scene'
 
@@ -45,4 +46,29 @@ test('the window counts steps by family: main under its models, each shown agent
 
 test('familyOf names the family in a model id, empty is unknown', () => {
   expect(['claude-haiku-5-5', 'Claude-SONNET-5', 'claude-opus-5-5[1m]', 'fable-1', 'gpt-9', ''].map(familyOf)).toEqual(['haiku', 'sonnet', 'opus', 'fable', 'other', 'unknown'])
+  // Any non-string model (an old atom value with no model) is unknown, not a throw.
+  expect([undefined, null, 42].map((m) => familyOf(m as unknown as string))).toEqual(['unknown', 'unknown', 'unknown'])
+})
+
+test('a history turn with no model (an old atom value) does not throw: its steps count as unknown', () => {
+  const old = { turnId: 'turn-0000', runs: pastTurn(main, 'turn-0000', 100_000).runs } as unknown as PastTurn
+  const next = { ...PHASES, turnId: 'turn-0002', loops: PHASES.loops.filter((l) => l.id === 'main').map((l) => ({ ...l, runs: [{ phase: 'report', effort: 'low', steps: 2, errors: 0, since: 120_000 }] })) } as typeof PHASES
+  // The old turn's 6 + 10 + 8 steps are unknown; main's live 2 steps are on opus.
+  expect(sceneOf(next, null, 130_000, [old]).models.window).toEqual([{ family: 'opus', steps: 2 }, { family: 'unknown', steps: 24 }])
+})
+
+test('a run counts in the window only when it ends at or after the window start, for agents too', () => {
+  const now = 3_000_000 // the window starts at 2_400_000
+  // The agent was updated 2 minutes ago, so it is shown; its 200-step run ended 30 minutes ago.
+  const agent = {
+    id: 'a9', type: 'Explore', description: 'look', model: 'claude-haiku-5-5', effort: 'low', phase: 'analysis', status: 'done',
+    runs: [
+      { phase: 'analysis', effort: 'low', steps: 200, errors: 0, since: now - 40 * 60_000 },
+      { phase: 'analysis', effort: 'low', steps: 1, errors: 0, since: now - 30 * 60_000 },
+    ],
+    advisorCalls: 0, wrote: false, updatedAt: now - 2 * 60_000,
+  }
+  const scene = sceneOf({ ...PHASES, loops: [agent] } as unknown as typeof PHASES, null, now)
+  expect(scene.models.window).toEqual([{ family: 'haiku', steps: 1 }])
+  expect(scene.lanes.map((l) => [l.label, l.segments.map((s) => s.steps)])).toEqual([['Explore', [1]]])
 })
