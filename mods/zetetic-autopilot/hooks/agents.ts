@@ -14,7 +14,7 @@ export const INHERITING_BUILT_INS: readonly string[] = ['Explore', 'Plan', 'gene
 export type Definition = { model?: string; effort?: string }
 
 // The files that may define a type, in the engine's precedence: a plugin's `agents/<name>.md`
-// for `<plugin>:<name>`, else the project's `.claude/agents/`, then the user's (`claudeDir`, the
+// for `<plugin>:<name>` (`agents/<sub>/<name>.md` for `<plugin>:<sub>:<name>`), else the project's `.claude/agents/`, then the user's (`claudeDir`, the
 // engine's config directory: `~/.claude` or CLAUDE_CONFIG_DIR).
 export const definitionPaths = (
   type: string,
@@ -25,7 +25,8 @@ export const definitionPaths = (
   const colon = type.indexOf(':')
   if (colon < 0) return [`${cwd}/.claude/agents/${type}.md`, `${claudeDir}/agents/${type}.md`]
   const plugin = type.slice(0, colon)
-  const name = type.slice(type.lastIndexOf(':') + 1)
+  // `<plugin>:<sub>:<name>` is the plugin's agents/<sub>/<name>.md.
+  const name = type.slice(colon + 1).split(':').join('/')
   if (installedPluginsJson === undefined) return []
   let parsed: { plugins?: Record<string, { installPath?: unknown }[]> }
   try {
@@ -46,7 +47,7 @@ export const parseDefinition = (md: string): Definition => {
   const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(md)
   if (block === null) return {}
   const field = (name: string): string | undefined => {
-    const m = new RegExp(`^${name}:\\s*["']?([^"'\\s#]+)`, 'm').exec(block[1] ?? '')
+    const m = new RegExp(`^${name}:[ \\t]*["']?([^"'\\s#]+)`, 'm').exec(block[1] ?? '')
     return m?.[1]
   }
   const model = field('model')

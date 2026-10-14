@@ -14,6 +14,9 @@ test("a plugin type's definition is its plugin's agents/<name>.md", () => {
   expect(definitionPaths('zetetic-team-subagents:advisor', INSTALLED, '/h/.claude', '/r')).toEqual([
     '/c/zetetic/2.44.0/agents/advisor.md',
   ])
+  expect(definitionPaths('zetetic-team-subagents:genius:feynman', INSTALLED, '/h/.claude', '/r')).toEqual([
+    '/c/zetetic/2.44.0/agents/genius/feynman.md',
+  ])
   expect(definitionPaths('nowhere:agent', INSTALLED, '/h/.claude', '/r')).toEqual([])
   expect(definitionPaths('zetetic-team-subagents:advisor', undefined, '/h/.claude', '/r')).toEqual([])
 })
@@ -35,6 +38,7 @@ test('the frontmatter model and effort are read, quoted or not; a body line is n
     effort: 'high',
   })
   expect(parseDefinition('---\nmodel: "haiku"\n---\n')).toEqual({ model: 'haiku' })
+  expect(parseDefinition('---\nmodel:\ntools: Read\neffort:\n---\n')).toEqual({})
   expect(parseDefinition('no frontmatter\nmodel: opus\n')).toEqual({})
 })
 
