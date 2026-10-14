@@ -35,7 +35,7 @@ const STORE_LIMIT = 4 * 1024 * 1024
 const storeBytes = (store: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify(store, null, 2)).length
 
 const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES) => {
-  mock.clock(on, { now: 1_000 })
+  const clock = mock.clock(on, { now: 1_000 })
   on('session.start', () => ({ cwd: '/r' }))
   on('session.cwd', () => ({ value: '/r' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -67,6 +67,7 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES) 
     return next(e)
   })
   on('turn.complete', () => ({ text: '' }))
+  return clock
 }
 
 test('a run without reads is kept without them', async ($, on) => {
@@ -355,4 +356,99 @@ test('prompt.compose: an empty ledger adds no section', async ($, on) => {
   on('prompt.compose', () => ENGINE)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   expect(await compose($)).toEqual(ENGINE)
+})
+
+// The handoff to Cortex: each finished session, once, from a later start, never inside a hook.
+const SERVER = 'plugin_hypermnesia-mcp_cortex'
+type Call = { server: string; tool: string; args: Record<string, unknown> }
+const cortex = (on: Parameters<TestBody>[1], reply: { isError: boolean } = { isError: false }) => {
+  const calls: Call[] = []
+  const answer = { reply }
+  on('mcp.call', ($, e, next) => {
+    const { server, tool, args } = e as unknown as Call
+    if (server !== SERVER) return next(e)
+    calls.push({ server, tool, args })
+    return { value: { content: [{ type: 'text' as const, text: answer.reply.isError ? 'down' : '{"stored":true}' }], isError: answer.reply.isError } }
+  })
+  return { calls, answer }
+}
+const watch = (on: Parameters<TestBody>[1]) => {
+  const seen: { cortex?: { pushed: number; pending: number; lastError: string | null; lastAt: number | null } } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') seen.cortex = (e as unknown as { value: typeof seen }).value.cortex
+    return next(e)
+  })
+  return seen
+}
+// Two past sessions (old-a older than old-b) and the current one, sess-1, already in the ledger.
+const pastSession = (session: string, at: number) => ({ ...past(at), session, turnId: `${session}-t` })
+const LEDGER = () => [pastSession('old-b', 20), pastSession('old-a', 10), pastSession('sess-1', 30)]
+const START = { surface: 'terminal', isInteractive: true, cwd: '/r' } as const
+
+test('cortex: after start the 2 past sessions are remembered, oldest first, the current one is not', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  const seen = watch(on)
+  await $.session.start(START)
+  expect(calls.length).toBe(0)
+  expect(seen.cortex).toEqual({ pushed: 0, pending: 2, lastError: null, lastAt: null })
+  await clock.advance(60_000)
+  expect(calls.map((c) => c.tool)).toEqual(['remember', 'remember'])
+  expect(calls.map((c) => String(c.args.content).slice(0, 36))).toEqual(['Self-calibration of session old-a (1', 'Self-calibration of session old-b (1'])
+  expect(Object.keys(calls[0]?.args ?? {}).sort()).toEqual(['agent_topic', 'content', 'origin_tool', 'source', 'tags'])
+  expect(calls[0]?.args).toMatchObject({ tags: ['archival', 'self-calibration', 'zetetic-insights'], agent_topic: 'self-calibration', source: 'tool', origin_tool: 'zetetic-insights' })
+  expect(w.store.pushed).toEqual(['old-a', 'old-b'])
+  expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0, lastError: null })
+})
+
+test('cortex: a second start remembers nothing more', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(2)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(2)
+})
+
+test('cortex: an isError reply stops the batch, is named in the state, and the next start retries', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  const clock = stubs(on, w)
+  const { calls, answer } = cortex(on, { isError: true })
+  const seen = watch(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(1)
+  expect(w.store.pushed ?? []).toEqual([])
+  expect(seen.cortex?.pushed).toBe(0)
+  expect(seen.cortex?.pending).toBe(2)
+  expect(seen.cortex?.lastError).toMatch(/down/)
+  answer.reply = { isError: false }
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(3)
+  expect(w.store.pushed).toEqual(['old-a', 'old-b'])
+  expect(seen.cortex).toMatchObject({ pushed: 2, pending: 0 })
+})
+
+test('cortex: a state stored by an older version, without pushed, reads as empty', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER(), pushed: 'garbage' } }
+  const clock = stubs(on, w)
+  const { calls } = cortex(on)
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(calls.length).toBe(2)
+})
+
+test('cortex: no mcp.call happens inside a session.end hook', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: { turns: LEDGER() } }
+  stubs(on, w)
+  const { calls } = cortex(on)
+  on('session.end', () => ({ sessionId: 'sess-1' }))
+  await $.session.start(START)
+  await $.session.end({ reason: 'exit', sessionId: 'sess-1' } as never)
+  expect(calls.length).toBe(0)
 })

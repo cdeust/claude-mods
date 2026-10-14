@@ -3,6 +3,7 @@ import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
 import type { AgentRecord, Calibration, Design, InsightsState, TurnRecord } from '../types'
 import { briefOf, mechanicalShare } from './brief'
+import { pendingSessions, sessionSummary } from './consumer'
 import { delegationStats, emptyDelegations, parseDesign } from './delegations'
 import {
   CALIBRATION_PATH,
@@ -41,6 +42,7 @@ const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, 
   delegations: emptyDelegations(),
   mechanical: { sessions: 0, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null },
   brief: null,
+  cortex: { pushed: 0, pending: 0, lastError: null, lastAt: null },
   agents: [],
   advisor: { heavyTurns: 0, heavyBeforeWrite: 0, heavyAtCompletion: 0, lightTurns: 0, lightWithAdvisor: 0 },
   goals: [],
@@ -82,6 +84,89 @@ const bounded = <V,>(map: Map<string, V>, key: string, value: V): void => {
 }
 
 const remember = (agentId: string, design: Design | null): void => bounded(designs, agentId, design)
+
+// The handoff to Cortex. Sessions already handed over live in the store (it survives restarts;
+// $.state is reset by /clear). A push never runs in a hook that ends the session (session.end has
+// about 1.5 s in all, a Cortex remember was measured at 7.8 s): it is scheduled at start, for the
+// sessions finished before this one.
+export const PUSHED_KEY = 'pushed'
+export const PUSHED_CAP = 500 // source: own choice, session ids kept as handed over; far more than the ledger holds (4 MiB, a few hundred sessions)
+export const PUSH_BATCH = 5 // source: own choice, sessions handed over per start; a remember is slow (7.8 s measured 2026-10-14), the rest waits for the next start
+export const PUSH_DELAY_MS = 30_000 // source: own choice, the wait after start before the first remember; the session's own startup work goes first
+const REMEMBER_TAGS = ['archival', 'self-calibration', 'zetetic-insights'] // source: Cortex remember convention (agent-guidance: archival + agent_topic)
+
+const REMEMBER_SOURCE = 'tool' // source: Cortex mcp_server/handlers/remember_schema.py lines 205-226 (ADR-0442), `source` is an enum (session, tool, user, consolidation, import, distillation); the writer is named by origin_tool
+
+let server = 'plugin_hypermnesia-mcp_cortex' // source: cortex-cockpit plugin.json userConfig cortex_server default
+let handed: string[] = []
+let generation = 0
+let pushing = false
+
+const cortexOf = (pushed: number, pending: number, lastError: string | null, lastAt: number | null) => ({ pushed, pending, lastError, lastAt })
+
+// The ids handed over, as the store kept them; absent or not a list (an older version) is empty.
+// A store that cannot be read is an error, not empty: reading it as empty would remember twice.
+async function loadHanded($: EngineInterface): Promise<string | null> {
+  handed = []
+  try {
+    const raw = await $.store.get(PUSHED_KEY)
+    if (Array.isArray(raw)) handed = raw.filter((x): x is string => typeof x === 'string').slice(-PUSHED_CAP)
+    return null
+  } catch (error) {
+    return cut(error)
+  }
+}
+
+async function setCortex($: EngineInterface, c: InsightsState['cortex']): Promise<void> {
+  await update($, insights, (s) => ({ ...s, cortex: c }))
+}
+
+// Remembers the batch one session at a time. The first failure (a throw or an isError reply) stops
+// the batch, is named in the state and leaves its session unpushed: the next start retries it.
+async function pushBatch($: EngineInterface, mine: number, batch: string[]): Promise<void> {
+  if (pushing || mine !== generation) return
+  pushing = true
+  try {
+    for (const session of batch) {
+      if (mine !== generation) return
+      const content = sessionSummary(ledger, session)
+      if (content === null || handed.includes(session)) continue
+      let failure: string | null = null
+      try {
+        const r = await $.mcp.call(server, 'remember', { content, tags: REMEMBER_TAGS, agent_topic: 'self-calibration', source: REMEMBER_SOURCE, origin_tool: 'zetetic-insights' })
+        if (r.isError) failure = r.content.map((b) => ('text' in b ? String(b.text) : '')).join(' ').trim() || 'remember returned an error'
+      } catch (error) {
+        failure = cut(error)
+      }
+      const at = await $.clock.now()
+      if (failure === null) {
+        handed = [...handed, session].slice(-PUSHED_CAP)
+        try {
+          await $.store.set(PUSHED_KEY, handed)
+        } catch (error) {
+          failure = `not saved: ${cut(error)}`
+        }
+      }
+      const pending = pendingSessions(ledger, await $.session.id(), new Set(handed)).length
+      await setCortex($, cortexOf(handed.length, pending, failure === null ? null : failure.slice(0, 120), at))
+      if (failure !== null) return
+    }
+  } finally {
+    pushing = false
+  }
+}
+
+// After the ledger loads: names what is pending and schedules the first PUSH_BATCH of it.
+async function schedulePush($: EngineInterface): Promise<void> {
+  generation += 1
+  const mine = generation
+  const error = await loadHanded($)
+  const todo = error === null ? pendingSessions(ledger, await $.session.id(), new Set(handed)) : []
+  await setCortex($, cortexOf(handed.length, todo.length, error, null))
+  if (todo.length > 0) $.clock.after(PUSH_DELAY_MS, () =>
+      pushBatch($, mine, todo.slice(0, PUSH_BATCH)).catch((error) => setCortex($, cortexOf(handed.length, todo.length, cut(error), null))),
+    )
+}
 
 const BRIEF_SECTION = 'zetetic-insights:self-calibration'
 
@@ -208,6 +293,7 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   // the cost of one cache miss.
   const brief = briefOf(ledger)
   await recompute($, { mode, ledgerError, facetsError, goals: g.goals, goalsError: g.error, calibration: c.calibration, calibrationError: c.error, brief })
+  await schedulePush($)
 }
 
 // One main turn, as the autopilot's phases and policy and the genius grade left it.
@@ -310,6 +396,7 @@ async function calibrate($: EngineInterface, args: string): Promise<string> {
 
 export const register: Register = (on, options) => {
   const mode: InsightsState['mode'] = options.learning_mode === 'enforce' ? 'enforce' : 'observe'
+  server = String(options.cortex_server ?? server)
 
   on('session.start', async ($, e, next) => {
     await start($, mode)
