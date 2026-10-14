@@ -1,6 +1,6 @@
 import type { HygieneSnapshot, StageTally } from '../types'
 import { bar, tokensLeft } from './contextview'
-import type { ContextHealth, GeniusState, PolicyDecision, PolicyState, Refusal } from './deps'
+import { type ContextHealth, type GeniusState, type PolicyDecision, type PolicyState, type Refusal, type Unreadable, isUnreadable } from './deps'
 import { shortPath } from './hygiene'
 import { ageLabel, group } from './model'
 import { STAGES, shortName } from './pipeline'
@@ -16,8 +16,9 @@ export const clock = (ms: number): string => {
 const BAR_WIDTH = 30 // source: own choice, fits the narrowest docked pane the engine seats
 const TOP = 5 // source: own choice, the rows a one-line summary can carry
 
-export const ContextPanel = (ui: Ui, surface: Surface, c: ContextHealth | null, now: number) => {
+export const ContextPanel = (ui: Ui, surface: Surface, c: ContextHealth | Unreadable | null, now: number) => {
   const { Box, Text } = ui
+  if (isUnreadable(c)) return <Text color={tone(surface, 'danger')}>context: unreadable, {c.error}</Text>
   if (c === null) return <Text dimColor>context: pending (no response measured yet)</Text>
   const b = c.band
   const color =
@@ -140,8 +141,9 @@ export const HygienePanel = (
 
 const SHOWN_REFUSALS = 6 // source: own choice, the newest refusals on screen
 
-export const RefusalsPanel = (ui: Ui, surface: Surface, refusals: readonly Refusal[]) => {
+export const RefusalsPanel = (ui: Ui, surface: Surface, refusals: readonly Refusal[] | Unreadable) => {
   const { Box, Text } = ui
+  if (isUnreadable(refusals)) return <Text color={tone(surface, 'danger')}>refusals: unreadable, {refusals.error}</Text>
   if (refusals.length === 0) return <Text dimColor>no call refused this session</Text>
   return (
     <Box flexDirection="column">
@@ -166,8 +168,9 @@ const decisionRow = (d: AnyDecision): string =>
     d.applied ? '' : ' · observed'
   }`
 
-const GeniusLine = (ui: Ui, g: GeniusState | null) => {
+const GeniusLine = (ui: Ui, surface: Surface, g: GeniusState | Unreadable | null) => {
   const { Text } = ui
+  if (isUnreadable(g)) return <Text color={tone(surface, 'danger')}>genius: unreadable, {g.error}</Text>
   if (g === null) return <Text dimColor>genius: not loaded</Text>
   const c = g.classified
   const picks = c === null ? [] : [...c.geniuses.map((p) => `${p.agent} · ${p.shape}`), ...c.shapes]
@@ -184,17 +187,17 @@ const GeniusLine = (ui: Ui, g: GeniusState | null) => {
   )
 }
 
-export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState | null, g: GeniusState | null) => {
+export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState | Unreadable | null, g: GeniusState | Unreadable | null) => {
   const { Box, Text } = ui
-  if (p === null)
+  if (p === null || isUnreadable(p))
     return (
       <Box flexDirection="column">
-        <Text dimColor>autopilot: not loaded</Text>
-        {GeniusLine(ui, g)}
+        {p === null ? <Text dimColor>autopilot: not loaded</Text> : <Text color={tone(surface, 'danger')}>autopilot: unreadable, {p.error}</Text>}
+        {GeniusLine(ui, surface, g)}
       </Box>
     )
   const pressureColor = p.pressure === 'none' ? undefined : tone(surface, 'warn')
-  const decisions: AnyDecision[] = [...p.decisions, ...(g?.decisions ?? [])].sort((a, b) => a.at - b.at)
+  const decisions: AnyDecision[] = [...p.decisions, ...(g === null || isUnreadable(g) ? [] : g.decisions)].sort((a, b) => a.at - b.at)
   return (
     <Box flexDirection="column">
       <Text>
@@ -211,7 +214,7 @@ export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState | null, g: 
           ? ` · ${group(p.charsCut)} chars kept out, about ${group(Math.round(p.charsCut / 4))} tokens (estimated)`
           : ''}
       </Text>
-      {GeniusLine(ui, g)}
+      {GeniusLine(ui, surface, g)}
       {decisions.length === 0 ? (
         <Text dimColor>no decision yet</Text>
       ) : (

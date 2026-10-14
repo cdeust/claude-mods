@@ -11,3 +11,9 @@ export type Refusal = PluginState['cortex-guard']['refusals'][number]
 export type PhasesState = PluginState['zetetic-autopilot']['phases']
 export type LoopPhases = PhasesState['loops'][number]
 export type InsightsState = PluginState['zetetic-insights']['insights']
+
+// A read of another mod's state that failed: a different condition from a value that is absent
+// (a mod not loaded leaves it undefined), so it travels as its own case with the reason.
+export type Unreadable = { error: string }
+export const isUnreadable = (v: unknown): v is Unreadable =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && 'error' in v && typeof (v as Unreadable).error === 'string'

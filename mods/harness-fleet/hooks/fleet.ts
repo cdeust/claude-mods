@@ -279,12 +279,32 @@ export const takeIssuePrompt = (repo: string, issue: IssueRow): string =>
         'Never close an issue without evidence: if the defect cannot be reproduced, say so with the commands run and ask the reporter on the issue.',
       ].join(' ')
 
-export type Lessons = { refusals: number; classifierErrors: number; stuckEscalations: number; leanCuts: number }
+// A count is null when the state it counts could not be read: "no reading", never zero. A mod that
+// is not loaded is another condition (its state is undefined) and counts as zero. `unreadable`
+// carries one line per failed read, naming the mod and the reason.
+export type Lessons = {
+  refusals: number | null
+  classifierErrors: number | null
+  stuckEscalations: number | null
+  leanCuts: number | null
+  unreadable: readonly string[]
+}
+
+// "3 guard refusals", or "guard refusals: no reading" for a count that could not be read.
+export const lessonCell = (n: number | null, label: string): string => (n === null ? `${label}: no reading` : `${n} ${label}`)
+
+export const lessonsLine = (l: Lessons): string =>
+  [
+    lessonCell(l.refusals, 'guard refusals'),
+    lessonCell(l.classifierErrors, 'classifier errors'),
+    lessonCell(l.stuckEscalations, 'stuck escalations'),
+    lessonCell(l.leanCuts, 'results cut'),
+  ].join(' · ')
 
 export const draftIssuePrompt = (repos: readonly string[], l: Lessons): string =>
   [
     'From this session\'s harness signals, draft one GitHub issue on the plugin repository the signal belongs to:',
-    `${l.refusals} guard refusals, ${l.classifierErrors} classifier errors, ${l.stuckEscalations} stuck escalations, ${l.leanCuts} tool results cut.`,
+    `${lessonsLine(l).replace(/ · /g, ', ')}.`,
     `Candidate repositories: ${repos.join(', ')}.`,
     'Show me the issue title and body first; create it with `gh issue create` only after I confirm.',
   ].join(' ')

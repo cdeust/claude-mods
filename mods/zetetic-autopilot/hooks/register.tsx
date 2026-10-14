@@ -3,7 +3,7 @@ import type { AgentSpawnResult, EngineInterface, PluginState, Register, TurnStep
 
 import type { ContextHealth, PhasesState, PolicyDecision, PolicyState } from '../types'
 import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
-import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, definitionPaths, parseDefinition } from './agents'
+import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, ancestors, definitionPaths, parseDefinition } from './agents'
 import { placePath } from './paths'
 import { emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped } from './phases'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
@@ -99,30 +99,47 @@ async function readCeilings($: EngineInterface): Promise<void> {
   }
 }
 
-// Agent definitions, read once per type and session: what the type's file pins, or why it could
-// not be read. The built-ins measured to inherit pin nothing and have no file.
-const definitions = new Map<string, Definition | { unread: string }>()
+// Agent definitions: what the type's file pins, or why it could not be read. A definition found, and
+// a file proven absent, or no installed plugin providing the type (`absent`: the records answered
+// "no such file" / "no such plugin"), are remembered for
+// the session; a read that failed, or a record that could not be read, is asked again at the next
+// spawn, so a transient error does not stand until /clear (issue #11). The built-ins measured to
+// inherit pin nothing and have no file.
+type Unread = { unread: string; absent: boolean }
+const definitions = new Map<string, Definition | Unread>()
 
-async function definitionOf($: EngineInterface, type: string): Promise<Definition | { unread: string }> {
+async function definitionOf($: EngineInterface, type: string): Promise<Definition | Unread> {
   const known = definitions.get(type)
   if (known !== undefined) return known
   const found = INHERITING_BUILT_INS.includes(type) ? {} : await readDefinition($, type)
-  definitions.set(type, found)
+  if (!('unread' in found) || found.absent) definitions.set(type, found)
   return found
 }
 
-async function readDefinition($: EngineInterface, type: string): Promise<Definition | { unread: string }> {
+// The folders whose `.claude/agents/` may hold a project agent: the working directory and each
+// folder above it up to the repository root (the first with a `.git`), so a session started in a
+// subdirectory finds the project's agents. No repository above: the working directory alone.
+async function projectDirs($: EngineInterface, cwd: string): Promise<string[]> {
+  const chain = ancestors(cwd)
+  for (const [i, dir] of chain.entries()) if (await $.fs.exists(`${dir}/.git`)) return chain.slice(0, i + 1)
+  return [cwd]
+}
+
+async function readDefinition($: EngineInterface, type: string): Promise<Definition | Unread> {
   try {
     const claudeDir = (await expandHome($, '~/.claude')).replace(/\/$/, '')
     const installed = type.includes(':') ? await $.fs.read(await expandHome($, INSTALLED_PLUGINS_PATH)) : undefined
-    const paths = definitionPaths(type, installed, claudeDir, await $.session.cwd())
+    const cwd = await $.session.cwd()
+    const paths = definitionPaths(type, installed, claudeDir, cwd, type.includes(':') ? [] : await projectDirs($, cwd))
     for (const path of paths) {
-      const text = await $.fs.read(path).then(String, () => undefined)
-      if (text !== undefined) return parseDefinition(text)
+      // A file that exists and cannot be read throws: it is not "no such file".
+      if (await $.fs.exists(path)) return parseDefinition(String(await $.fs.read(path)))
     }
-    return { unread: paths.length === 0 ? 'no installed plugin provides it' : `no file at ${paths.join(', ')}` }
+    return paths.length === 0
+      ? { unread: 'no installed plugin provides it', absent: true }
+      : { unread: `no file at ${paths.join(', ')}`, absent: true }
   } catch (error) {
-    return { unread: String(error).slice(0, 120) }
+    return { unread: String(error).slice(0, 120), absent: false }
   }
 }
 

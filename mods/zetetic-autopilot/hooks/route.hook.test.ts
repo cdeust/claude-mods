@@ -13,17 +13,26 @@ const FILES: Record<string, string> = {
   [`${ZETETIC}/agents/memory-writer.md`]: '---\nname: memory-writer\nmodel: haiku\neffort: low\n---\n',
 }
 
+// What the stubbed disk holds beyond FILES, which paths fail with an I/O error although they exist,
+// and the paths read: one object per test, so a test can change the disk between two spawns.
+type Disk = { cwd: string; files: Record<string, string>; failing: Set<string>; reads: string[] }
+const disk = (extra: Partial<Disk> = {}): Disk => ({ cwd: '/r', files: { ...FILES }, failing: new Set(), reads: [], ...extra })
+
 type Seen = { spawned: (string | undefined)[]; efforts: unknown[]; policy?: { decisions: { kind: string; subject: string; to: string }[] } }
 
-const stubs = (on: Parameters<TestBody>[1], seen: Seen, genius: 'absent' | 'throws' = 'absent') => {
+const stubs = (on: Parameters<TestBody>[1], seen: Seen, genius: 'absent' | 'throws' = 'absent', d: Disk = disk()) => {
   mock.clock(on, { now: 1_000_000 })
-  on('session.start', () => ({ cwd: '/r' }))
-  on('session.cwd', () => ({ value: '/r' }))
+  on('session.start', () => ({ cwd: d.cwd }))
+  on('session.cwd', () => ({ value: d.cwd }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never }))
   on('session.model', () => ({ value: FABLE }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
+  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path ?? '') in d.files }))
   on('fs.read', ($, e) => {
-    const text = FILES[String((e as { path?: string }).path ?? '')]
+    const path = String((e as { path?: string }).path ?? '')
+    d.reads.push(path)
+    if (d.failing.has(path)) return { deny: 'EIO: i/o error' }
+    const text = d.files[path]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
   on('state.get', ($, e, next) => {
@@ -132,5 +141,135 @@ test(
     const row = seen.policy?.decisions.find((d) => d.kind === 'unread')
     expect(row?.subject).toBe('zetetic-genius state')
     expect(row?.to).toMatch(/unreadable: .*state store offline/)
+  },
+)
+
+// Issue #11, case 2: a session started in a subdirectory finds the project's agents at the repository root.
+test(
+  'a project agent is found from a subdirectory of the repository, up to the repository root',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({
+      cwd: '/r/pkg/deep',
+      files: { ...FILES, '/r/.git': '', '/r/.claude/agents/dispatch.md': '---\nname: dispatch\nmodel: haiku\n---\n' },
+    })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    expect(seen.policy?.decisions.find((x) => x.kind === 'unread')).toBeUndefined()
+    expect(seen.spawned).toEqual([undefined])
+    expect(d.reads).toContain('/r/.claude/agents/dispatch.md')
+  },
+)
+
+// Issue #11: the walk up from the working directory stops at the first folder holding a `.git`; a
+// definition above that folder belongs to another project and is never read.
+const DISPATCH = '---\nname: dispatch\nmodel: haiku\n---\n'
+const noRead = (d: Disk, path: string) => expect(d.reads).not.toContain(path)
+
+test(
+  'the walk up stops at the repository root: a definition above it is never read',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({ cwd: '/r/pkg', files: { ...FILES, '/r/.git': '', '/.claude/agents/dispatch.md': DISPATCH } })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    noRead(d, '/.claude/agents/dispatch.md')
+    expect(seen.policy?.decisions.find((x) => x.kind === 'unread')?.to).toMatch(/^no file at /)
+    const named = seen.policy?.decisions.find((x) => x.kind === 'unread')?.to.replace('no file at ', '').split(', ')
+    expect(named).toEqual(['/r/pkg/.claude/agents/dispatch.md', '/r/.claude/agents/dispatch.md', '/home/t/.claude/agents/dispatch.md'])
+  },
+)
+
+test(
+  'with a definition at the repository root and one above it, only the root one is read',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({
+      cwd: '/r/pkg',
+      files: { ...FILES, '/r/.git': '', '/r/.claude/agents/dispatch.md': DISPATCH, '/.claude/agents/dispatch.md': DISPATCH },
+    })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    expect(d.reads).toContain('/r/.claude/agents/dispatch.md')
+    noRead(d, '/.claude/agents/dispatch.md')
+  },
+)
+
+test(
+  'in a worktree (.git is a file) the walk stops at the worktree, never at the main checkout above',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk({
+      cwd: '/r/wt/sub',
+      files: { ...FILES, '/r/.git': '', '/r/wt/.git': 'gitdir: /r/.git/worktrees/wt', '/r/.claude/agents/dispatch.md': DISPATCH },
+    })
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('dispatch'))
+    noRead(d, '/r/.claude/agents/dispatch.md')
+    expect(seen.policy?.decisions.find((x) => x.kind === 'unread')?.to).toMatch(/^no file at /)
+  },
+)
+
+test(
+  'a plugin type no installed plugin provides is proven absent: remembered, the record read once, named once',
+  { options: { policy_mode: 'enforce' } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk()
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.agent.spawn(spawn('nosuchplugin:ghost'))
+    await $.agent.spawn(spawn('nosuchplugin:ghost'))
+    expect(d.reads.filter((p) => p.endsWith('installed_plugins.json'))).toHaveLength(1)
+    expect(seen.policy?.decisions.filter((x) => x.kind === 'unread' && x.to === 'no installed plugin provides it')).toHaveLength(1)
+  },
+)
+
+// Issue #11, case 3: a read that fails is not "no such file"; the next spawn reads again.
+test(
+  'a definition that failed to read is read again at the next spawn, and a found one is read once',
+  { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const advisor = `${ZETETIC}/agents/advisor.md`
+    const d = disk()
+    d.failing.add(advisor)
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.session.measure(QUOTA)
+    await $.agent.spawn(spawn('zetetic-team-subagents:advisor'))
+    expect(seen.policy?.decisions.find((x) => x.kind === 'unread')?.to).toMatch(/EIO/)
+    d.failing.delete(advisor)
+    await $.agent.spawn(spawn('zetetic-team-subagents:advisor'))
+    await $.agent.spawn(spawn('zetetic-team-subagents:advisor'))
+    expect(d.reads.filter((p) => p === advisor)).toHaveLength(2)
+    expect(seen.spawned.slice(1)).toEqual(['sonnet', 'sonnet'])
+  },
+)
+
+test(
+  'a definition whose file is absent is remembered as absent, and named once',
+  { options: { policy_mode: 'enforce' } },
+  async ($, on) => {
+    const seen: Seen = { spawned: [], efforts: [] }
+    const d = disk()
+    stubs(on, seen, 'absent', d)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: d.cwd })
+    await $.agent.spawn(spawn('zetetic-team-subagents:ghost'))
+    await $.agent.spawn(spawn('zetetic-team-subagents:ghost'))
+    expect(d.reads.filter((p) => p.endsWith('/ghost.md'))).toHaveLength(0)
+    expect(seen.policy?.decisions.filter((x) => x.kind === 'unread' && x.to.startsWith('no file at'))).toHaveLength(1)
   },
 )
