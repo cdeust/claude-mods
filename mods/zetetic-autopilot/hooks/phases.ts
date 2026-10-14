@@ -59,11 +59,16 @@ const PLANNING_TOOLS = new Set(['EnterPlanMode', 'ExitPlanMode', 'TaskCreate', '
 const READING_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'LSP', 'ToolSearch'])
 const WRITING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 
-const TEST_RUN = /\bpython3? -c .*\bassert\b|\b(pytest|unittest|(npm|pnpm|yarn|bun) (run )?test|claude plugin test|go test|cargo test|jest|vitest|mutation_check|reproduce\.sh)\b/
-const CHECK_RUN = /\b(ruff|tsc|mypy|pyright|eslint|claude plugin validate|check_craftsmanship|check-shared|doctor|git diff)\b/
-const REVIEW_RUN = /\bgh pr (review|diff)\b|ZETETIC-REVIEW/
-const DELIVER_RUN = /\b(git (commit|push|tag)|gh pr (create|merge)|gh issue create)\b/
-const READ_RUN = /^\s*(ls|cat|head|tail|sed -n|grep|rg|find|wc|git (log|show|status|blame)|gh (pr|issue) (view|list)|which|pwd|echo)\b/
+// Each pattern names a command by its head, the first words of a segment (`a && b`, `a; b`, `a | b`),
+// so a word inside an argument (`grep pytest`, `git commit -m "fix tsc"`) names nothing.
+// An inline check (`python3 -c '...; assert ...'`) carries its own `;`: read on the whole line.
+const ASSERT_RUN = /(^|&&\s*)python3? -c .*\bassert\b/
+const TEST_RUN = /^(python3? -m (pytest|unittest)|pytest|(npm|pnpm|yarn|bun) (run )?test|claude plugin test|go test|cargo test|(npx (-y )?)?(jest|vitest)|(sh|bash) \S*(mutation_check|reproduce)\S*)/
+const CHECK_RUN = /^((uvx )?ruff\S*|(npx (-y )?(-p typescript )?)?tsc|mypy|pyright|(npx (-y )?)?eslint|claude plugin validate|python3? \S*check_craftsmanship|(sh|bash) \S*check-shared|python3? -m mcp_server\.doctor)\b/
+const REVIEW_RUN = /^gh pr (review|diff)\b|^gh pr comment\b.*ZETETIC-REVIEW/
+const DELIVER_RUN = /^(git (commit|push|tag)|gh pr (create|merge)|gh issue create)\b/
+const READ_RUN = /^(ls|cat|head|tail|sed -n|grep|rg|find|wc|git (log|show|status|blame|diff)|gh (pr|issue) (view|list)|which|pwd|echo)\b/
+const NEUTRAL_RUN = /^(cd|export|set|source|true)\b/
 const DESIGN_FILE = /(^|\/)(docs\/adr\/|wiki\/|design\/)|ADR-\d|\.(md|tex)$/
 const TEST_FILE = /(^|\/)(tests?|tests_py|__tests__)\/|\.(test|spec)\.[a-z]+$|_test\.[a-z]+$/
 
@@ -85,12 +90,24 @@ const field = (input: unknown, name: string): string => {
   return typeof v === 'string' ? v : ''
 }
 
+const segmentPhase = (segment: string): Phase | undefined => {
+  if (segment === '' || NEUTRAL_RUN.test(segment)) return undefined
+  if (REVIEW_RUN.test(segment)) return 'review'
+  if (TEST_RUN.test(segment)) return 'test'
+  if (CHECK_RUN.test(segment)) return 'verification'
+  if (DELIVER_RUN.test(segment)) return 'report'
+  return READ_RUN.test(segment) ? 'analysis' : 'implementation'
+}
+
+// The first line only (a heredoc's body is data); the furthest phase of its segments.
 const bashPhase = (command: string): Phase => {
-  if (REVIEW_RUN.test(command)) return 'review'
-  if (TEST_RUN.test(command)) return 'test'
-  if (CHECK_RUN.test(command)) return 'verification'
-  if (DELIVER_RUN.test(command)) return 'report'
-  return READ_RUN.test(command) ? 'analysis' : 'implementation'
+  const line = command.split('\n')[0] ?? ''
+  if (ASSERT_RUN.test(line)) return 'test'
+  return line
+    .split(/&&|\|\||;|\|/)
+    .map((s) => segmentPhase(s.trim().replace(/^([A-Z_]+=\S+\s+)+/, '')))
+    .filter((p): p is Phase => p !== undefined)
+    .reduce<Phase>((best, p) => (RANK[p] > RANK[best] ? p : best), 'analysis')
 }
 
 const mcpPhase = (name: string): Phase | undefined => {

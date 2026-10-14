@@ -159,6 +159,8 @@ test(
       return { model: e.model ?? 'inherit' }
     })
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+    // main's first step of turn 't' makes it the current main turn the grade is bound to
+    await drain($.turn.step({ ...STEP, index: 0, effort: 'high' }))
     const spawn = (model: string | undefined) =>
       ({
         tool_use_id: 'a1',
@@ -230,3 +232,27 @@ test('with no home to place the thresholds file the source says so', async ($, o
   await $.session.measure(MEASURE)
   expect(seen.context?.thresholdsSource).toMatch(/unreadable: ~\/\.claude\/ctxguard-thresholds\.json has no place: neither HOME nor USERPROFILE is set/)
 })
+
+test(
+  'enforce: a grade bound to an earlier main turn does not route the next turn\'s subagents',
+  { options: { policy_mode: 'enforce' } },
+  async ($, on) => {
+    stubs(on, [], { turnId: 't', taskClass: 'routine', effort: 'low' })
+    let spawned: string | undefined
+    on('agent.spawn', ($, e) => {
+      spawned = e.model
+      return { model: e.model ?? 'inherit' }
+    })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+    await drain($.turn.step({ ...STEP, turnId: 'later', index: 0, effort: 'high' }))
+    await $.agent.spawn({
+      tool_use_id: 'a1',
+      prompt: 'look around',
+      description: 'explore',
+      subagentType: 'Explore',
+      provider: { kind: 'model', model: 'claude-fable-5-1' },
+      parentModel: 'claude-fable-5-1',
+    } as never)
+    expect(spawned).toBe('sonnet')
+  },
+)

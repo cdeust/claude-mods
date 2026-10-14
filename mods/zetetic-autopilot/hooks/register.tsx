@@ -290,8 +290,11 @@ export const register: Register = (on, options) => {
   // an inheriting type runs on the family its kind and the turn's class call for.
   on('agent.spawn', async ($, e, next) => {
     const p = await read($, policy)
+    // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
+    // command, a notification) routes without one, as turn.step does.
     const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
-    const cls = grade !== undefined && grade.turnId !== null ? grade.taskClass : undefined
+    const mainTurn = (await read($, phases)).turnId
+    const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurn ? grade.taskClass : undefined
     const found = e.model === undefined ? await definitionOf($, e.subagentType) : {}
     if ('unread' in found) await note($, `${e.subagentType} definition`, found.unread)
     const definition = 'unread' in found ? undefined : found

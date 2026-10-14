@@ -51,7 +51,7 @@ export const bandText = (s: PhasesState): string | undefined => {
   if (main === undefined && agents.length === 0) return undefined
   const turnCalls = s.advisor.uses.filter((u) => u.turnId === s.turnId).reduce((n, u) => n + u.calls, 0)
   const parts = [
-    `main ${main?.phase ?? 'starting'}`,
+    main === undefined ? 'main starting' : main.status === 'done' ? `main idle (last ${main.phase ?? 'none'})` : `main ${main.phase ?? 'starting'}`,
     ...agents.map((a) => `${a.type.slice(a.type.lastIndexOf(':') + 1)} ${a.phase ?? 'starting'}`),
     `advisor ${turnCalls} this turn`,
   ]

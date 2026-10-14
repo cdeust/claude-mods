@@ -61,6 +61,7 @@ test("the band names main's phase, each running agent's, and the turn's advisor 
   )
   expect(bandText(s)).toBe('phase · main implementation · code-reviewer review · advisor 1 this turn')
   expect(bandText(state([]))).toBe(undefined)
+  expect(bandText(state([loop({ phase: 'report', status: 'done' })]))).toBe('phase · main idle (last report) · advisor 0 this turn')
 })
 
 test('the advisor line counts calls by when they came', () => {
