@@ -3,6 +3,7 @@
 // tests share it.
 
 import type { ModelFamily, SessionModels, TurnRecord } from '../types'
+import type { ProbeInfo } from './probes'
 
 export const MODEL_SESSIONS = 12 // source: own choice, the sessions the panel shows, the newest last
 
@@ -20,11 +21,11 @@ export const familyOf = (model: string): ModelFamily => {
   return 'other'
 }
 
-// Each session's steps by family, the newest MODEL_SESSIONS sessions by their latest record, oldest
-// first. Every main run and every agent step is added to exactly one family, so a session's family
+// Each session's steps by family, the newest MODEL_SESSIONS working sessions by their latest record, oldest
+// first, probes (hooks/probes.ts) flagged and not counted among them. Every main run and every agent step is added to exactly one family, so a session's family
 // steps sum to its main steps plus its agent steps. A main turn with no mainModel (a record kept
 // before it was) is unknown. The sums are O(records); the sessions are sorted by their latest turn.
-export const sessionModels = (records: readonly TurnRecord[]): SessionModels[] => {
+export const sessionModels = (records: readonly TurnRecord[], probes: ReadonlyMap<string, ProbeInfo> = new Map()): SessionModels[] => {
   const by = new Map<string, { at: number; steps: Map<ModelFamily, number> }>()
   const add = (session: string, at: number, family: ModelFamily, steps: number) => {
     const row = by.get(session) ?? { at, steps: new Map<ModelFamily, number>() }
@@ -37,7 +38,7 @@ export const sessionModels = (records: readonly TurnRecord[]): SessionModels[] =
     for (const run of r.main) add(r.session, r.at, main, run.steps)
     for (const a of r.agents) add(r.session, r.at, familyOf(a.model), a.steps)
   }
-  return [...by.entries()]
+  const rows: SessionModels[] = [...by.entries()]
     .map(([session, row]) => ({
       session,
       at: row.at,
@@ -45,7 +46,13 @@ export const sessionModels = (records: readonly TurnRecord[]): SessionModels[] =
         const steps = row.steps.get(family) ?? 0
         return steps > 0 ? [{ family, steps }] : []
       }),
+      probe: probes.get(session)?.probe === true,
+      probeReason: probes.get(session)?.reason ?? null,
     }))
     .sort((a, b) => a.at - b.at)
-    .slice(-MODEL_SESSIONS)
+  // The newest MODEL_SESSIONS working sessions, and the probes newer than the oldest of them: flagged,
+  // never filling a slot of the chart.
+  const work = rows.filter((r) => !r.probe).slice(-MODEL_SESSIONS)
+  const from = work[0]?.at ?? Number.POSITIVE_INFINITY
+  return rows.filter((r) => (r.probe ? r.at >= from : work.includes(r)))
 }

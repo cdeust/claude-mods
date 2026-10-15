@@ -235,3 +235,29 @@ export const isUnavailable = (v: unknown): v is Unavailable => {
   const u = typeof v === 'object' && v !== null ? (v as { unavailable?: unknown }).unavailable : undefined
   return u === 'missing' || u === 'too-large'
 }
+
+// A turn record's live frictions (events.ts liveFrictionOf, seen at `tool.call`) summed over a
+// session's records into rows, in the order of the transcript rows (count, kind, signature).
+export const liveRowsOf = (perTurn: readonly (readonly { kind: FrictionKind; signature: string; count: number }[] | undefined)[]): Friction[] => {
+  const grouped = new Map<string, Friction>()
+  for (const list of perTurn)
+    for (const f of list ?? []) {
+      const key = `${f.kind}\u0000${f.signature}`
+      const row = grouped.get(key)
+      if (row === undefined) grouped.set(key, { kind: f.kind, signature: f.signature, count: f.count })
+      else row.count += f.count
+    }
+  return [...grouped.values()].sort((a, b) => b.count - a.count || order(a.kind, b.kind) || order(a.signature, b.signature)).slice(0, FRICTION_TOP)
+}
+
+// Two readings of one session's frictions (the live events and the transcript) as one: the same
+// (kind, signature) is the same event seen twice, so the larger count stands, never the sum.
+export const mergeFrictions = (a: readonly Friction[], b: readonly Friction[]): Friction[] => {
+  const grouped = new Map<string, Friction>()
+  for (const f of [...a, ...b]) {
+    const key = `${f.kind}\u0000${f.signature}`
+    const row = grouped.get(key)
+    if (row === undefined || f.count > row.count) grouped.set(key, { ...f })
+  }
+  return [...grouped.values()].sort((x, y) => y.count - x.count || order(x.kind, y.kind) || order(x.signature, y.signature)).slice(0, FRICTION_TOP)
+}

@@ -58,6 +58,8 @@ const NONE: MechanicalShare = { sessions: 0, heavyReads: 0, heavySteps: 0, unmea
 const DELEGATIONS: DelegationStats = {
   total: 7,
   designed: 5,
+  outcomes: { achieved: 0, 'not-achieved': 0, unclear: 0 },
+  rounds: 0,
   flags: { overkill: 3, underpowered: 1, undesigned: 2, rerouted: 1 },
   recent: [
     { at: 1, type: 'Explore', model: 'claude-haiku-5-5', effort: null, shape: null, steps: 6, errors: 3, flags: ['underpowered'] },

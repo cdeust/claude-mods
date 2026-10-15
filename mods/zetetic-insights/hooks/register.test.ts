@@ -153,7 +153,7 @@ test('the steps by model: the main run is counted under its model family, one se
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   // 40 main steps on claude-opus-5-5 (PHASES), no agents, clock 1000.
-  expect(state.models).toEqual([{ session: 'sess-1', at: 1000, steps: [{ family: 'opus', steps: 40 }] }])
+  expect(state.models).toEqual([{ session: 'sess-1', at: 1000, steps: [{ family: 'opus', steps: 40 }], probe: false, probeReason: null }])
 })
 
 const record = (i: number, session = 'old') => ({
@@ -1201,4 +1201,99 @@ test('frictions: a transcript over FRICTION_MAX_BYTES is not read, is marked too
   await $.session.start(START)
   await clock.advance(60_000)
   expect(w.store['frictions:old-b']).toEqual([{ kind: 'hook-block', signature: BLOCK_SIGNATURE, count: 1 }])
+})
+
+// Outcome events and live frictions (hooks/events.ts), the origin stamp and the probe decision.
+const answers = (on: Parameters<TestBody>[1]) => {
+  const next: { res: Record<string, unknown> } = { res: { result: { stdout: '', stderr: '' }, text: '' } }
+  on('tool.call', () => next.res as never)
+  return next
+}
+const stateOf = (on: Parameters<TestBody>[1]) => {
+  const seen: { state?: Record<string, any> } = {}
+  on('state.set', ($, e, next) => {
+    if ((e as { key?: string }).key === 'insights') seen.state = (e as unknown as { value: Record<string, any> }).value
+    return next(e)
+  })
+  return seen
+}
+
+test('tool.call: the turn record carries the outcome events of main and of an agent, and the frictions the calls showed', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  const core = answers(on)
+  await $.session.start(START)
+  core.res = { text: '[feat/x 1a2b3c4] msg', result: { stdout: '[feat/x 1a2b3c4] msg', stderr: '' } }
+  await $.tool.call({ tool: 'Bash', command: 'git add -A && git commit -m msg' } as never)
+  core.res = { isError: true, text: 'Exit code 1\n3 failed', result: 'Exit code 1\n3 failed' }
+  await $.tool.call({ tool: 'Bash', command: 'bun test' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'bun test' } as never)
+  core.res = { text: 'https://github.com/cdeust/claude-mods/pull/23', result: { stdout: 'https://github.com/cdeust/claude-mods/pull/23', stderr: '' } }
+  await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill', agentId: 'ag-1' } as never)
+  core.res = { isError: true, text: 'File has not been read yet.', result: 'x' }
+  await $.tool.call({ tool: 'Edit', file_path: '/r/a.ts', old_string: 'a', new_string: 'b' } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  const rec = (w.store['turns:sess-1'] as { events: unknown[]; frictions: unknown[]; nonInteractive: boolean; tmpCwd?: true }[])[0]!
+  expect(rec.events).toEqual([
+    { at: 1000, kind: 'commit', src: 'command', sha: '1a2b3c4', ok: true },
+    { at: 1000, kind: 'test', src: 'command', label: 'bun test', ok: false, n: 2 },
+    { at: 1000, kind: 'pr-create', src: 'command', pr: 'cdeust/claude-mods#23', ok: true, agent: 'ag-1' },
+  ])
+  expect(rec.frictions).toEqual([{ kind: 'tool-misuse', signature: 'File has not been read yet.', count: 1 }])
+  expect(rec.nonInteractive).toBe(false)
+  expect(rec.tmpCwd).toBeUndefined()
+})
+
+test('tool.call: a review body file is read for its verdict, an unreadable one is an unknown verdict, and the call is returned untouched', async ($, on) => {
+  const w: World = { files: { '/r/review.md': 'ZETETIC-REVIEW: APPROVE\n705020b1\nok' }, written: {}, store: {} }
+  stubs(on, w)
+  answers(on)
+  await $.session.start(START)
+  const out = await $.tool.call({ tool: 'Bash', command: 'gh pr comment 23 --body-file review.md' } as never)
+  expect((out as { text?: string }).text).toBe('')
+  await $.tool.call({ tool: 'Bash', command: 'gh pr comment 24 --body-file gone.md' } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  const events = (w.store['turns:sess-1'] as { events: unknown[] }[])[0]!.events
+  expect(events).toEqual([
+    { at: 1000, kind: 'verdict', src: 'command', pr: '#23', verdict: 'approve', head: '705020b1', ok: true },
+    { at: 1000, kind: 'verdict', src: 'command', pr: '#24', verdict: 'unknown', ok: true },
+  ])
+})
+
+test('a hook that throws while observing does not change the call (the observer fails open)', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  const core = answers(on)
+  await $.session.start(START)
+  core.res = { text: 'ran', result: { stdout: 'ran', stderr: '' }, gitOperation: 5 }
+  const out = await $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as never)
+  expect((out as { text?: string }).text).toBe('ran')
+})
+
+test('the origin is stamped on the records: a -p run in the OS temp dir is non-interactive and tmpCwd', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  answers(on)
+  await $.session.start({ surface: null, isInteractive: false, cwd: '/private/tmp/probe' } as never)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  const rec = (w.store['turns:sess-1'] as { nonInteractive: boolean; tmpCwd: boolean }[])[0]!
+  expect(rec.nonInteractive).toBe(true)
+  expect(rec.tmpCwd).toBe(true)
+})
+
+test('probe sessions are counted and kept out of learning, the brief and the model chart rows are flagged', async ($, on) => {
+  const probe = (s: string, at: number) => ({ session: s, turnId: `t${at}`, at, taskClass: null, main: [{ phase: 'report', effort: 'low', steps: 1, errors: 0 }], agents: [], mainModel: 'claude-haiku-5-5', advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0 })
+  const work = { ...probe('work', 500), main: [{ phase: 'implementation', effort: 'low', steps: 30, errors: 2, reads: 5 }], mainModel: 'claude-sonnet-5-5', nonInteractive: false }
+  const store = { 'turns:p1': [probe('p1', 100)], 'turns:p2': [probe('p2', 200)], 'turns:work': [work], 'ended:p1': { at: 1 }, 'ended:p2': { at: 1 }, 'ended:work': { at: 1 }, 'transcript:p2': { path: '/u/.claude/projects/-private-tmp/p2.jsonl' } }
+  const w: World = { files: {}, written: {}, store }
+  stubs(on, w, { turnId: null, loops: [], advisor: { session: 0, uses: [] } })
+  const seen = stateOf(on)
+  await $.session.start(START)
+  expect(seen.state?.probes).toEqual({ sessions: 2, turns: 2, byReason: { 'temp-cwd': 1, 'non-interactive-1-step': 0, 'one-step-unknown': 1 } })
+  expect(seen.state?.sessions).toBe(1)
+  expect(seen.state?.turns).toBe(1)
+  expect((seen.state?.phases as { phase: string }[]).map((p) => p.phase)).toEqual(['implementation'])
+  // Both probes are older than the one working session: no row of the chart, and none could fill a slot.
+  expect((seen.state?.models as { session: string; probe: boolean }[]).map((m) => [m.session, m.probe])).toEqual([['work', false]])
+  expect(seen.state?.brief).not.toMatch(/haiku/)
 })

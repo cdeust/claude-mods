@@ -49,8 +49,10 @@ test('every step lands in exactly one family, and a session balances: family ste
         { family: 'other', steps: 1 },
         { family: 'unknown', steps: 4 },
       ],
+      probe: false,
+      probeReason: null,
     },
-    { session: 'new', at: 30, steps: [{ family: 'fable', steps: 2 }] },
+    { session: 'new', at: 30, steps: [{ family: 'fable', steps: 2 }], probe: false, probeReason: null },
   ])
   for (const s of out) {
     const mine = records.filter((r) => r.session === s.session)
@@ -74,6 +76,6 @@ test('the sessions are the last MODEL_SESSIONS by their latest record, oldest fi
   expect(out.length).toBe(MODEL_SESSIONS)
   expect(out.map((s) => s.session)).toEqual([...Array.from({ length: MODEL_SESSIONS - 1 }, (_, i) => `s${i + 4}`), 's0'])
   expect(out.every((s, i) => i === 0 || out[i - 1]!.at < s.at)).toBe(true)
-  expect(out[0]).toEqual({ session: 's4', at: 8, steps: [{ family: 'opus', steps: 1 }] })
-  expect(out[out.length - 1]).toEqual({ session: 's0', at: 1000, steps: [{ family: 'opus', steps: 2 }] })
+  expect(out[0]).toEqual({ session: 's4', at: 8, steps: [{ family: 'opus', steps: 1 }], probe: false, probeReason: null })
+  expect(out[out.length - 1]).toEqual({ session: 's0', at: 1000, steps: [{ family: 'opus', steps: 2 }], probe: false, probeReason: null })
 })

@@ -16,6 +16,7 @@ import {
   parseCalibration,
   phaseStats,
   proposals,
+  recordBytes,
   trimmed,
   utf8Bytes,
   withAgent,
@@ -147,4 +148,14 @@ test('a phase with steps only at other rungs is named as unable to produce a pro
   const stats = [{ phase: 'test', effort: 'high', steps: 60, errors: 0, sessions: 2, judged: 0, achieved: 0 }]
   expect(offRung(stats, emptyCalibration())).toEqual([{ phase: 'test', now: 'medium', ran: ['high 60'] }])
   expect(offRung([{ ...stats[0]!, effort: 'medium' }], emptyCalibration())).toEqual([])
+})
+
+test('trimmed counts the events a record carries: the byte cap holds with a full event list on every record', () => {
+  const events = Array.from({ length: 40 }, (_, i) => ({ at: i, kind: 'commit' as const, src: 'command' as const, sha: `${i}`.padStart(10, 'a'), ok: true }))
+  const records = Array.from({ length: 200 }, (_, i) => ({ ...turn({ turnId: `t${i}`, at: i }), events }))
+  const cap = 200_000
+  const kept = trimmed(records, cap)
+  expect(kept.length).toBeLessThan(records.length)
+  expect(kept.reduce((n, r) => n + recordBytes(r), 1)).toBeLessThanOrEqual(cap)
+  expect(kept[kept.length - 1]).toBe(records[records.length - 1])
 })
