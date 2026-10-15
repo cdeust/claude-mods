@@ -94,7 +94,7 @@ test('a failed PR read says "PRs: no reading", never "0 open PRs"', async ($, on
   on('ui.render', { component: 'Pane', requestId: 'failed-read' }, ($$, e) =>
     FleetView($$.ui.resolve(e) as never, {
       now: Date.parse('2026-10-08T00:00:00Z'),
-      lessons: { refusals: 0, classifierErrors: 0, stuckEscalations: 0, leanCuts: 0, unreadable: [] },
+      lessons: { refusals: 0, classifierErrors: 0, stuckEscalations: 0, offloads: 0, unreadable: [] },
       fleet: {
         inventoryError: null,
         isRefreshing: false,
@@ -142,7 +142,7 @@ test('the fleet pane validates and shows versions, CI and the lessons on termina
   on('ui.render', { component: 'Pane', requestId: 'populated' }, ($$, e) =>
     FleetView($$.ui.resolve(e) as never, {
       now: Date.parse('2026-10-08T00:00:00Z'),
-      lessons: { refusals: 2, classifierErrors: 0, stuckEscalations: 1, leanCuts: 3, unreadable: [] },
+      lessons: { refusals: 2, classifierErrors: 0, stuckEscalations: 1, offloads: 3, unreadable: [] },
       fleet: {
         inventoryError: null,
         isRefreshing: false,
@@ -540,7 +540,7 @@ for (const [plugin, label] of [
 
 test('mods that are not loaded count as zero in LESSONS, with nothing unreadable', async ($, on) => {
   const ui = await mountLessons($, on, undefined)
-  expect(await ui.find({ type: 'Text', text: /0 guard refusals · 0 classifier errors · 0 stuck escalations · 0 results cut/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /0 guard refusals · 0 classifier errors · 0 stuck escalations · 0 results offloaded/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /unreadable/ })).toBeUndefined()
   await ui.unmount()
 })

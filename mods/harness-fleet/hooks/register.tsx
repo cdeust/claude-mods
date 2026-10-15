@@ -62,7 +62,7 @@ async function expandHome($: EngineInterface, path: string): Promise<string> {
 // a known state counted as zero; a read that throws is "no reading" (null) with its reason, which
 // the pane shows beside the counts (issue #6).
 async function lessonsOf($: EngineInterface): Promise<Lessons> {
-  const l: Lessons = { refusals: null, classifierErrors: null, stuckEscalations: null, leanCuts: null, unreadable: [] }
+  const l: Lessons = { refusals: null, classifierErrors: null, stuckEscalations: null, offloads: null, unreadable: [] }
   const unreadable: string[] = []
   const fail = (mod: string, error: unknown): void => void unreadable.push(`${mod}: unreadable, ${why(error)}`)
   try {
@@ -79,7 +79,7 @@ async function lessonsOf($: EngineInterface): Promise<Lessons> {
   try {
     const p = (await $.state.get(AUTOPILOT_POLICY)).value
     l.stuckEscalations = p?.decisions.filter((d) => d.kind === 'stuck').length ?? 0
-    l.leanCuts = p?.decisions.filter((d) => d.kind === 'lean').length ?? 0
+    l.offloads = p?.decisions.filter((d) => d.kind === 'offload').length ?? 0
   } catch (error) {
     fail('zetetic-autopilot', error)
   }

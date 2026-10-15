@@ -53,7 +53,7 @@ const RATE = { exitCode: 0, stdout: JSON.stringify({ resources: { core: { remain
 const HOME = '/home/t'
 const SCRIPT = `${HOME}/Developments/disk-hygiene/disk_hygiene.py`
 const GENIUS = { mode: 'observe', classifierModel: 'haiku' }
-const POLICY = { mode: 'enforce', quotaPercent: 80, resultCapChars: 16000 }
+const POLICY = { mode: 'enforce', quotaPercent: 80, offloadThresholdChars: 30000, offloadPreviewChars: 2000 }
 const ROWS = [
   { key: 'cortex-guard.hygiene_script', value: '~/Developments/disk-hygiene/disk_hygiene.py', isLocked: false },
   { key: 'harness-fleet.github_owner', value: 'cdeust', isLocked: true },
@@ -388,7 +388,7 @@ test('options come from /config rows with their lock, else from the state the mo
   const text = await check($)
   expect(lineOf(text, 'option harness-fleet')).toBe('ok    option harness-fleet (as /config lists them): github_owner="cdeust" [locked by a trusted source]')
   expect(lineOf(text, 'option zetetic-genius')).toBe('ok    option zetetic-genius (as the mod states them): mode="observe" classifier_model="haiku"')
-  expect(lineOf(text, 'option zetetic-autopilot')).toBe('ok    option zetetic-autopilot (as the mod states them): policy_mode="enforce" quota_pressure_percent=80 result_cap_chars=16000')
+  expect(lineOf(text, 'option zetetic-autopilot')).toBe('ok    option zetetic-autopilot (as the mod states them): policy_mode="enforce" quota_pressure_percent=80 offload_threshold_chars=30000 offload_preview_chars=2000')
   expect(lineOf(text, 'option cortex-cockpit')).toContain('surface="ink" cortex_server="plugin_hypermnesia-mcp_cortex"')
 })
 

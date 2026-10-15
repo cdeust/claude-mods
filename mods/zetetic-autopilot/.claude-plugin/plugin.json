@@ -1,7 +1,7 @@
 {
   "name": "zetetic-autopilot",
-  "version": "0.5.2",
-  "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the main tool loop steps down the ladder; a subagent runs on the model its call or its agent definition pins (read from the definition file, since agent.spawn carries only the call's), an inheriting type on the family its kind and the turn's class call for, and keeps its definition's effort on every step; under quota or context pressure heavy models go one notch down (never up) and long streaming tool results keep head and tail. Owns `phases`: the phase each loop is in (planning, analysis, design, implementation, verification, test, review, report), read off its tool calls or, for an agent, its type, and the advisor calls of main with when they came. The tool loop of a phase the insights calibrated runs at that rung instead of medium (never above the request's grade). Starts in enforce; observe logs the decisions without applying them.",
+  "version": "0.5.3",
+  "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the main tool loop steps down the ladder; a subagent runs on the model its call or its agent definition pins (read from the definition file, since agent.spawn carries only the call's), an inheriting type on the family its kind and the turn's class call for, and keeps its definition's effort on every step; under quota or context pressure heavy models go one notch down (never up) and a long streaming tool result is written whole to a file in the session's tool-results directory and the model reads a preview and the path (nothing is cut). Owns `phases`: the phase each loop is in (planning, analysis, design, implementation, verification, test, review, report), read off its tool calls or, for an agent, its type, and the advisor calls of main with when they came. The tool loop of a phase the insights calibrated runs at that rung instead of medium (never above the request's grade). Starts in enforce; observe logs the decisions without applying them.",
   "types": "./types/index.d.ts",
   "dependencies": [
     "zetetic-genius"
@@ -23,11 +23,17 @@
       "description": "At or past this share of the five-hour window, requests run at low effort, heavy subagents are spawned on sonnet and main drops to sonnet.",
       "default": 80
     },
-    "result_cap_chars": {
+    "offload_threshold_chars": {
       "type": "number",
-      "title": "Tool result cap (characters)",
-      "description": "A Bash, Grep, Glob, WebFetch or WebSearch result longer than this keeps its head and tail; the cut is named in the row.",
-      "default": 16000
+      "title": "Offload threshold (characters)",
+      "description": "A Bash, Grep, Glob, WebFetch or WebSearch result longer than this is written whole to a file in the session's tool-results directory; the model reads a preview, the path and the size. Nothing is cut. 30000 is Claude Code's own limit for Bash output.",
+      "default": 30000
+    },
+    "offload_preview_chars": {
+      "type": "number",
+      "title": "Offload preview (characters)",
+      "description": "How much of the start of an offloaded result stays in the context (never more than the threshold). 2000 is the preview Claude Code leaves for a result it saves itself.",
+      "default": 2000
     }
   },
   "author": {

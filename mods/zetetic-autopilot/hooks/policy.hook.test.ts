@@ -117,35 +117,185 @@ test(
   expect(stored.length).toBe(20000)
 })
 
-test(
-  'enforce: a long Bash result is cut before it is stored, as a string or as text blocks',
-  { options: { policy_mode: 'enforce', result_cap_chars: 1000 } },
-  async ($, on) => {
-    stubs(on, [])
-    const stored: unknown[] = []
-    on('session.append', ($, e, next) => {
-      stored.push((e.message.content[0] as { content?: unknown }).content)
-      return next(e)
-    })
-    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
-    const long = 'x'.repeat(5000)
-    const row = (content: unknown) =>
-      ({
-        door: 'tool-result',
-        origin: { kind: 'tool', tool: 'Bash' },
-        uuid: 'u',
-        message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c', content }] },
-      }) as never
-    await $.session.append(row(long))
-    await $.session.append(row([{ type: 'text', text: long }]))
-    expect(typeof stored[0]).toBe('string')
-    expect(String(stored[0])).toContain('zetetic-autopilot cut')
-    expect(String(stored[0]).length < 2000).toBe(true)
-    const blocks = stored[1] as { type: string; text: string }[]
-    expect(blocks[0]?.type).toBe('text')
-    expect(blocks[0]?.text).toContain('zetetic-autopilot cut')
-  },
-)
+// The offload: what the fake session holds (its id, its transcript), what is written where, every
+// process the mod started (none may be), and the rows it logged.
+const SESSION = 'sess-1'
+const TRANSCRIPT = `/home/t/.claude/projects/-r/${SESSION}.jsonl`
+const DIR = `/home/t/.claude/projects/-r/${SESSION}/tool-results`
+
+type Disk = { written: Record<string, string>; processes: string[]; refuse?: string; rows: { kind: string; subject: string; to: string; applied: boolean }[] }
+
+const sha256 = async (text: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const diskOf = (on: Parameters<TestBody>[1], refuse?: string): Disk => {
+  const disk: Disk = { written: {}, processes: [], refuse, rows: [] }
+  on('session.id', () => ({ value: SESSION }))
+  on('classic.SessionStart', () => ({}) as never)
+  on('fs.write', ($, e) => {
+    if (disk.refuse !== undefined) return { deny: disk.refuse }
+    const { path, text } = e as unknown as { path: string; text: string }
+    disk.written[path] = text
+
+    return { value: undefined as never }
+  })
+  on('process.run', ($, e) => {
+    disk.processes.push(String((e as { argv?: unknown }).argv))
+
+    return { deny: 'no process in this test' }
+  })
+  on('state.set', ($, e, next) => {
+    const v = (e as unknown as { key?: string; value?: { decisions?: Disk['rows'] } })
+    if (v.key === 'policy') disk.rows = v.value?.decisions ?? []
+
+    return next(e)
+  })
+
+  return disk
+}
+
+const toolRow = (tool: string, content: unknown, id = 'toolu_01') =>
+  ({
+    door: 'tool-result',
+    origin: { kind: 'tool', tool },
+    uuid: `u-${id}`,
+    message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] },
+  }) as never
+
+const start = async ($: Parameters<TestBody>[0], transcript = TRANSCRIPT) => {
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.classic.SessionStart({ source: 'startup', session_id: SESSION, transcript_path: transcript })
+}
+
+const storedOf = (on: Parameters<TestBody>[1]): unknown[] => {
+  const stored: unknown[] = []
+  on('session.append', ($, e, next) => {
+    stored.push((e.message.content[0] as { content?: unknown }).content)
+
+    return next(e)
+  })
+
+  return stored
+}
+
+const ENFORCE = { options: { policy_mode: 'enforce', offload_threshold_chars: 1000, offload_preview_chars: 200 } }
+const LONG = Array.from({ length: 300 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')
+
+test('enforce: a long Bash result is written whole to the session directory; the model gets preview, path and size', ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await start($)
+  await $.session.append(toolRow('Bash', LONG))
+  const path = `${DIR}/autopilot-toolu_01.txt`
+  expect(Object.keys(disk.written)).toEqual([path])
+  expect(await sha256(disk.written[path] ?? '')).toBe(await sha256(LONG))
+  const seen = String(stored[0])
+  expect(seen).toContain(`Full output saved to: ${path}`)
+  expect(seen).toContain('Read or grep the file for the rest')
+  expect(seen).toContain(LONG.slice(0, 100))
+  expect(seen.length < 700).toBe(true)
+  expect(seen).not.toContain('cut')
+  expect(seen).not.toContain('truncated')
+  expect(disk.rows.at(-1)).toMatchObject({ kind: 'offload', subject: 'Bash', applied: true })
+  expect(disk.processes).toEqual([])
+})
+
+test('enforce: a result in text blocks is offloaded the same way, whole', ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await start($)
+  await $.session.append(toolRow('Grep', [{ type: 'text', text: LONG }], 'toolu_02'))
+  const path = `${DIR}/autopilot-toolu_02.txt`
+  expect(disk.written[path] === LONG).toBe(true)
+  const blocks = stored[0] as { type: string; text: string }[]
+  expect(blocks[0]?.type).toBe('text')
+  expect(blocks[0]?.text).toContain(path)
+})
+
+test('enforce: a result within the threshold is stored as it is and nothing is written', ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await start($)
+  await $.session.append(toolRow('Bash', 'x'.repeat(1000)))
+  expect(stored[0]).toBe('x'.repeat(1000))
+  expect(disk.written).toEqual({})
+  expect(disk.rows.filter((r) => r.kind === 'offload')).toEqual([])
+})
+
+test("enforce: the engine's own pointer is not wrapped again, and a tool outside the list is not touched", ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await start($)
+  const native = `<persisted-output>\nOutput too large (49.2KB). Full output saved to: /p/native.txt\n\nPreview (first 2KB):\n${'y'.repeat(3000)}`
+  await $.session.append(toolRow('Bash', native))
+  expect(stored[0]).toBe(native)
+  await $.session.append(toolRow('mcp__other__tool', LONG, 'toolu_03'))
+  expect(stored[1]).toBe(LONG)
+  expect(disk.written).toEqual({})
+})
+
+test('observe: a long result is stored whole, nothing is written, the decision is logged as observed', { options: { policy_mode: 'observe', offload_threshold_chars: 1000 } }, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await start($)
+  await $.session.append(toolRow('Bash', LONG))
+  expect(stored[0]).toBe(LONG)
+  expect(disk.written).toEqual({})
+  expect(disk.rows.at(-1)).toMatchObject({ kind: 'offload', applied: false })
+})
+
+test('retention: the mod only writes, inside the current session directory, and starts no process', ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  await start($)
+  await $.session.append(toolRow('Bash', LONG, 'toolu_a'))
+  await $.session.append(toolRow('Glob', LONG, 'toolu_b'))
+  await $.session.append(toolRow('WebFetch', LONG, 'toolu_c'))
+  expect(Object.keys(disk.written).sort()).toEqual(['a', 'b', 'c'].map((k) => `${DIR}/autopilot-toolu_${k}.txt`))
+  expect(Object.keys(disk.written).every((p) => p.startsWith(`${DIR}/`))).toBe(true)
+  expect(disk.processes).toEqual([])
+})
+
+test('a transcript that is not this session\'s, or none, leaves the result whole and says why once', ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.session.append(toolRow('Bash', LONG))
+  await start($, '/home/t/.claude/projects/-r/another-session.jsonl')
+  await $.session.append(toolRow('Bash', LONG, 'toolu_02'))
+  expect(stored).toEqual([LONG, LONG])
+  expect(disk.written).toEqual({})
+  expect(disk.rows.filter((r) => r.subject === 'tool-results directory').length).toBe(1)
+})
+
+test('a write the engine refuses leaves the result whole and names the refusal', ENFORCE, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on, 'EACCES')
+  const stored = storedOf(on)
+  await start($)
+  await $.session.append(toolRow('Bash', LONG))
+  expect(stored[0]).toBe(LONG)
+  expect(disk.rows.some((r) => r.subject === 'Bash result' && r.to.includes('stays whole') && r.to.includes('EACCES'))).toBe(true)
+})
+
+test('an option that is not a positive whole number is named and the default stands', { options: { policy_mode: 'enforce', offload_threshold_chars: 0 } }, async ($, on) => {
+  stubs(on, [])
+  const disk = diskOf(on)
+  const stored = storedOf(on)
+  await start($)
+  expect(disk.rows.some((r) => r.subject === 'offload option' && r.to.includes('using 30000'))).toBe(true)
+  await $.session.append(toolRow('Bash', LONG))
+  expect(stored[0]).toBe(LONG) // 12 000 characters: within the default threshold
+})
 
 test(
   'enforce: under quota pressure an opus subagent is spawned on sonnet; a routine Explore goes to haiku',

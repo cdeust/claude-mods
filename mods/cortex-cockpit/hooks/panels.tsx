@@ -205,13 +205,13 @@ export const PolicyPanel = (ui: Ui, surface: Surface, p: PolicyState | Unreadabl
         <Text dimColor>
           {' '}
           · ladder from the graded rung, loop at medium, pressure at low · quota pressure from {p.quotaPercent} % of
-          5 h · results capped at {group(p.resultCapChars)} chars
+          5 h · results past {group(p.offloadThresholdChars)} chars go whole to a file, {group(p.offloadPreviewChars)} chars shown
         </Text>
       </Text>
       <Text color={pressureColor}>
         pressure: {p.pressure}
-        {p.charsCut > 0
-          ? ` · ${group(p.charsCut)} chars kept out, about ${group(Math.round(p.charsCut / 4))} tokens (estimated)`
+        {p.charsOffloaded > 0
+          ? ` · ${group(p.charsOffloaded)} chars offloaded to files, about ${group(Math.round(p.charsOffloaded / 4))} tokens kept out of the context (estimated)`
           : ''}
       </Text>
       {GeniusLine(ui, surface, g)}

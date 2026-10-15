@@ -25,7 +25,7 @@ export type Pressure = 'none' | 'quota' | 'context'
 // source routing went on without (a dependency's state, an agent definition) and why.
 export type PolicyDecision = {
   at: number
-  kind: 'effort' | 'model' | 'lean' | 'stuck' | 'unread'
+  kind: 'effort' | 'model' | 'offload' | 'stuck' | 'unread'
   subject: string
   from: string
   to: string
@@ -36,9 +36,11 @@ export type PolicyState = {
   mode: 'observe' | 'enforce'
   pressure: Pressure
   quotaPercent: number
-  resultCapChars: number
+  offloadThresholdChars: number
+  offloadPreviewChars: number
   decisions: PolicyDecision[]
-  charsCut: number
+  // Characters kept out of the context by offloads, net of the pointers that replaced them.
+  charsOffloaded: number
   errorsInRow: number
 }
 
