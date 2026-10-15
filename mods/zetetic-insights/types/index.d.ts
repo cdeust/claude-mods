@@ -133,11 +133,52 @@ export type PhaseStat = {
   sessions: number
   judged: number
   achieved: number
+  // The failed-call rate's Wilson interval (hooks/stats.ts, one-sided 95% bounds) and whether it is narrower than
+  // the precision asked for (HALF_WIDTH); a row that is not resolved can support no proposal.
+  lo: number
+  hi: number
+  resolved: boolean
 }
 
 export type AgentStat = { type: string; runs: number; steps: number; errors: number; models: string[] }
 
-export type Proposal = { phase: Phase; from: Effort; to: Effort; evidence: string }
+// A proposed move, with the rate it rests on and the reference it was set against (other phases at the
+// same effort), both with their intervals.
+export type Proposal = { phase: Phase; from: Effort; to: Effort; evidence: string; rate: RateInterval; reference: RateInterval }
+export type RateInterval = { errors: number; steps: number; lo: number; hi: number }
+
+// What a phase's evidence says without supporting a move: why none can come (hooks/rungs.ts findings).
+export type Finding = {
+  phase: Phase
+  effort: string
+  kind: 'unreachable' | 'unresolved' | 'no-reference' | 'unstable' | 'held'
+  // One sentence with the numbers.
+  note: string
+}
+
+// A phase's statistics for one side of a move (hooks/effect.ts): failed calls and steps by task class, and the outcome
+// of each session that side holds, keyed by the first 8 characters of the session id.
+export type Snapshot = { byClass: Record<string, { steps: number; errors: number }>; sessions: Record<string, 'achieved' | 'not-achieved' | 'unclear'> }
+// One applied move: the runs before it, frozen when it was made (the ledger may later trim them), and
+// the runs after it, frozen when a later move of the same phase superseded it (null while it is the last).
+export type Move = { phase: Phase; at: number; from: Effort; to: Effort; pre: Snapshot; post: Snapshot | null }
+export type Credit = 'benefit' | 'harm' | 'inconclusive' | 'insufficient'
+// The effect of a move: the difference post - pre with its interval (Newcombe), for the failed-call rate and for the
+// share of sessions achieved. A move is credited only on a comparison of the same phase and the same task classes.
+export type DeltaInterval = { d: number; lo: number; hi: number }
+export type Effect = {
+  phase: Phase
+  at: number
+  from: Effort
+  to: Effort
+  // The task classes both sides share (the only ones compared), and the steps / failed calls each side has in them.
+  classes: string[]
+  preSide: { steps: number; errors: number; judged: number; achieved: number }
+  postSide: { steps: number; errors: number; judged: number; achieved: number }
+  failed: DeltaInterval
+  outcome: DeltaInterval | null
+  credit: Credit
+}
 
 // The file the autopilot reads: the tool-loop effort of each calibrated phase, and why.
 export type Calibration = {
@@ -146,6 +187,8 @@ export type Calibration = {
   evidence: Partial<Record<Phase, string>>
   // Each phase's last move: only the runs recorded after it count, and undoing it needs more.
   changes: Partial<Record<Phase, { at: number; from: Effort; to: Effort }>>
+  // Every applied move with its frozen pre statistics, oldest first (hooks/effect.ts), at most MOVES_CAP.
+  moves: Move[]
   updatedAt: number | null
 }
 
@@ -220,6 +263,9 @@ export type InsightsState = {
   calibration: Calibration
   calibrationError: string | null
   proposals: Proposal[]
+  // Why no proposal can come, per phase and effort, and the measured effect of each applied move (the cockpit can draw both).
+  findings: Finding[]
+  effects: Effect[]
   updatedAt: number | null
 }
 
