@@ -38,3 +38,22 @@ test('a picture refuses a side outside the 1..2048 pixels an Image takes; a wide
   expect(wide.width).toBe(MAX_SIDE)
   expect(curvePicture(scene.curves[0]!, 0.4, 1, 3).width).toBe(CELL_W)
 })
+
+// The topmost row holding the phase colour: smaller y is taller.
+const topRow = (bmp: Bitmap, color: number): number => {
+  const [r, g, b] = rgb(color)
+  for (let y = 0; y < bmp.height; y++)
+    for (let x = 0; x < bmp.width; x++) {
+      const i = (y * bmp.width + x) * 4
+      if (bmp.bytes[i] === r && bmp.bytes[i + 1] === g && bmp.bytes[i + 2] === b) return y
+    }
+  return Infinity
+}
+
+test('a curve is painted against the scale it is given: the same rates at 5% and at 100% differ, the low scale taller', () => {
+  const c = { phase: 'analysis' as const, rates: [0, 0.04, 0.02], moveAt: null, move: null }
+  const low = curvePicture(c, 0.05, 60, 3)
+  const high = curvePicture(c, 1, 60, 3)
+  expect(low.source().rgba).not.toBe(high.source().rgba)
+  expect(topRow(low, phaseColor('analysis'))).toBeLessThan(topRow(high, phaseColor('analysis')))
+})

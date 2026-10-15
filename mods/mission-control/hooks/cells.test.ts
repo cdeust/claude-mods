@@ -218,6 +218,9 @@ test('every curve is drawn on one scale, printed once: a quiet phase reads flat,
   // bottom dot row only: the first of its three cell rows holds no dot.
   const first = rows.findIndex((r) => r.startsWith('analysis'))
   expect(/[⠀-⣿]/.test(rows[first]!.slice(15, 70).replace(/ /g, ''))).toBe(false)
+  // the quiet phase still says its own peak, on the row under its name
+  expect(rows[first + 1]!.slice(0, 15)).toMatch(/^peak 5%/)
+  expect(rows[first + 1]!.slice(0, 15)).not.toMatch(/100%/)
   const alone = paintCells(withCurves([curveOf('analysis', [0, 0.05, 0.02])]), 80).glyphRows()
   expect(/[⠁-⣿]/.test(alone[alone.findIndex((r) => r.startsWith('analysis'))]!.slice(15, 70))).toBe(true)
 })

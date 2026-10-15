@@ -143,12 +143,12 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
         <Box flexDirection="row">
           <Box flexDirection="column" width={LABEL}>
             <Text color={hex(phaseColor(c.phase))}>{c.phase}</Text>
+            <Text color={hex(MUTED)}>{`peak ${pct(curveSummary(c).peak)}`}</Text>
             {c.move !== null && <Text color={hex(INK_2)}>{c.move}</Text>}
           </Box>
           <Image key={`curve-${c.phase}`} source={curvePicture(c, scale, curveColumns, CURVE_ROWS).source()} columns={curveColumns} rows={CURVE_ROWS} alt={`${c.phase} last ${pct(curveSummary(c).last)}, peak ${pct(curveSummary(c).peak)}`} />
           <Box flexDirection="column" width={RIGHT}>
             <Text color={hex(INK)}>{` last ${pct(curveSummary(c).last)}`}</Text>
-            <Text color={hex(INK_2)}>{` peak ${pct(curveSummary(c).peak)}`}</Text>
             <Text color={hex(MUTED)}>{` n=${curveSummary(c).n}`}</Text>
           </Box>
         </Box>

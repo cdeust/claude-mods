@@ -230,8 +230,8 @@ function curve(g: Grid, c: Curve, scale: number, top: number): void {
   for (let i = 1; i < c.rates.length; i++) g.line(...at(i - 1), ...at(i), phaseColor(c.phase))
   const s = curveSummary(c)
   g.text(LABEL + width + 1, top, `last ${pct(s.last)}`, INK)
-  g.text(LABEL + width + 1, top + 1, `peak ${pct(s.peak)}`, INK_2)
-  g.text(LABEL + width + 1, top + 2, `n=${s.n}`, MUTED)
+  g.text(0, top + 1, `peak ${pct(s.peak)}`, MUTED) // under the name, so a 5% phase beside a 100% one still says how high it went
+  g.text(LABEL + width + 1, top + 1, `n=${s.n}`, MUTED)
   if (c.moveAt !== null) {
     const x = Math.floor(at(c.moveAt)[0] / 2)
     g.put(x, top + CURVE_ROWS, 0x5e, INK)
