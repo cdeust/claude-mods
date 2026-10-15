@@ -75,22 +75,9 @@ export const agentEffortFor = (model: string, current: unknown, pressure: Pressu
   return pressure !== 'none' && RANK[have] > RANK.medium ? 'medium' : undefined
 }
 
-// Memory leaning: a tool result past the cap keeps its head and tail; the cut is named so the
-// model can rerun with a narrower filter. Only tools whose output is a stream (not a document).
-export const LEAN_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'WebFetch', 'WebSearch'])
-const HEAD_SHARE = 0.6 // source: own choice, the start of an output carries the command's answer
-const TAIL_SHARE = 0.25 // source: own choice, the end carries the exit status and the last error
-
-export type Lean = { text: string; cut: number }
-
-export const leanText = (text: string, cap: number): Lean | undefined => {
-  if (text.length <= cap) return undefined
-  const head = text.slice(0, Math.floor(cap * HEAD_SHARE))
-  const tail = text.slice(text.length - Math.floor(cap * TAIL_SHARE))
-  const cut = text.length - head.length - tail.length
-  const marker = `\n[zetetic-autopilot cut ${cut} characters here; rerun with a narrower filter if they matter]\n`
-  return { text: `${head}${marker}${tail}`, cut }
-}
+// Memory offload (offload.ts): a result of these tools past the threshold is written whole to a
+// file. Only tools whose output is a stream (not a document); a third-party tool's is not ours.
+export const OFFLOAD_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'WebFetch', 'WebSearch'])
 
 // source: the rule of thumb the context breakdown uses, about four characters a token.
 export const CHARS_PER_TOKEN = 4
@@ -124,7 +111,7 @@ export const group = (n: number): string =>
 
 export type Decision = {
   at: number
-  kind: 'effort' | 'model' | 'lean' | 'shape' | 'stuck'
+  kind: 'effort' | 'model' | 'offload' | 'shape' | 'stuck'
   subject: string
   from: string
   to: string

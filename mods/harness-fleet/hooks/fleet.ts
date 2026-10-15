@@ -286,7 +286,7 @@ export type Lessons = {
   refusals: number | null
   classifierErrors: number | null
   stuckEscalations: number | null
-  leanCuts: number | null
+  offloads: number | null
   unreadable: readonly string[]
 }
 
@@ -298,7 +298,7 @@ export const lessonsLine = (l: Lessons): string =>
     lessonCell(l.refusals, 'guard refusals'),
     lessonCell(l.classifierErrors, 'classifier errors'),
     lessonCell(l.stuckEscalations, 'stuck escalations'),
-    lessonCell(l.leanCuts, 'results cut'),
+    lessonCell(l.offloads, 'results offloaded'),
   ].join(' · ')
 
 export const draftIssuePrompt = (repos: readonly string[], l: Lessons): string =>

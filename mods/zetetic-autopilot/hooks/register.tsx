@@ -4,12 +4,14 @@ import type { AgentSpawnResult, EngineInterface, PluginState, Register, TurnStep
 import type { ContextHealth, PhasesState, PolicyDecision, PolicyState } from '../types'
 import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
 import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, ancestors, definitionPaths, parseDefinition } from './agents'
+import { DEFAULT_PREVIEW_CHARS, DEFAULT_THRESHOLD_CHARS, offloadOptions } from './offload'
+import { type Sink, offloadBlocks } from './offloadrow'
 import { placePath } from './paths'
 import { emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped } from './phases'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
 import {
   CHARS_PER_TOKEN,
-  LEAN_TOOLS,
+  OFFLOAD_TOOLS,
   STUCK_ERRORS,
   agentEffortFor,
   currentEffort,
@@ -17,9 +19,7 @@ import {
   effortFor,
   escalate,
   group,
-  leanText,
   pressureOf,
-  resultText,
 } from './policy'
 import { type TaskClass, mainModelFor, routeAgentModel } from './route'
 
@@ -30,9 +30,10 @@ const policy = atom({ plugin: 'zetetic-autopilot', key: 'policy' } as const, {
   mode: 'observe',
   pressure: 'none',
   quotaPercent: 80,
-  resultCapChars: 16000,
+  offloadThresholdChars: DEFAULT_THRESHOLD_CHARS,
+  offloadPreviewChars: DEFAULT_PREVIEW_CHARS,
   decisions: [],
-  charsCut: 0,
+  charsOffloaded: 0,
   errorsInRow: 0,
 } as PolicyState)
 
@@ -42,10 +43,10 @@ const phases = atom({ plugin: 'zetetic-autopilot', key: 'phases' } as const, emp
 const geniusState = { plugin: 'zetetic-genius', key: 'state' } as const
 type Grade = { turnId: string | null; taskClass: TaskClass; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 
-const decide = (p: PolicyState, d: PolicyDecision, charsCut = 0): PolicyState => ({
+const decide = (p: PolicyState, d: PolicyDecision, charsOffloaded = 0): PolicyState => ({
   ...p,
   decisions: [...p.decisions, d].slice(-DECISIONS_CAP),
-  charsCut: p.charsCut + charsCut,
+  charsOffloaded: p.charsOffloaded + charsOffloaded,
 })
 
 // Where a `~/` path lands on this machine: HOME, else USERPROFILE, and CLAUDE_CONFIG_DIR for what lives
@@ -240,13 +241,11 @@ async function placed(
   return r
 }
 
-export const register: Register = (on, options) => {
-  const mode: PolicyState['mode'] = options.policy_mode === 'enforce' ? 'enforce' : 'observe'
-  const quotaPercent = Number(options.quota_pressure_percent ?? 80)
-  const resultCapChars = Number(options.result_cap_chars ?? 16000)
-  // A hot reload keeps $.state from the previous load: the configured fields are set afresh.
-  const configured = (p: PolicyState): PolicyState => ({ ...p, mode, quotaPercent, resultCapChars })
+type On = Parameters<Register>[0]
 
+// The state a session starts from, again after /clear, /resume and /branch; the context band and the
+// pressure the window and the context call for.
+function registerLifecycle(on: On, configured: (p: PolicyState) => PolicyState, quotaPercent: number): void {
   on('session.start', async ($, e, next) => {
     definitions.clear()
     await update($, phases, () => emptyPhases())
@@ -282,7 +281,10 @@ export const register: Register = (on, options) => {
 
     return next(e)
   })
+}
 
+// The effort ladder and the model under quota.
+function registerEffort(on: On): void {
   // Main: the effort ladder from the graded rung, the stuck escalation, and the model under
   // quota. A subagent: the effort its definition pinned, capped under pressure. Observed, or
   // applied under enforce. A generator, as the event streams.
@@ -324,7 +326,10 @@ export const register: Register = (on, options) => {
     const out = { ...e, ...(target !== have ? { effort: target } : {}), ...(model !== undefined ? { model } : {}) }
     return yield* tracked($, out, next(out))
   })
+}
 
+// The model of a subagent, and the stuck signal.
+function registerRouting(on: On): void {
   // Subagents: the model the call or the definition pinned stands, one notch down under pressure;
   // an inheriting type runs on the family its kind and the turn's class call for.
   on('agent.spawn', async ($, e, next) => {
@@ -362,45 +367,62 @@ export const register: Register = (on, options) => {
 
     return ran
   })
+}
 
-  // Memory leaning: a streaming tool's long result keeps head and tail before it is stored.
-  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
-    const tool = e.origin.kind === 'tool' ? e.origin.tool : undefined
-    if (tool === undefined || !LEAN_TOOLS.has(tool)) return next(e)
-    const p = await read($, policy)
-    let cut = 0
-    const content = e.message.content.map((block) => {
-      if (block.type !== 'tool_result') return block
-      const text = resultText(block.content)
-      if (text === undefined) return block
-      const lean = leanText(text, p.resultCapChars)
-      if (lean === undefined) return block
-      cut += lean.cut
-      if (p.mode !== 'enforce') return block
-      return typeof block.content === 'string'
-        ? { ...block, content: lean.text }
-        : { ...block, content: [{ type: 'text', text: lean.text }] }
-    })
-    if (cut === 0) return next(e)
-    const applied = p.mode === 'enforce'
-    const d: PolicyDecision = {
-      at: await $.clock.now(),
-      kind: 'lean',
-      subject: tool,
-      from: `${group(cut)} chars`,
-      to: `about ${group(Math.round(cut / CHARS_PER_TOKEN))} tokens kept out`,
-      applied,
-    }
-    await update($, policy, (s) => decide(s, d, applied ? cut : 0))
-    return next({ ...e, message: { ...e.message, content } })
-  })
-
-  // The stuck counter is a turn's own; main's ends with its turn.
-  on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
-    const at = await $.clock.now()
-    await update($, phases, (s) => finished(s, e.agentId ?? 'main', at))
+// Memory offload (offload.ts, offloadrow.ts). The session's tool-results directory comes from the
+// transcript path every classic SessionStart carries; the engine's retention sweeps it
+// (`cleanupPeriodDays`, 30 days by default) and this mod deletes nothing.
+function registerOffload(on: On, problems: readonly string[]): void {
+  let transcriptPath: string | undefined
+  on('classic.SessionStart', async ($, e, next) => {
+    transcriptPath = e.transcript_path
+    for (const problem of problems) await note($, 'offload option', problem)
 
     return next(e)
   })
+
+  // A stream tool's result past the threshold is written whole to a file; the stored row carries a
+  // preview, the path and the size. A result that cannot be written stays whole, and a row says why.
+  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
+    const tool = e.origin.kind === 'tool' ? e.origin.tool : undefined
+    if (tool === undefined || !OFFLOAD_TOOLS.has(tool)) return next(e)
+    const p = await read($, policy)
+    const sink: Sink = {
+      note: (subject, reason) => note($, subject, reason),
+      offloaded: async (plan, applied) => {
+        const kept = plan.chars - plan.message.length
+        const d: PolicyDecision = {
+          at: await $.clock.now(),
+          kind: 'offload',
+          subject: tool,
+          from: `${group(plan.chars)} chars`,
+          to: `${plan.files[0]?.path} · about ${group(Math.round(kept / CHARS_PER_TOKEN))} tokens kept out of context`,
+          applied,
+        }
+        await update($, policy, (s) => decide(s, d, applied ? kept : 0))
+      },
+    }
+    const options = { thresholdChars: p.offloadThresholdChars, previewChars: p.offloadPreviewChars }
+    const content = await offloadBlocks($, e.uuid, tool, e.message.content, { options, enforce: p.mode === 'enforce', transcriptPath, sink })
+
+    return next(content === undefined ? e : { ...e, message: { ...e.message, content } })
+  })
+}
+
+export const register: Register = (on, options) => {
+  const mode: PolicyState['mode'] = options.policy_mode === 'enforce' ? 'enforce' : 'observe'
+  const quotaPercent = Number(options.quota_pressure_percent ?? 80)
+  const offload = offloadOptions(options.offload_threshold_chars, options.offload_preview_chars)
+  // A hot reload keeps $.state from the previous load: the configured fields are set afresh.
+  const configured = (p: PolicyState): PolicyState => ({
+    ...p,
+    mode,
+    quotaPercent,
+    offloadThresholdChars: offload.options.thresholdChars,
+    offloadPreviewChars: offload.options.previewChars,
+  })
+  registerLifecycle(on, configured, quotaPercent)
+  registerEffort(on)
+  registerRouting(on)
+  registerOffload(on, offload.problems)
 }

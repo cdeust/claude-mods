@@ -26,7 +26,7 @@ export function statedOptions(mod: string, state: unknown): string | undefined {
   if (s === null || s === undefined || typeof s !== 'object') return undefined
   if (mod === 'zetetic-genius') return `mode=${JSON.stringify(s.mode)} classifier_model=${JSON.stringify(s.classifierModel)}`
   if (mod === 'zetetic-autopilot') {
-    return `policy_mode=${JSON.stringify(s.mode)} quota_pressure_percent=${JSON.stringify(s.quotaPercent)} result_cap_chars=${JSON.stringify(s.resultCapChars)}`
+    return `policy_mode=${JSON.stringify(s.mode)} quota_pressure_percent=${JSON.stringify(s.quotaPercent)} offload_threshold_chars=${JSON.stringify(s.offloadThresholdChars)} offload_preview_chars=${JSON.stringify(s.offloadPreviewChars)}`
   }
   return undefined
 }

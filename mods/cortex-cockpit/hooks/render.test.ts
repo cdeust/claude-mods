@@ -114,11 +114,12 @@ const FULL = {
     mode: 'observe',
     pressure: 'quota',
     quotaPercent: 80,
-    resultCapChars: 16000,
+    offloadThresholdChars: 30000,
+    offloadPreviewChars: 2000,
     decisions: [
       { at: 995_500, kind: 'effort', subject: 'main step 2 (claude-fable-5-1)', from: 'high', to: 'medium', applied: false },
     ],
-    charsCut: 0,
+    charsOffloaded: 0,
     errorsInRow: 0,
   },
   phases: {
@@ -215,6 +216,7 @@ test('the populated cockpit validates and shows exact numbers', async ($, on) =>
     expect(await ui.find({ type: 'Text', text: /wiki-write-only/ })).toBeDefined()
     expect(await ui.find({ key: 'consolidate' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /pressure: quota/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /results past 30 000 chars go whole to a file, 2 000 chars\s+shown/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /high → medium · observed/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /code-reviewer · review #10\s+sonnet 5\.5 · medium/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /\[impl\]/ })).toBeDefined()

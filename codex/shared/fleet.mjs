@@ -299,7 +299,7 @@ export const lessonsLine = (l         )         =>
     lessonCell(l.refusals, 'guard refusals'),
     lessonCell(l.classifierErrors, 'classifier errors'),
     lessonCell(l.stuckEscalations, 'stuck escalations'),
-    lessonCell(l.leanCuts, 'results cut'),
+    lessonCell(l.offloads, 'results offloaded'),
   ].join(' · ')
 
 export const draftIssuePrompt = (repos                   , l         )         =>

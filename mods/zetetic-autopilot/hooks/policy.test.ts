@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { agentEffortFor, agentModelFor, defaultEffort, effortFor, leanText, pressureOf } from './policy'
+import { agentEffortFor, agentModelFor, defaultEffort, effortFor, pressureOf } from './policy'
 
 test("the default effort follows the API's per-model default", () => {
   expect(defaultEffort('claude-fable-5-1')).toBe('high')
@@ -59,17 +59,6 @@ test("a subagent keeps its definition's effort on every step; pressure caps it a
   expect(agentEffortFor('claude-haiku-5-5', 'low', 'none')).toBe(undefined)
   expect(agentEffortFor('claude-opus-5-5', 'high', 'quota')).toBe('medium')
   expect(agentEffortFor('claude-haiku-5-5', 'low', 'context')).toBe(undefined)
-})
-
-test('a long result keeps its head and tail and names the cut', () => {
-  const text = 'A'.repeat(1000) + 'B'.repeat(1000) + 'C'.repeat(1000)
-  const lean = leanText(text, 1000)
-  expect(lean).toBeDefined()
-  expect(lean?.text.startsWith('A'.repeat(600))).toBe(true)
-  expect(lean?.text.endsWith('C'.repeat(250))).toBe(true)
-  expect(lean?.cut).toBe(3000 - 600 - 250)
-  expect(lean?.text).toContain('zetetic-autopilot cut 2150 characters')
-  expect(leanText('short', 1000)).toBe(undefined)
 })
 
 test('a calibrated loop rung replaces medium for the phase, under the base and never above it', () => {
