@@ -104,3 +104,37 @@ that fill slots; the chart's `SessionModels` rows carry `probe` and `probeReason
 - `non-interactive-1-step`: a `-p` run or the SDK with at most one main step.
 - `one-step-unknown`: the origin was never recorded (older records), one main step, no agent. Steps,
   not turns: a one-turn session of three steps is work.
+
+## 6. When a phase's effort moves (`hooks/rungs.ts`, `hooks/stats.ts`)
+
+The rung is a ceiling: a turn's tool loop runs at `min(its graded base, the phase's ceiling)`
+(zetetic-autopilot `effortFor`). So the rows that matter are the ones for the effort each run had:
+raising the ceiling reaches only the turns that ran capped at it, lowering it only those that ran at it.
+A phase that ran only at `low` (a routine base) is untouched by a `medium` ceiling; the finding
+`unreachable` says so instead of proposing a move that changes nothing.
+
+Statistics (one stated choice, the rest derived):
+
+- Interval: Wilson score interval (Wilson 1927; Brown, Cai and DasGupta 2001) of failed calls over steps, one-sided 95% bounds (z = 1.645).
+- Precision asked for: `HALF_WIDTH` = 10 points, the only free parameter. A rate is **resolved** when its interval is that narrow; the steps this takes follow from it: `n = z^2 p (1 - p) / h^2`, 51 at a quarter, 13 at 5%, at most 68. This replaces the unexplained `MIN_STEPS = 40`, `RAISE_RATE = 0.25`, `LOWER_RATE = 0.05`, `MIN_JUDGED_SESSIONS = 5`, `ACHIEVED_SHARE = 0.8` and `REVERSAL_STEPS`.
+- Reference: the same rung's rate over the other phases of the ledger (probe sessions excluded), measured, not fixed.
+- Raise one notch when the phase's lower bound is above the reference's upper bound. Lower one notch when its upper bound is below the reference's lower bound and the Wilson lower bound of the share of its judged sessions that were achieved is above one half (the sign-test null).
+- The neighbouring rung of the same phase, on the task classes both ran, must not be confidently worse than the rung moved to (Newcombe 1998 method 10 on the difference).
+- The verdict must hold when any one session is left out (steps of one session are not independent trials; one session is an anecdote, which the leave-one-out removes without a minimum-sessions constant).
+- Undoing a phase's last move needs that move's measured effect (section 7) to be `harm`.
+
+Not claimed: failed tool calls are not a quality measure; a lower rate is read as "this phase needs less effort" only together with the sessions' outcomes. The interval treats steps as trials; the leave-one-session-out stability is the guard, not a correction.
+
+## 7. What a move did (`hooks/effect.ts`)
+
+Every applied move is written into `calibration.json` (`moves`, at most 50) with the phase's runs at the
+rung it left, frozen at that moment by task class, with each session's outcome. The runs after it are
+taken live from the ledger at the rung moved to, and frozen when a later move of the same phase supersedes
+the move. The pre runs are never discarded.
+
+The effect is `post - pre` with its Newcombe interval, for (a) the failed-call rate, on the task classes
+both sides have (same phase, same classes), and (b) the share of judged sessions achieved (sessions with
+runs on both sides of the move belong to neither side). Credit: `harm` if either interval lies on the bad
+side of zero, else `benefit` if either lies on the good side, else `inconclusive`; `insufficient` when a
+side has no steps. It is reported in the `/calibrate` text, in `InsightsState.effects` (for the cockpit
+and the mission-control pane to draw), and, when credited, as a line of the self-calibration brief.
