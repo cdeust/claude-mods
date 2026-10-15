@@ -24,7 +24,7 @@ test('the lanes picture holds every phase colour, the failed-call x and the advi
 
 test('a curve at the widest pane stays under the 2 MiB an Image takes', () => {
   const c = scene.curves.find((x) => x.phase === 'test')!
-  const bmp = curvePicture(c, 255, 3)
+  const bmp = curvePicture(c, 0.4, 255, 3)
   expect(bmp.bytes.length).toBeLessThanOrEqual(MAX_BYTES)
   expect(has(bmp.bytes, phaseColor('test'))).toBe(true)
   expect(has(bmp.bytes, INK)).toBe(true) // the dashed rule of the move
@@ -36,5 +36,24 @@ test('a picture refuses a side outside the 1..2048 pixels an Image takes; a wide
   expect(() => new Bitmap(MAX_SIDE + 1, 10, 0)).toThrow(/1\.\.2048/)
   const wide = lanesPicture(scene, 300)
   expect(wide.width).toBe(MAX_SIDE)
-  expect(curvePicture(scene.curves[0]!, 1, 3).width).toBe(CELL_W)
+  expect(curvePicture(scene.curves[0]!, 0.4, 1, 3).width).toBe(CELL_W)
+})
+
+// The topmost row holding the phase colour: smaller y is taller.
+const topRow = (bmp: Bitmap, color: number): number => {
+  const [r, g, b] = rgb(color)
+  for (let y = 0; y < bmp.height; y++)
+    for (let x = 0; x < bmp.width; x++) {
+      const i = (y * bmp.width + x) * 4
+      if (bmp.bytes[i] === r && bmp.bytes[i + 1] === g && bmp.bytes[i + 2] === b) return y
+    }
+  return Infinity
+}
+
+test('a curve is painted against the scale it is given: the same rates at 5% and at 100% differ, the low scale taller', () => {
+  const c = { phase: 'analysis' as const, rates: [0, 0.04, 0.02], moveAt: null, move: null }
+  const low = curvePicture(c, 0.05, 60, 3)
+  const high = curvePicture(c, 1, 60, 3)
+  expect(low.source().rgba).not.toBe(high.source().rgba)
+  expect(topRow(low, phaseColor('analysis'))).toBeLessThan(topRow(high, phaseColor('analysis')))
 })

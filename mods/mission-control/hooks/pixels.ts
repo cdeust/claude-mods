@@ -48,13 +48,11 @@ export const lanesPicture = (scene: Scene, columns: number): Bitmap => {
   return bmp
 }
 
-// One curve over `rows` cell rows: the rate per point, scaled to the curve's own top (at least
-// 10 %), a dashed rule where the calibration moved the phase.
-export const curvePicture = (c: Curve, columns: number, rows: number): Bitmap => {
+// One curve over `rows` cell rows: the rate per point, scaled to `scale`, the one every curve shares, a dashed rule where the calibration moved the phase.
+export const curvePicture = (c: Curve, scale: number, columns: number, rows: number): Bitmap => {
   const w = sideOf(columns, CELL_W)
   const h = sideOf(rows, CELL_H)
   const bmp = new Bitmap(w, h, SURFACE)
-  const scale = Math.max(0.1, ...c.rates)
   const pad = 3
   const at = (i: number): [number, number] => [
     pad + (i * (w - 2 * pad)) / (c.rates.length - 1),

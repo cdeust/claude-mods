@@ -2,6 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { INSIGHTS, PHASES } from './fixture'
+import { curvePicture } from './pixels'
+import { curveScale, sceneOf } from './scene'
 
 // The pane through the engine: it validates on every surface, draws a Raster in the terminal by
 // default, pixel Images when the option asks, and words elsewhere.
@@ -98,4 +100,20 @@ test("main's turn is kept when it completes, an agent's is not", async ($, on) =
   await $.turn.complete({ turnId: 'turn-0001-abcd', reason: 'answer' } as never)
   expect(kept.map((t) => t.turnId)).toEqual(['turn-0001-abcd'])
   expect(kept[0]!.model).toBe('claude-opus-5-5')
+})
+
+test('pixels: every curve Image is painted on the one shared scale, and says its own peak beside its name', { options: { renderer: 'pixels' } }, async ($, on) => {
+  deps(on)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const ui = await $.ui.mount({ plugin: 'mission-control', surface: 'terminal', ...PANE })
+  const scene = sceneOf(PHASES, INSIGHTS, 100_000)
+  const quiet = scene.curves.find((x) => x.phase === 'analysis')!
+  const img = (await ui.find({ key: 'curve-analysis' })) as { props: { columns: number; source: { rgba: string } } }
+  const shared = curveScale(scene.curves)
+  expect(shared).toBeGreaterThan(Math.max(...quiet.rates)) // another phase peaks higher: the scales differ
+  expect(img.props.source.rgba).toBe(curvePicture(quiet, shared, img.props.columns, 3).source().rgba)
+  expect(img.props.source.rgba).not.toBe(curvePicture(quiet, Math.max(0.1, ...quiet.rates), img.props.columns, 3).source().rgba)
+  expect(await ui.find({ type: 'Text', text: /^peak 10%$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^peak 40%$/ })).toBeDefined()
+  await ui.unmount()
 })

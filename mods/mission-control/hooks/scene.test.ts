@@ -39,8 +39,8 @@ test('the window counts steps by family: main under its models, each shown agent
   const scene = sceneOf(next, INSIGHTS, 130_000, [past])
   expect(scene.models.window).toEqual([{ family: 'sonnet', steps: 24 }, { family: 'opus', steps: 2 }])
   expect(scene.models.sessions.map((s) => s.session)).toEqual(['abc10001-aaaa', 'def20002-bbbb'])
-  expect(sceneOf(null, null, 5).models).toEqual({ window: [], sessions: [] })
-  const many = { ...INSIGHTS, models: Array.from({ length: MODEL_ROWS + 3 }, (_, i) => ({ session: `s${i}`, at: i, steps: [] })) } as unknown as typeof INSIGHTS
+  expect(sceneOf(null, null, 5).models).toEqual({ window: [], sessions: [], probes: 0 })
+  const many = { ...INSIGHTS, models: Array.from({ length: MODEL_ROWS + 3 }, (_, i) => ({ session: `s${i}`, at: i, steps: [{ family: 'opus', steps: 5 }] })) } as unknown as typeof INSIGHTS
   expect(sceneOf(null, many, 5).models.sessions.map((s) => s.session)).toEqual(Array.from({ length: MODEL_ROWS }, (_, i) => `s${i + 3}`))
 })
 

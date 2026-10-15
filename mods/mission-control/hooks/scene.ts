@@ -19,6 +19,7 @@ export const MAX_LANES = 8 // source: own choice, main and the seven agents seen
 export const WINDOW_MS = 10 * 60_000 // source: own choice, the recent past the lanes span
 export const HISTORY_TURNS = 20 // source: own choice, main's past turns kept for the window
 export const MODEL_ROWS = 8 // source: own choice, the last sessions drawn beside the window
+export const PROBE_STEPS = 1 // source: audit 2026-10-15 (insights-audit/report.md section 1): 20 of 24 ledger sessions were `claude -p` probe runs of one step. The insights state carries no cwd per session, so a session of at most this many steps in total stands for a probe
 export const IDLE_MS = 20_000 // source: own choice, a pause this long is cut from the time axis
 const CUT_SHARE = 0.04 // source: own choice, the room one cut takes, as a share of the active time
 export const FAMILIES: readonly ModelFamily[] = ['haiku', 'sonnet', 'opus', 'fable', 'other', 'unknown'] // cheap to dear, then the rest
@@ -40,7 +41,8 @@ export type Span = { t0: number; t1: number }
 export type Delegations = InsightsState['delegations']
 export type Mechanical = InsightsState['mechanical']
 export type Frictions = InsightsState['frictions']
-export type Models = { window: ModelSteps[]; sessions: SessionModels[] }
+// `probes`: how many of the insights' sessions were left out of `sessions` as probes.
+export type Models = { window: ModelSteps[]; sessions: SessionModels[]; probes: number }
 export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models; delegations: Delegations | null; mechanical: Mechanical | null; frictions: Frictions | null }
 
 // A model id as its family: the first of fable, opus, sonnet, haiku found in it, else other.
@@ -133,6 +135,25 @@ const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number)
   return { lanes: [mainLane, ...agentLanes], window }
 }
 
+// A session is a probe when all its steps together are at most PROBE_STEPS.
+const isProbe = (s: SessionModels): boolean => s.steps.reduce((n, f) => n + f.steps, 0) <= PROBE_STEPS
+
+// The probes are counted apart and the last MODEL_ROWS real sessions kept: filtering first, so probes never take a row.
+const modelsOf = (window: ModelSteps[], insights: InsightsState | null): Models => {
+  const all = insights?.models ?? []
+  return { window, sessions: all.filter((s) => !isProbe(s)).slice(-MODEL_ROWS), probes: all.filter(isProbe).length }
+}
+
+// The one scale every learning curve is drawn on: the highest rate of any curve, so a curve's height
+// compares with the others'. 10 % when no curve ever failed (nothing to scale, and no division by zero).
+export const curveScale = (curves: readonly Curve[]): number => {
+  const top = curves.reduce((m, c) => Math.max(m, ...c.rates), 0)
+  return top > 0 ? top : 0.1
+}
+
+// What a curve's label says: the latest rate, the highest, and over how many points. Never first against last.
+export const curveSummary = (c: Curve): { last: number; peak: number; n: number } => ({ last: c.rates[c.rates.length - 1]!, peak: Math.max(...c.rates), n: c.rates.length })
+
 const gaugesOf = (main: LoopPhases | undefined, insights: InsightsState | null): Gauge[] => {
   const calibrated = insights?.calibration.phases ?? {}
   const seen = new Set<Phase>([...(Object.keys(calibrated) as Phase[]), ...(main?.runs.map((r) => r.phase) ?? [])])
@@ -171,7 +192,7 @@ export const sceneOf = (phases: PhasesState | null, insights: InsightsState | nu
     lanes,
     gauges: gaugesOf(phases?.loops.find((l) => l.id === 'main'), insights),
     curves: curvesOf(insights),
-    models: { window, sessions: (insights?.models ?? []).slice(-MODEL_ROWS) },
+    models: modelsOf(window, insights),
     // An older insights (0.3.0 has no delegations, 0.4.0 no mechanical) sends neither: null, never a crash.
     delegations: insights?.delegations ?? null,
     mechanical: insights?.mechanical ?? null,
