@@ -3,8 +3,9 @@
 // Pure, so the register and the tests share it. The register computes it once at session start and
 // freezes it: a system prompt that changed mid-session would void its prompt cache on every request.
 
-import type { DelegationStats, FrictionRow, MechanicalShare, ModelFamily, SessionModels, TurnRecord } from '../types'
+import type { DelegationStats, Effect, FrictionRow, MechanicalShare, ModelFamily, SessionModels, TurnRecord } from '../types'
 import { delegationStats } from './delegations'
+import { effectLine } from './effect'
 import { type Friction, recurringOver } from './friction'
 import { familyOf, sessionModels } from './models'
 import { type ProbeInfo, withoutProbes } from './probes'
@@ -81,7 +82,7 @@ const stepsByModel = (models: readonly SessionModels[]): { total: number; line: 
 // session with a step, no judged delegation, no share and no recurring friction. The friction line is
 // the last one: with the header and the four measures above it the brief is exactly BRIEF_MAX_LINES,
 // and were a line ever added, this is the one that yields (the slice cuts from the end).
-export const composeBrief = (o: { delegations: DelegationStats; models: readonly SessionModels[]; mechanical: MechanicalShare; frictions?: readonly FrictionRow[] }): string | null => {
+export const composeBrief = (o: { delegations: DelegationStats; models: readonly SessionModels[]; mechanical: MechanicalShare; frictions?: readonly FrictionRow[]; effects?: readonly Effect[] }): string | null => {
   const { delegations: d, mechanical: m } = o
   const top = o.frictions?.[0]
   const steps = stepsByModel(o.models.filter((m) => !m.probe))
@@ -99,6 +100,8 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
   if (last !== undefined)
     lines.push(`- latest flagged: ${last.type} on ${last.model} (${last.effort ?? 'effort unset'}), ${last.steps} steps, ${last.errors} failed: ${last.flags.join(', ')}.`)
   if (steps.line !== null) lines.push(steps.line)
+  const moved = [...(o.effects ?? [])].reverse().find((e) => e.credit === 'benefit' || e.credit === 'harm')
+  if (moved !== undefined) lines.push(`- calibration move, measured: ${effectLine(moved)}.`)
   if (top !== undefined) lines.push(`- recurring friction: ${top.signature} (${top.kind}, ${top.sessions} sessions, ${top.count} times)`)
 
   return lines
@@ -110,7 +113,7 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
 // The brief of a ledger: every line is computed from the same BRIEF_SESSIONS newest sessions, so the
 // header's count is true of all of them, the frictions' too (`frictions`: what was measured, by session).
 // The panel's own delegations and models stay on the whole ledger.
-export const briefOf = (records: readonly TurnRecord[], frictions: ReadonlyMap<string, readonly Friction[]> = new Map(), probes: ReadonlyMap<string, ProbeInfo> = new Map()): string | null => {
+export const briefOf = (records: readonly TurnRecord[], frictions: ReadonlyMap<string, readonly Friction[]> = new Map(), probes: ReadonlyMap<string, ProbeInfo> = new Map(), effects: readonly Effect[] = []): string | null => {
   // Probe sessions (hooks/probes.ts) are not the model's habits: they take no slot of the window.
   const w = windowOf(withoutProbes(records, probes))
 
@@ -119,6 +122,7 @@ export const briefOf = (records: readonly TurnRecord[], frictions: ReadonlyMap<s
     models: sessionModels(w.records, probes),
     mechanical: mechanicalShare(w.records),
     frictions: recurringOver(frictions, windowSessions(w.records)),
+    effects,
   })
 }
 

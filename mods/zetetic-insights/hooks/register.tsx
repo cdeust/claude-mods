@@ -197,7 +197,10 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   // within a start. /resume and fork call start() again: the resumed session gets fresh evidence, at
   // the cost of one cache miss.
   const frictions = held.layout === null ? undefined : new Map([...frictionsBySession(held.layout)].filter(([s]) => s !== held.ownSid))
-  const brief = briefOf(ledger(), frictions, probesOf(ledger(), held.layout?.transcripts))
+  const decided = probesOf(ledger(), held.layout?.transcripts)
+  const learning = withoutProbes(ledger(), decided)
+  const effects = effectsOf(c.calibration.moves, cellsOf(learning), combineOutcomes(learning, outcomes).outcomes).effects
+  const brief = briefOf(ledger(), frictions, decided, effects)
   await recompute($, {
     mode,
     ledgerError,

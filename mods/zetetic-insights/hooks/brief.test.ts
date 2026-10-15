@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { AgentRecord, DelegationStats, MechanicalShare, RunRecord, TurnRecord } from '../types'
+import type { AgentRecord, DelegationStats, Effect, MechanicalShare, RunRecord, TurnRecord } from '../types'
 import { BRIEF_LINE_CAP, BRIEF_MAX_LINES, briefOf, composeBrief, mechanicalShare } from './brief'
 import { emptyDelegations } from './delegations'
 import { sessionModels } from './models'
@@ -167,4 +167,24 @@ test('briefOf counts the frictions of the window sessions only: a session outsid
 test('a friction line is cut to BRIEF_LINE_CAP like the others', () => {
   const text = composeBrief({ delegations: emptyDelegations(), models: [], mechanical: NONE, frictions: [{ ...FRICTION, signature: 'z'.repeat(190) }] }) ?? ''
   expect(text.split('\n')[1]).toHaveLength(BRIEF_LINE_CAP)
+})
+
+const credited = (credit: 'benefit' | 'harm' | 'inconclusive'): Effect => ({
+  phase: 'review',
+  at: 5,
+  from: 'medium',
+  to: 'low',
+  classes: ['bugfix'],
+  preSide: { steps: 200, errors: 10, judged: 4, achieved: 4 },
+  postSide: { steps: 200, errors: 70, judged: 5, achieved: 0 },
+  failed: { d: 0.3, lo: 0.22, hi: 0.38 },
+  outcome: { d: -1, lo: -1, hi: -0.4 },
+  credit,
+})
+
+test('a credited calibration move is a line of the brief with its delta and interval; an inconclusive one is not', () => {
+  const base = { delegations: { ...emptyDelegations(), total: 1 }, models: [], mechanical: { sessions: 3, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null } }
+  const text = composeBrief({ ...base, effects: [credited('harm')] })
+  expect(text).toMatch(/\n- calibration move, measured: review medium -> low: failed calls \+30 pts \[\+22, \+38\] \(200 -> 200 steps\), sessions achieved -100 pts \[-100, -40\] \(4 -> 5\); harm\./)
+  expect(composeBrief({ ...base, effects: [credited('inconclusive')] })).not.toMatch(/calibration move/)
 })
