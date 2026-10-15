@@ -16,6 +16,24 @@ export type Sink = {
 
 export type Context = { options: OffloadOptions; enforce: boolean; transcriptPath: string | undefined; sink: Sink }
 
+// The first plan whose files do not exist yet: `id`, then `id-2`, `id-3`... Nothing is ever overwritten.
+async function freshPlan(
+  $: EngineInterface,
+  text: string,
+  id: string,
+  dir: string,
+  ctx: Context,
+  joined: boolean,
+): Promise<OffloadPlan | undefined> {
+  for (let n = 1; ; n++) {
+    const plan = planOffload(text, n === 1 ? id : `${id}-${n}`, dir, ctx.options, joined)
+    if (plan === undefined) return undefined
+    let taken = false
+    for (const f of plan.files) taken = taken || (await $.fs.exists(f.path))
+    if (!taken) return plan
+  }
+}
+
 // Writes each file whole; the reason of the first failure (4 MiB cap, a refusal, a full disk), else undefined.
 async function writeAll($: EngineInterface, plan: OffloadPlan): Promise<string | undefined> {
   try {
@@ -33,7 +51,8 @@ const pointer = <B extends Block>(block: B, message: string): B =>
 
 // pre:  `block` is a tool_result whose text is past the threshold (planOffload decides about the
 //       engine's own pointers); `dir` is the session's tool-results directory or undefined.
-// post: the block unchanged (and a note saying why) when the directory is unknown or the write was
+// post: every block gets its own file name (the tool_use id, else `<row uuid>-<block index>`) and an
+//       existing file is never overwritten (the next free `-N` suffix is used); the block unchanged (and a note saying why) when the directory is unknown or the write was
 //       refused; under observe the block unchanged and nothing written; else the file(s) hold the
 //       text whole and the returned block is the pointer. Nothing is ever dropped.
 async function offloadOne<B extends Block>(
@@ -47,13 +66,21 @@ async function offloadOne<B extends Block>(
 ): Promise<B> {
   const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : fallbackId
   const joined = Array.isArray(block.content) && block.content.length > 1
-  const plan = planOffload(text, id, dir ?? '', ctx.options, joined)
-  if (plan === undefined) return block
+  const first = planOffload(text, id, dir ?? '', ctx.options, joined)
+  if (first === undefined) return block
   if (dir === undefined) {
     await ctx.sink.note('tool-results directory', 'the session directory is not known; the result stays whole')
     return block
   }
+  // Under enforce the name is the first free one; under observe nothing is written, so the plan stands.
+  let plan = first
   if (ctx.enforce) {
+    try {
+      plan = (await freshPlan($, text, id, dir, ctx, joined)) ?? first
+    } catch (error) {
+      await ctx.sink.note(`${tool} result`, `not written, stays whole: ${String(error).slice(0, 160)}`)
+      return block
+    }
     const failure = await writeAll($, plan)
     if (failure !== undefined) {
       await ctx.sink.note(`${tool} result`, `not written, stays whole: ${failure}`)
@@ -77,7 +104,7 @@ export async function offloadBlocks<B extends Block>(
   let known = false
   let changed = false
   const out: B[] = []
-  for (const block of blocks) {
+  for (const [index, block] of blocks.entries()) {
     const text = block.type === 'tool_result' ? resultText(block.content) : undefined
     if (text === undefined || text.length <= ctx.options.thresholdChars) {
       out.push(block)
@@ -88,7 +115,7 @@ export async function offloadBlocks<B extends Block>(
       dir = toolResultsDir(ctx.transcriptPath, await $.session.id())
       known = true
     }
-    const next = await offloadOne($, tool, block, text, dir, ctx, rowId)
+    const next = await offloadOne($, tool, block, text, dir, ctx, `${rowId}-${index}`)
     changed = changed || next !== block
     out.push(next)
   }

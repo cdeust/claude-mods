@@ -84,6 +84,14 @@ test('the session directory is the one the transcript names, for that session on
   expect(win?.files[0]?.path).toBe('C:\\s\\tool-results\\autopilot-toolu_w.txt')
 })
 
+test('the transcript stem must equal the session id and climb nowhere', () => {
+  expect(toolResultsDir('/home/t/.claude/projects/-r/xsess-1.jsonl', 'sess-1')).toBe(undefined)
+  expect(toolResultsDir('/home/t/.claude/projects/-r/sess-1x.jsonl', 'sess-1')).toBe(undefined)
+  expect(toolResultsDir('/home/t/.claude/projects/../../etc/sess-1.jsonl', 'sess-1')).toBe(undefined)
+  expect(toolResultsDir('C:\\p\\..\\q\\sess-1.jsonl', 'sess-1')).toBe(undefined)
+  expect(toolResultsDir('/home/t/.claude/projects/-r/sess-1.jsonl', 'sess-1')).toBe(DIR)
+})
+
 test('a tool_use id that is not a file name is made one', () => {
   const plan = planOffload('z'.repeat(2000), '../../etc/passwd', DIR, OPTIONS)
   expect(plan?.files[0]?.path).toBe(`${DIR}/autopilot-______etc_passwd.txt`)

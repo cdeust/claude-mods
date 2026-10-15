@@ -59,7 +59,10 @@ export const toolResultsDir = (transcriptPath: string | undefined, sessionId: st
   if (transcriptPath === undefined || !transcriptPath.endsWith('.jsonl')) return undefined
   const stem = transcriptPath.slice(0, -'.jsonl'.length)
   const sep = stem.includes('/') || !stem.includes('\\') ? '/' : '\\'
-  return stem.endsWith(`${sep}${sessionId}`) ? `${stem}${sep}tool-results` : undefined
+  const segments = stem.split(sep)
+  // The last segment must BE the session id, and no segment may climb out of the directory.
+  if (segments.includes('..') || segments[segments.length - 1] !== sessionId) return undefined
+  return `${stem}${sep}tool-results`
 }
 
 // A tool_use id is `toolu_...` or `call_...`; anything else a file name could not carry is replaced.

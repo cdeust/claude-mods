@@ -135,6 +135,7 @@ const diskOf = (on: Parameters<TestBody>[1], refuse?: string): Disk => {
   const disk: Disk = { written: {}, processes: [], refuse, rows: [] }
   on('session.id', () => ({ value: SESSION }))
   on('classic.SessionStart', () => ({}) as never)
+  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in disk.written }))
   on('fs.write', ($, e) => {
     if (disk.refuse !== undefined) return { deny: disk.refuse }
     const { path, text } = e as unknown as { path: string; text: string }
