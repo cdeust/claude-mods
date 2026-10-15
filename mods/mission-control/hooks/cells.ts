@@ -3,7 +3,7 @@
 
 import { Grid, MAX_COLUMNS } from './grid'
 import { CRITICAL, GRID, INK, INK_2, MUTED, SURFACE, familyColor, phaseColor } from './palette'
-import { FAMILIES, type Curve, type Gauge, type Lane, type ModelFamily, type ModelSteps, type Scene, WINDOW_MS, columnOf, cutsOf, familyOf, rung } from './scene'
+import { FAMILIES, curveScale, curveSummary, type Curve, type Gauge, type Lane, type ModelFamily, type ModelSteps, type Scene, PROBE_STEPS, WINDOW_MS, columnOf, cutsOf, familyOf, rung } from './scene'
 
 export const LABEL = 15 // source: own choice, the longest phase name ("implementation") is 14, and a space
 const RIGHT = 10 // the curves' value column
@@ -23,10 +23,14 @@ const duration = (ms: number): string => {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
+export const probeNote = (scene: Scene): string => `+${scene.models.probes} probe session${scene.models.probes === 1 ? '' : 's'} hidden (${PROBE_STEPS} step or fewer)`
+
+export const IDLE = `idle: no agent in the last ${WINDOW_MS / 60_000} min`
+
 const pct = (r: number): string => `${Math.round(r * 100)}%`
 
 const heightOf = (scene: Scene): number =>
-  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length + 1 + delegationLines(scene).length + frictionLines(scene, MAX_COLUMNS).length + (scene.frictions == null ? 0 : 1)
+  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length + (scene.models.probes > 0 ? 1 : 0) + 1 + delegationLines(scene).length + frictionLines(scene, MAX_COLUMNS).length + (scene.frictions == null ? 0 : 1)
 
 // The room the printed shares take to the right of a model bar (two spaces, three families).
 const SHARES = 24 // source: own choice, "  haiku 12% sonnet 30% opus 58%" is 31 and is cut at the edge
@@ -151,12 +155,13 @@ function models(g: Grid, scene: Scene, top: number): void {
     })
     g.text(LABEL + track, y, `  ${shareText(row.steps)}`, INK_2)
   })
+  if (scene.models.probes > 0) g.text(0, top + 2 + modelRows(scene).length, probeNote(scene), MUTED)
 }
 
 function lanes(g: Grid, scene: Scene, top: number): number {
   const width = g.columns - LABEL
   if (scene.lanes.length === 0) {
-    g.text(LABEL, top, 'no step recorded yet this turn', MUTED)
+    g.text(LABEL, top, IDLE, MUTED)
     return top + 2
   }
   scene.lanes.forEach((lane: Lane, i) => {
@@ -213,19 +218,20 @@ function gauges(g: Grid, list: readonly Gauge[], top: number): number {
   return top + 1 + Math.max(1, list.length)
 }
 
-function curve(g: Grid, c: Curve, top: number): void {
+function curve(g: Grid, c: Curve, scale: number, top: number): void {
   const width = g.columns - LABEL - RIGHT
   const dotsX = width * 2
   const dotsY = CURVE_ROWS * 4
-  const scale = Math.max(0.1, ...c.rates)
   g.text(0, top, c.phase, INK_2)
-  g.text(0, top + 1, `0-${pct(scale)}`, MUTED)
   const at = (i: number): [number, number] => [
     LABEL * 2 + Math.round((i * (dotsX - 1)) / (c.rates.length - 1)),
     top * 4 + dotsY - 1 - Math.round((c.rates[i]! / scale) * (dotsY - 1)),
   ]
   for (let i = 1; i < c.rates.length; i++) g.line(...at(i - 1), ...at(i), phaseColor(c.phase))
-  g.text(LABEL + width + 1, top + 1, `${pct(c.rates[0]!)}>${pct(c.rates[c.rates.length - 1]!)}`, INK)
+  const s = curveSummary(c)
+  g.text(LABEL + width + 1, top, `last ${pct(s.last)}`, INK)
+  g.text(LABEL + width + 1, top + 1, `peak ${pct(s.peak)}`, INK_2)
+  g.text(LABEL + width + 1, top + 2, `n=${s.n}`, MUTED)
   if (c.moveAt !== null) {
     const x = Math.floor(at(c.moveAt)[0] / 2)
     g.put(x, top + CURVE_ROWS, 0x5e, INK)
@@ -236,20 +242,20 @@ function curve(g: Grid, c: Curve, top: number): void {
 export const paintCells = (scene: Scene, columns: number): Grid => {
   const g = new Grid(Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, columns)), heightOf(scene), SURFACE)
   g.text(0, 0, 'MISSION CONTROL', INK)
-  g.text(16, 0, `turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}, last ${WINDOW_MS / 60_000} min`, MUTED)
+  g.text(16, 0, `turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length === 0 ? 'idle' : `${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}`}, last ${WINDOW_MS / 60_000} min`, MUTED)
   let y = lanes(g, scene, 2)
   const cuts = cutsOf(scene, g.columns - LABEL)
   g.text(LABEL, y, `${duration(cuts.activeMs)} of work${cuts.columns.length === 0 ? '' : `, ${cuts.columns.length} pause${cuts.columns.length === 1 ? '' : 's'} cut`}`, MUTED)
   g.text(g.columns - 3, y, 'now', MUTED)
   y += 2
   y = gauges(g, scene.gauges, y) + 1
-  g.text(0, y, 'FAILED CALLS PER STEP, BY PHASE (insights ledger)', INK)
+  g.text(0, y, `FAILED CALLS PER STEP, BY PHASE${scene.curves.length === 0 ? '' : ` - one scale, 0-${pct(curveScale(scene.curves))}`}`, INK)
   y += 1
   if (scene.curves.length === 0) g.text(0, y, 'no phase has two points yet: the ledger fills as turns complete', MUTED)
-  scene.curves.forEach((c, i) => curve(g, c, y + i * (CURVE_ROWS + 1)))
+  scene.curves.forEach((c, i) => curve(g, c, curveScale(scene.curves), y + i * (CURVE_ROWS + 1)))
   const m = y + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 1
   models(g, scene, m)
-  const d = m + 2 + modelRows(scene).length + 1
+  const d = m + 2 + modelRows(scene).length + (scene.models.probes > 0 ? 1 : 0) + 1
   delegations(g, scene, d)
   frictions(g, scene, d + delegationLines(scene).length + 1)
   return g

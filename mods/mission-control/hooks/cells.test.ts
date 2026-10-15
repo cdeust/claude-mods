@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { paintCells, segmentWidths } from './cells'
 import { INSIGHTS, PHASES } from './fixture'
-import { sceneOf } from './scene'
+import { type Curve, sceneOf } from './scene'
 
 const scene = sceneOf(PHASES, INSIGHTS, 100_000)
 
@@ -31,13 +31,15 @@ test('the lanes, effort and curves read as drawn', () => {
   expect(rows[4]!.startsWith('Explore')).toBe(true)
   expect(rows[6]!.startsWith('code-reviewer')).toBe(true)
   expect(rows.find((r) => r.startsWith('test ')) ).toMatch(/^test {11}█{12}░{4}  high \/ medium$/)
-  expect(rows.some((r) => r.startsWith('analysis') && /[⠀-⣿]/.test(r))).toBe(true)
+  // analysis peaks at 10% on the shared 0-40% scale: its dots are in the three rows from its name down.
+  const at = rows.findIndex((r) => r.startsWith('analysis') && /last/.test(r))
+  expect(rows.slice(at, at + 3).some((r) => /[⠁-⣿]/.test(r))).toBe(true)
   expect(rows.some((r) => /\^ medium > high/.test(r))).toBe(true)
 })
 
 test('an empty session draws its placeholders, not an empty grid', () => {
   const rows = paintCells(sceneOf(null, null, 5), 50).glyphRows().join('\n')
-  expect(rows).toMatch(/no step recorded yet this turn/)
+  expect(rows).toMatch(/idle: no agent in the last 10 min/)
   expect(rows).toMatch(/no phase has two points yet/)
 })
 
@@ -51,7 +53,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
     lanes: [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 900, 1), seg(900, 910, 4), seg(950, 1000, 2)], advisor: [] }],
     gauges: [],
     curves: [],
-    models: { window: [], sessions: [] },
+    models: { window: [], sessions: [], probes: 0 },
     delegations: null,
     mechanical: null,
     frictions: null,
@@ -63,7 +65,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
 test('a long pause is cut from the axis: two bursts share the track, a dashed mark between them', () => {
   const seg = (t0: number, t1: number) => ({ phase: 'analysis' as const, effort: 'medium', t0, t1, steps: 1, errors: 0 })
   const lanes = [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 30_000), seg(630_000, 660_000)], advisor: [] }]
-  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [] }, delegations: null, mechanical: null, frictions: null }
+  const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [], probes: 0 }, delegations: null, mechanical: null, frictions: null }
   const rows = paintCells(bursts, 15 + 100).glyphRows()
   const bar = rows[2]!.slice(15)
   const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[3]!.slice(15).indexOf('┊')
@@ -194,4 +196,47 @@ test('FRICTIONS: a signature with a glyph the Raster refuses is drawn as ?, so t
   const g = paintCells(sceneOf(PHASES, { ...INSIGHTS, frictions: odd }, 100_000), 80)
   for (let i = 0; i < g.columns * g.rows; i++) expect(isAllowed(g.words[i * 3]!)).toBe(true)
   expect(g.glyphRows().some((r) => r.includes('Plugin ? run /plugin ??'))).toBe(true)
+})
+
+const curveOf = (phase: Curve['phase'], rates: number[]): Curve => ({ phase, rates, moveAt: null, move: null })
+const withCurves = (curves: Curve[]) => ({ ...sceneOf(null, null, 5), curves })
+
+test('a curve that peaks mid-way is labelled by its latest rate and its peak, never by an empty-looking first>last delta', () => {
+  const rows = paintCells(withCurves([curveOf('report', [0, 0, 1, 0, 0])]), 80).glyphRows().join('\n')
+  expect(rows).not.toMatch(/0%>0%/)
+  expect(rows).toMatch(/last 0%/)
+  expect(rows).toMatch(/peak 100%/)
+  expect(rows).toMatch(/n=5/)
+})
+
+test('every curve is drawn on one scale, printed once: a quiet phase reads flat, not 0-10%', () => {
+  const both = paintCells(withCurves([curveOf('analysis', [0, 0.05, 0.02]), curveOf('report', [0, 1, 0])]), 80)
+  const rows = both.glyphRows()
+  expect(rows.join('\n')).toMatch(/one scale, 0-100%/)
+  expect(rows.join('\n')).not.toMatch(/\b0-5%|\b0-10%/)
+  // Alone the quiet curve fills its box (its own top); beside a 100% curve its 5% peak is drawn in the
+  // bottom dot row only: the first of its three cell rows holds no dot.
+  const first = rows.findIndex((r) => r.startsWith('analysis'))
+  expect(/[⠀-⣿]/.test(rows[first]!.slice(15, 70).replace(/ /g, ''))).toBe(false)
+  const alone = paintCells(withCurves([curveOf('analysis', [0, 0.05, 0.02])]), 80).glyphRows()
+  expect(/[⠁-⣿]/.test(alone[alone.findIndex((r) => r.startsWith('analysis'))]!.slice(15, 70))).toBe(true)
+})
+
+test('sessions of one step are probes: counted apart, not drawn as 100% rows', () => {
+  const probe = (session: string) => ({ session, at: 1, steps: [{ family: 'haiku' as const, steps: 1 }] })
+  const real = { session: 'real0001-x', at: 2, steps: [{ family: 'sonnet' as const, steps: 20 }, { family: 'opus' as const, steps: 4 }] }
+  const insights = { ...INSIGHTS, models: [probe('p1'), probe('p2'), probe('p3'), real] } as unknown as typeof INSIGHTS
+  const s = sceneOf(null, insights, 5)
+  expect(s.models.sessions.map((x) => x.session)).toEqual(['real0001-x'])
+  expect(s.models.probes).toBe(3)
+  const rows = paintCells(s, 100).glyphRows().join('\n')
+  expect(rows).toMatch(/\+3 probe sessions hidden/)
+  expect(rows).not.toMatch(/haiku 100%/)
+  expect(rows).toMatch(/sonnet 83% opus 17%/)
+})
+
+test('no lane in the window says idle, in the header and the lanes area', () => {
+  const rows = paintCells(sceneOf(null, null, 5), 80).glyphRows()
+  expect(rows[0]).toMatch(/idle, last 10 min/)
+  expect(rows[2]).toMatch(/idle: no agent in the last 10 min/)
 })

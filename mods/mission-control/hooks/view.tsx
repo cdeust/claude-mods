@@ -3,11 +3,11 @@
 
 import type { Elements } from 'claude-code'
 
-import { LABEL, delegationLines, familiesPresent, frictionLines, modelRows, paintCells, segmentWidths, shareText } from './cells'
+import { IDLE, LABEL, delegationLines, familiesPresent, frictionLines, modelRows, paintCells, probeNote, segmentWidths, shareText } from './cells'
 import { GRID, INK, INK_2, MUTED, familyColor, phaseColor } from './palette'
 import { MAX_IMAGE_COLUMNS } from './bitmap'
 import { curvePicture, lanesPicture } from './pixels'
-import { type Scene, WINDOW_MS, rung } from './scene'
+import { type Scene, WINDOW_MS, curveScale, curveSummary, rung } from './scene'
 
 export type Ui = Elements['terminal']
 
@@ -70,6 +70,7 @@ const Models = (ui: Ui, scene: Scene, columns: number) => {
           </Text>
         )
       })}
+      {scene.models.probes > 0 && <Text color={hex(MUTED)}>{probeNote(scene)}</Text>}
     </Box>
   )
 }
@@ -116,12 +117,14 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
   const curveColumns = Math.max(1, track - RIGHT)
   const lanes = lanesPicture(scene, track)
   const pct = (r: number) => `${Math.round(r * 100)}%`
+  const scale = curveScale(scene.curves)
   return (
     <Box flexDirection="column">
       <Text color={hex(INK)}>
-        MISSION CONTROL <Text color={hex(MUTED)}>{`turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}, last ${WINDOW_MS / 60_000} min`}</Text>
+        MISSION CONTROL <Text color={hex(MUTED)}>{`turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length === 0 ? 'idle' : `${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}`}, last ${WINDOW_MS / 60_000} min`}</Text>
       </Text>
       <Text> </Text>
+      {scene.lanes.length === 0 && <Text color={hex(MUTED)}>{IDLE}</Text>}
       <Box flexDirection="row">
         <Box flexDirection="column" width={LABEL}>
           {scene.lanes.flatMap((l) => [
@@ -134,17 +137,20 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
       <Text> </Text>
       {Gauges(ui, scene)}
       <Text> </Text>
-      <Text color={hex(INK)}>FAILED CALLS PER STEP, BY PHASE (insights ledger)</Text>
+      <Text color={hex(INK)}>{`FAILED CALLS PER STEP, BY PHASE${scene.curves.length === 0 ? '' : ` - one scale, 0-${pct(scale)}`}`}</Text>
       {scene.curves.length === 0 && <Text color={hex(MUTED)}>no phase has two points yet: the ledger fills as turns complete</Text>}
       {scene.curves.map((c) => (
         <Box flexDirection="row">
           <Box flexDirection="column" width={LABEL}>
             <Text color={hex(phaseColor(c.phase))}>{c.phase}</Text>
-            <Text color={hex(MUTED)}>{`0-${pct(Math.max(0.1, ...c.rates))}`}</Text>
             {c.move !== null && <Text color={hex(INK_2)}>{c.move}</Text>}
           </Box>
-          <Image key={`curve-${c.phase}`} source={curvePicture(c, curveColumns, CURVE_ROWS).source()} columns={curveColumns} rows={CURVE_ROWS} alt={`${c.phase} ${pct(c.rates[0]!)} to ${pct(c.rates[c.rates.length - 1]!)}`} />
-          <Text color={hex(INK)}>{` ${pct(c.rates[0]!)}>${pct(c.rates[c.rates.length - 1]!)}`}</Text>
+          <Image key={`curve-${c.phase}`} source={curvePicture(c, scale, curveColumns, CURVE_ROWS).source()} columns={curveColumns} rows={CURVE_ROWS} alt={`${c.phase} last ${pct(curveSummary(c).last)}, peak ${pct(curveSummary(c).peak)}`} />
+          <Box flexDirection="column" width={RIGHT}>
+            <Text color={hex(INK)}>{` last ${pct(curveSummary(c).last)}`}</Text>
+            <Text color={hex(INK_2)}>{` peak ${pct(curveSummary(c).peak)}`}</Text>
+            <Text color={hex(MUTED)}>{` n=${curveSummary(c).n}`}</Text>
+          </Box>
         </Box>
       ))}
       <Text> </Text>
