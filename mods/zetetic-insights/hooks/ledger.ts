@@ -18,7 +18,7 @@
 //   it as the other keys of s.
 
 import type { TurnRecord } from '../types'
-import { type Friction, isUnavailable, rowsOf } from './friction'
+import { type Friction, isUnavailable, liveRowsOf, mergeFrictions, rowsOf } from './friction'
 import { LEDGER_BYTES, recordBytes, trimmed, utf8Bytes } from './learn'
 
 export const TURNS = 'turns:' // that session's records; only the process whose session id it is writes it
@@ -115,6 +115,19 @@ export const layoutOf = (entries: ReadonlyMap<string, unknown>): Layout => {
   }
   for (const [s, legacy] of legacyTranscripts) if (!transcripts.has(s)) transcripts.set(s, legacy)
   return { turns, ended, transcripts, frictions, pushed, claims, malformed }
+}
+
+// Every session's frictions as one view: the live events its records carry (seen at tool.call, no
+// transcript needed) and the transcript's rows when it was measured, the larger count of a row seen
+// by both. A session none of whose records carries `frictions` and with no transcript rows was not
+// measured: it is absent.
+export const frictionsBySession = (layout: Layout): Map<string, readonly Friction[]> => {
+  const out = new Map<string, readonly Friction[]>(layout.frictions)
+  for (const [session, records] of layout.turns) {
+    if (!records.some((r) => r.frictions !== undefined)) continue
+    out.set(session, mergeFrictions(liveRowsOf(records.map((r) => r.frictions)), layout.frictions.get(session) ?? []))
+  }
+  return out
 }
 
 export const newestAt = (records: readonly TurnRecord[]): number => records.reduce((m, r) => Math.max(m, r.at), Number.NEGATIVE_INFINITY)

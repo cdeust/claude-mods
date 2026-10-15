@@ -97,7 +97,7 @@ test('recent keeps the last RECENT_FLAGGED flagged rows, newest last', () => {
 })
 
 test('an empty ledger gives empty stats', () => {
-  expect(delegationStats([])).toEqual({ total: 0, designed: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] })
+  expect(delegationStats([])).toEqual({ total: 0, designed: 0, outcomes: { achieved: 0, 'not-achieved': 0, unclear: 0 }, rounds: 0, flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 }, recent: [] })
 })
 
 const turnOf = (at: number, agents: AgentRecord[]): TurnRecord => ({ session: 's', turnId: `t${at}`, at, taskClass: null, main: [], agents, advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0 })

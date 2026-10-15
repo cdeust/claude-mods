@@ -35,14 +35,67 @@ export type AgentRecord = {
 
 // A delegation the evidence questions, and why (hooks/delegations.ts).
 export type DelegationFlag = 'overkill' | 'underpowered' | 'undesigned' | 'rerouted'
-export type DelegationRow = { at: number; type: string; model: string; effort: string | null; shape: string | null; steps: number; errors: number; flags: DelegationFlag[] }
+// What came of a delegation or a session, judged from the outcome events (hooks/outcome.ts), the model in
+// docs/insights-outcome-model.md. `unclear`: the events do not say.
+export type Verdict = 'achieved' | 'not-achieved' | 'unclear'
+export type OutcomeReason = 'merged-approved' | 'reverted' | 'closed' | 'changes-requested' | 'tests-red' | 'verified' | 'approve-stale' | 'no-signal' | 'facets'
+export type OutcomeJudgement = {
+  verdict: Verdict
+  reason: OutcomeReason
+  // REQUEST-CHANGES verdicts posted on its pull requests.
+  rounds: number
+  // Commits seen, of them reverted by a `git revert`, and commits a later `git reset` may have discarded.
+  commits: number
+  reverted: number
+  possiblyDiscarded: number
+  testsPassed: number
+  testsFailed: number
+}
+export type DelegationRow = { at: number; type: string; model: string; effort: string | null; shape: string | null; steps: number; errors: number; flags: DelegationFlag[]; outcome?: Verdict }
 export type DelegationStats = {
   total: number
+  // The judged delegations (those with a design field) by what the events say of them.
+  outcomes: Record<Verdict, number>
+  // REQUEST-CHANGES rounds over all of them.
+  rounds: number
   designed: number
   flags: Record<DelegationFlag, number>
   // The newest flagged delegations, newest last.
   recent: DelegationRow[]
 }
+
+// What a Bash tool call showed about the work's fate, observed live at `tool.call` (hooks/events.ts,
+// no transcript): the closed list of kinds, where each comes from is stated in docs/insights-outcome-model.md.
+export type OutcomeKind = 'commit' | 'revert' | 'reset' | 'test' | 'push' | 'pr-create' | 'pr-merge' | 'pr-close' | 'verdict'
+// Where the event was read from: the command text, the Bash result's structured `gitOperation`, or both agreeing.
+export type EventSource = 'command' | 'git-operation' | 'both'
+export type OutcomeEvent = {
+  kind: OutcomeKind
+  at: number
+  // The delegation that made the call (the engine's agentId); absent: the main thread.
+  agent?: string
+  src: EventSource
+  // commit: its sha; revert: the sha (prefix) reverted, or HEAD; reset: the target (HEAD~2, a sha).
+  sha?: string
+  // pr-*, verdict: `owner/repo#N`, or `#N` when the call named no repository.
+  pr?: string
+  // test: the runner label (hooks/events.ts TESTS); verdict: the head sha the review's second line cites.
+  label?: string
+  head?: string
+  // test: the command's exit status was 0 (false: non-zero), null: not readable (the runner's output was piped, or the call was interrupted).
+  // push, pr-create, pr-merge, pr-close: the call succeeded.
+  ok?: boolean | null
+  verdict?: 'approve' | 'changes' | 'unknown'
+  // reset: how many commits `HEAD~n` / `HEAD^` reaches back; absent for another target.
+  back?: number
+  // The same event repeated back to back, folded.
+  n?: number
+}
+// A friction seen at `tool.call` instead of in a transcript (hooks/friction.ts toolErrorKind): its kind, its signature, how many times in the turn.
+export type LiveFriction = { kind: FrictionKind; signature: string; count: number }
+
+// Why a session is a probe, not a working session (hooks/probes.ts); probes are counted, never learned from.
+export type ProbeReason = 'temp-cwd' | 'non-interactive-1-step' | 'one-step-unknown'
 
 // One main turn as the ledger keeps it ($.store, across sessions).
 export type TurnRecord = {
@@ -59,6 +112,16 @@ export type TurnRecord = {
   agentsDropped?: number
   advisor: { calls: number; beforeWrite: number; atCompletion: number }
   stuck: number
+  // The session's origin, stamped on every record so trimming the oldest never loses it. nonInteractive:
+  // a `-p` run or the SDK (session.start isInteractive false); written true or false, absent only on
+  // records written before the origin was kept. tmpCwd: the working directory is under the OS temp dir, set only when true.
+  nonInteractive?: boolean
+  tmpCwd?: true
+  // Outcome events of this turn, main's and its agents' (agent set), oldest first; at most MAX_EVENTS,
+  // the rest counted in eventsDropped. Absent on records written before they were kept.
+  events?: OutcomeEvent[]
+  eventsDropped?: number
+  frictions?: LiveFriction[]
 }
 
 // Main's steps in one phase at one effort, and the outcomes /insights gave their sessions.
@@ -98,7 +161,10 @@ export type PhaseTrend = {
 export type ModelFamily = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'other' | 'unknown'
 export type ModelSteps = { family: ModelFamily; steps: number }
 // One session's steps by family, main's and its agents' together; families with no step left out.
-export type SessionModels = { session: string; at: number; steps: ModelSteps[] }
+// `probe` is the insights mod's own decision (hooks/probes.ts), with its reason; a consumer filters on it
+// instead of guessing from the step count. Probe rows are listed (flagged) beside the newest MODEL_SESSIONS
+// working sessions, only those newer than the oldest of them.
+export type SessionModels = { session: string; at: number; steps: ModelSteps[]; probe: boolean; probeReason: ProbeReason | null }
 
 // Main's mechanical work on heavy models over the brief's sessions (hooks/brief.ts): main steps on
 // opus or fable whose every tool call was a file read (Read, Grep, Glob), against all of main's
@@ -119,11 +185,18 @@ export type FrictionKind = 'hook-block' | 'hook-error' | 'hook-cancelled' | 'har
 // One normalised signature over the brief's sessions: in how many of them it occurred, how often.
 export type FrictionRow = { kind: FrictionKind; signature: string; sessions: number; count: number }
 
+// Sessions kept out of learning (hooks/probes.ts): counted here, by reason.
+export type ProbeCount = { sessions: number; turns: number; byReason: Record<ProbeReason, number> }
+// Where the learning sessions' outcomes came from: events (external, observed), facets (/insights), or neither.
+export type OutcomeSources = { events: number; facets: number; both: number; disagree: number; unclear: number }
+
 export type InsightsState = {
   mode: 'observe' | 'enforce'
   turns: number
   sessions: number
   judgedSessions: number
+  probes: ProbeCount
+  outcomeSources: OutcomeSources
   ledgerError: string | null
   facetsError: string | null
   phases: PhaseStat[]

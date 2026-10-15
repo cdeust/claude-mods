@@ -12,6 +12,7 @@ import {
   type Sized,
   evictions,
   frictionTargets,
+  frictionsBySession,
   isCovered,
   isFinished,
   keyBytes,
@@ -217,4 +218,26 @@ test('frictionTargets: ended with a transcript, in the window, not measured, not
   expect(frictionTargets(l, all, 'own')[0]).toEqual({ session: 'd', transcript: '/t/d' })
   expect(frictionTargets(l, new Set(['a', 'b']), 'own').map((t) => t.session)).toEqual(['b', 'a'])
   expect(frictionTargets(view({}), all, 'own')).toEqual([])
+})
+
+test('frictionsBySession: live events stand alone without a transcript; with one the larger count of a row seen by both stands; an unobserved session is absent', () => {
+  const live = [{ kind: 'harness-refusal' as const, signature: 'blocked X', count: 2 }]
+  const view = layoutOf(
+    new Map<string, unknown>([
+      ['turns:a', [turn('a', 1, { frictions: live })]],
+      ['turns:b', [turn('b', 1, { frictions: live })]],
+      ['frictions:b', [{ kind: 'harness-refusal', signature: 'blocked X', count: 5 }, { kind: 'hook-block', signature: 'stop', count: 1 }]],
+      ['turns:c', [turn('c', 1)]],
+      ['turns:d', [turn('d', 1)]],
+      ['frictions:d', [{ kind: 'hook-block', signature: 'stop', count: 3 }]],
+    ]),
+  )
+  const by = frictionsBySession(view)
+  expect(by.get('a')).toEqual(live)
+  expect(by.get('b')).toEqual([
+    { kind: 'harness-refusal', signature: 'blocked X', count: 5 },
+    { kind: 'hook-block', signature: 'stop', count: 1 },
+  ])
+  expect(by.has('c')).toBe(false)
+  expect(by.get('d')).toEqual([{ kind: 'hook-block', signature: 'stop', count: 3 }])
 })

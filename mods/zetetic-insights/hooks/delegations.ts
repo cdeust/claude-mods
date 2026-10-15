@@ -3,9 +3,10 @@
 // that question a delegation. Each predicate is written once, in flagsOf; pure, so the register and
 // the tests share it.
 
-import type { AgentRecord, Design, DelegationFlag, DelegationRow, DelegationStats, TurnRecord } from '../types'
+import type { AgentRecord, Design, DelegationFlag, DelegationRow, DelegationStats, OutcomeEvent, TurnRecord } from '../types'
 import { RAISE_RATE } from './learn'
 import { familyOf } from './models'
+import { eventsOf, judge } from './outcome'
 
 export const DESIGN_FIELD_CAP = 80 // source: own choice, characters kept of each design field; the block states a reason, not an essay
 export const OVERKILL_STEPS = 5 // source: own choice, an opus or fable agent that took at most this many steps did a small job
@@ -71,13 +72,15 @@ export const flagsOf = (r: AgentRecord): DelegationFlag[] => {
 export const emptyDelegations = (): DelegationStats => ({
   total: 0,
   designed: 0,
+  outcomes: { achieved: 0, 'not-achieved': 0, unclear: 0 },
+  rounds: 0,
   flags: { overkill: 0, underpowered: 0, undesigned: 0, rerouted: 0 },
   recent: [],
 })
 
 // One delegation is one agentId: a resumed agent writes a record per turn, summed here and judged
 // once. A record without agentId (legacy) is its own delegation.
-type Delegation = { agent: AgentRecord; at: number }
+type Delegation = { agent: AgentRecord; at: number; session: string }
 
 const delegationsOf = (records: readonly TurnRecord[]): Delegation[] => {
   const out: Delegation[] = []
@@ -86,7 +89,7 @@ const delegationsOf = (records: readonly TurnRecord[]): Delegation[] => {
     for (const a of rec.agents) {
       const seen = a.agentId === undefined ? undefined : byId.get(a.agentId)
       if (seen === undefined) {
-        const d = { agent: { ...a }, at: rec.at }
+        const d = { agent: { ...a }, at: rec.at, session: rec.session }
         out.push(d)
         if (a.agentId !== undefined) byId.set(a.agentId, d)
         continue
@@ -109,10 +112,19 @@ const delegationsOf = (records: readonly TurnRecord[]): Delegation[] => {
 // the last RECENT_FLAGGED flagged rows, newest last. O(agents).
 export const delegationStats = (records: readonly TurnRecord[]): DelegationStats => {
   const stats = emptyDelegations()
-  for (const { agent: a, at } of delegationsOf(records)) {
+  const bySession = new Map<string, TurnRecord[]>()
+  for (const r of records) bySession.set(r.session, [...(bySession.get(r.session) ?? []), r])
+  const events = new Map<string, OutcomeEvent[]>([...bySession].map(([s, rs]) => [s, eventsOf(rs)]))
+  for (const { agent: a, at, session } of delegationsOf(records)) {
     if (a.design === undefined) continue
     stats.total += 1
     if (a.design !== null) stats.designed += 1
+    // The outcome the session's events show for this delegation; a legacy record (no agentId) has none to join.
+    const judged = a.agentId === undefined ? undefined : judge(events.get(session) ?? [], a.agentId)
+    if (judged !== undefined) {
+      stats.outcomes[judged.verdict] += 1
+      stats.rounds += judged.rounds
+    } else stats.outcomes.unclear += 1
     const flags = flagsOf(a)
     if (flags.length === 0) continue
     for (const f of FLAGS) if (flags.includes(f)) stats.flags[f] += 1
@@ -125,6 +137,7 @@ export const delegationStats = (records: readonly TurnRecord[]): DelegationStats
       steps: a.steps,
       errors: a.errors,
       flags,
+      ...(judged === undefined ? {} : { outcome: judged.verdict }),
     }
     stats.recent.push(row)
     if (stats.recent.length > RECENT_FLAGGED) stats.recent.shift()

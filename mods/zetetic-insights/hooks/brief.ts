@@ -7,6 +7,7 @@ import type { DelegationStats, FrictionRow, MechanicalShare, ModelFamily, Sessio
 import { delegationStats } from './delegations'
 import { type Friction, recurringOver } from './friction'
 import { familyOf, sessionModels } from './models'
+import { type ProbeInfo, withoutProbes } from './probes'
 
 export const BRIEF_SESSIONS = 10 // source: own choice, the last sessions the mechanical share is measured over; recent habits, enough turns for a share
 export const BRIEF_MAX_LINES = 6 // source: own choice, a system-prompt section the model reads on every request stays short
@@ -58,6 +59,10 @@ export const mechanicalShare = (records: readonly TurnRecord[], sessions: number
   return { sessions: window.sessions, heavyReads, heavySteps, unmeasured, share: heavySteps === 0 ? null : heavyReads / heavySteps }
 }
 
+// The delegations the outcome events judged, only when some are (merged with an approving review, reverted, closed): "; judged by events: 2 achieved, 1 not".
+const judgedText = (d: DelegationStats): string =>
+  d.outcomes.achieved + d.outcomes['not-achieved'] === 0 ? '' : `; judged by events: ${d.outcomes.achieved} achieved, ${d.outcomes['not-achieved']} not`
+
 const percent = (part: number, whole: number): string => {
   const p = Math.round((100 * part) / whole)
   return p === 0 ? '<1%' : `${p}%`
@@ -79,7 +84,7 @@ const stepsByModel = (models: readonly SessionModels[]): { total: number; line: 
 export const composeBrief = (o: { delegations: DelegationStats; models: readonly SessionModels[]; mechanical: MechanicalShare; frictions?: readonly FrictionRow[] }): string | null => {
   const { delegations: d, mechanical: m } = o
   const top = o.frictions?.[0]
-  const steps = stepsByModel(o.models)
+  const steps = stepsByModel(o.models.filter((m) => !m.probe))
   if (steps.total === 0 && d.total === 0 && m.share === null && top === undefined) return null
   const lines = [`Self-calibration (zetetic-insights ledger, last ${m.sessions} sessions). Measured, not prescribed:`]
   if (m.share !== null)
@@ -88,7 +93,7 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
     )
   if (d.total > 0)
     lines.push(
-      `- delegations: ${d.total} (${d.designed} with a DESIGN block); overkill ${d.flags.overkill}, underpowered ${d.flags.underpowered}, undesigned ${d.flags.undesigned}, rerouted ${d.flags.rerouted}.`,
+      `- delegations: ${d.total} (${d.designed} with a DESIGN block); overkill ${d.flags.overkill}, underpowered ${d.flags.underpowered}, undesigned ${d.flags.undesigned}, rerouted ${d.flags.rerouted}${judgedText(d)}.`,
     )
   const last = d.recent[d.recent.length - 1]
   if (last !== undefined)
@@ -105,12 +110,13 @@ export const composeBrief = (o: { delegations: DelegationStats; models: readonly
 // The brief of a ledger: every line is computed from the same BRIEF_SESSIONS newest sessions, so the
 // header's count is true of all of them, the frictions' too (`frictions`: what was measured, by session).
 // The panel's own delegations and models stay on the whole ledger.
-export const briefOf = (records: readonly TurnRecord[], frictions: ReadonlyMap<string, readonly Friction[]> = new Map()): string | null => {
-  const w = windowOf(records)
+export const briefOf = (records: readonly TurnRecord[], frictions: ReadonlyMap<string, readonly Friction[]> = new Map(), probes: ReadonlyMap<string, ProbeInfo> = new Map()): string | null => {
+  // Probe sessions (hooks/probes.ts) are not the model's habits: they take no slot of the window.
+  const w = windowOf(withoutProbes(records, probes))
 
   return composeBrief({
     delegations: delegationStats(w.records),
-    models: sessionModels(w.records),
+    models: sessionModels(w.records, probes),
     mechanical: mechanicalShare(w.records),
     frictions: recurringOver(frictions, windowSessions(w.records)),
   })
