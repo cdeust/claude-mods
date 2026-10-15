@@ -74,7 +74,13 @@ export const segmentsOf = (command: string): Segment[] => {
   return out
 }
 
-const PREFIX = String.raw`(?:^|[\s(])(?:env\s+)?(?:\w+=\S*\s+)*`
+// A verb counts only in command position: the start of a segment (segmentsOf has already split at `&&`,
+// `||`, `;`, `|`, newline and `&`) or just after a `$(` anywhere in it (segmentsOf does not enter command
+// substitutions), then any of `(`, `{`, `!`, a control keyword (`then`, `do`, ...), a `sudo`/`time`/
+// `command`/`nohup`/`exec`/`env` prefix with its flags, or `VAR=x`. The arguments of echo, printf, cat,
+// grep or a commit message are never in that position. Known limit: a `$(` inside single quotes, which
+// the shell does not run, is still read as a command position.
+const PREFIX = String.raw`(?:^|\$\(\s*)(?:[({!]\s*|(?:then|do|else|elif|if|while|until)\s+|(?:sudo|time|command|nohup|exec|env)\s+(?:-\S+\s+)*|\w+=\S*\s+)*`
 const git = (verb: string) => new RegExp(`${PREFIX}git(?:\\s+-C\\s+\\S+|\\s+-c\\s+\\S+)*\\s+${verb}\\b`)
 const gh = (verb: string) => new RegExp(`${PREFIX}gh\\s+pr\\s+${verb}\\b`)
 export const RE = {

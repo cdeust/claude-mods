@@ -190,3 +190,14 @@ test('two sessions: a PR closed in a later session makes the first session not a
   const s2 = record('s2', [ev('pr-close', { pr: 'o/r#24' })])
   expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 0, 'not-achieved': 1, unclear: 0 })
 })
+
+test('two sessions: the foreign merge of PR #25 is not credited to PR #24 of a session that names both', () => {
+  const s1 = record('s1', [commit('aaaaaaa1', 'A'), create('o/r#24', 'A'), verdict('o/r#24', 'approve', 'aaaaaaa1'), create('o/r#25', 'A')], [agent('A')])
+  const s2 = record('s2', [merge('o/r#25')])
+  const joined = eventsBySession([s1, s2]).get('s1')!
+  expect(joined.foreign.map((e) => e.pr)).toEqual(['o/r#25'])
+  expect(judge(joined.own, 'A', joined.foreign)).toMatchObject({ verdict: 'unclear', reason: 'pending' })
+  expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 0, 'not-achieved': 0, unclear: 1 })
+  const s3 = record('s3', [merge('o/r#24')])
+  expect(delegationStats([s1, s3]).outcomes).toEqual({ achieved: 1, 'not-achieved': 0, unclear: 0 })
+})

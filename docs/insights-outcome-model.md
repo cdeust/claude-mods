@@ -41,6 +41,8 @@ status is attributed, the pull request is named (a number, a URL, or `gitOperati
 `$PR` is not), the merge is not queued (`--auto` merges later, if at all), and the result text, when
 there is any, says "Merged pull request" or "was already merged".
 
+Command position (`chain.ts` `PREFIX`). A `git` or `gh pr` verb is read only as a command word: at the start of a simple command, after `$(`, `(`, `{`, `!`, `then`/`do`/`else`, a `sudo`/`time`/`env` prefix or `VAR=x`. The arguments of `echo`, `printf`, `cat`, `grep` or a commit message never count: `echo gh pr merge 24` is no merge.
+
 Attribution: the engine's `agentId` on the `tool.call` event. Absent means the main thread. A review
 verdict or a merge is usually the main thread's; it is joined to the delegation by PR number, or by
 the head sha the verdict cites matching a commit of the delegation.
