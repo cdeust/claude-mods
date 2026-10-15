@@ -6,7 +6,7 @@
 import type { AgentRecord, Design, DelegationFlag, DelegationRow, DelegationStats, OutcomeEvent, TurnRecord } from '../types'
 import { RAISE_RATE } from './learn'
 import { familyOf } from './models'
-import { eventsOf, judge } from './outcome'
+import { eventsBySession, judge } from './outcome'
 
 export const DESIGN_FIELD_CAP = 80 // source: own choice, characters kept of each design field; the block states a reason, not an essay
 export const OVERKILL_STEPS = 5 // source: own choice, an opus or fable agent that took at most this many steps did a small job
@@ -112,15 +112,14 @@ const delegationsOf = (records: readonly TurnRecord[]): Delegation[] => {
 // the last RECENT_FLAGGED flagged rows, newest last. O(agents).
 export const delegationStats = (records: readonly TurnRecord[]): DelegationStats => {
   const stats = emptyDelegations()
-  const bySession = new Map<string, TurnRecord[]>()
-  for (const r of records) bySession.set(r.session, [...(bySession.get(r.session) ?? []), r])
-  const events = new Map<string, OutcomeEvent[]>([...bySession].map(([s, rs]) => [s, eventsOf(rs)]))
+  const events = eventsBySession(records)
   for (const { agent: a, at, session } of delegationsOf(records)) {
     if (a.design === undefined) continue
     stats.total += 1
     if (a.design !== null) stats.designed += 1
     // The outcome the session's events show for this delegation; a legacy record (no agentId) has none to join.
-    const judged = a.agentId === undefined ? undefined : judge(events.get(session) ?? [], a.agentId)
+    const joined = events.get(session)
+    const judged = a.agentId === undefined ? undefined : judge(joined?.own ?? [], a.agentId, joined?.foreign)
     if (judged !== undefined) {
       stats.outcomes[judged.verdict] += 1
       stats.rounds += judged.rounds

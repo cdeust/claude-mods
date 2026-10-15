@@ -1,7 +1,8 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { LiveFriction, OutcomeEvent } from '../types'
-import { type BashResult, addFriction, bodyFileOf, eventsOfBash, foldEvent, liveFrictionOf } from './events'
+import { type BashResult, addFriction, eventsOfBash, foldEvent, liveFrictionOf } from './events'
+import { bodyFileOf } from './review'
 import { isUnderTemp } from './probes'
 import { expandHome } from './shared'
 
@@ -49,7 +50,7 @@ export async function observeCall($: EngineInterface, e: { tool: unknown; agentI
   if (f !== null) frictions = addFriction(frictions, f)
   if (e.tool !== 'Bash' || typeof e.command !== 'string') return
   const file = bodyFileOf(e.command)
-  const bodyFile = file === null || ran.isError === true || ran.deny !== undefined ? undefined : await readBody($, file)
+  const bodyFile = file === null || ran.isError === true || ran.deny !== undefined ? undefined : file.path === null ? null : await readBody($, file.path)
   const at = await $.clock.now()
   for (const ev of eventsOfBash({ command: e.command, at, ...(e.agentId === undefined ? {} : { agent: e.agentId }), res: ran, ...(bodyFile === undefined ? {} : { bodyFile }) }))
     events = foldEvent(events, ev)

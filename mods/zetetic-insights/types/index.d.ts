@@ -38,7 +38,7 @@ export type DelegationFlag = 'overkill' | 'underpowered' | 'undesigned' | 'rerou
 // What came of a delegation or a session, judged from the outcome events (hooks/outcome.ts), the model in
 // docs/insights-outcome-model.md. `unclear`: the events do not say.
 export type Verdict = 'achieved' | 'not-achieved' | 'unclear'
-export type OutcomeReason = 'merged-approved' | 'reverted' | 'closed' | 'changes-requested' | 'tests-red' | 'verified' | 'approve-stale' | 'no-signal' | 'facets'
+export type OutcomeReason = 'merged-approved' | 'reverted' | 'closed' | 'merged-unapproved' | 'pending' | 'tests-red' | 'verified' | 'approve-stale' | 'no-signal' | 'facets'
 export type OutcomeJudgement = {
   verdict: Verdict
   reason: OutcomeReason

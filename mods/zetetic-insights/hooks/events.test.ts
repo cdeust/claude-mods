@@ -1,7 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { OutcomeEvent } from '../types'
-import { MAX_EVENTS, type BashResult, addFriction, bodyFileOf, eventsOfBash, exitOk, foldEvent, liveFrictionOf, samePr, segmentsOf, testLabel, verdictOf } from './events'
+import { segmentsOf } from './chain'
+import { MAX_EVENTS, type BashResult, addFriction, eventsOfBash, exitOk, foldEvent, liveFrictionOf, samePr, testLabel } from './events'
+import { bodyFileOf, verdictOf } from './review'
 
 const ok: BashResult = { text: '', result: { stdout: '', stderr: '' } }
 const failed = (code: number): BashResult => ({ isError: true, text: `Exit code ${code}\nboom` })
@@ -12,8 +14,8 @@ test('a chain is split at its operators, not inside quotes or heredocs', () => {
   const heredoc = 'git commit -m "$(cat <<\'EOF\'\nfix: x && y\ngit push\nEOF\n)" && git push'
   expect(segmentsOf(heredoc).map((s) => s.text.split('\n')[0])).toEqual(['git commit -m "$(cat <<\'EOF\'', 'git push'])
   expect(segmentsOf('claude plugin test 2>&1 | tail -5')).toEqual([
-    { text: 'claude plugin test 2>&1', piped: true },
-    { text: 'tail -5', piped: false },
+    { text: 'claude plugin test 2>&1', piped: true, after: '|' },
+    { text: 'tail -5', piped: false, after: '' },
   ])
 })
 
@@ -88,7 +90,7 @@ test('a pull request is created, merged, closed; its number from the URL, the ar
 
 test('a verdict is a gh pr comment whose body opens ZETETIC-REVIEW: APPROVE or REQUEST-CHANGES, the head sha on the next line', () => {
   expect(verdictOf('ZETETIC-REVIEW: APPROVE\n705020b1\nlooks fine')).toEqual({ verdict: 'approve', head: '705020b1' })
-  expect(verdictOf('"ZETETIC-REVIEW: REQUEST-CHANGES\n\nhead: ABC1234567"')).toEqual({ verdict: 'changes', head: 'abc1234567' })
+  expect(verdictOf('  \nZETETIC-REVIEW: REQUEST-CHANGES\n\nhead: ABC1234567')).toEqual({ verdict: 'changes', head: 'abc1234567' })
   expect(verdictOf('ZETETIC-REVIEW: APPROVE')).toEqual({ verdict: 'approve' })
   expect(verdictOf('thanks, merging')).toBeNull()
   const heredoc = "gh pr comment 23 --body \"$(cat <<'EOF'\nZETETIC-REVIEW: APPROVE\n705020b1\nbody\nEOF\n)\""
@@ -99,7 +101,7 @@ test('a verdict is a gh pr comment whose body opens ZETETIC-REVIEW: APPROVE or R
 
 test('a review body kept in a file is read by the register: its text decides, an unreadable file is an unknown verdict', () => {
   const cmd = 'gh pr comment 23 --body-file /tmp/review.md'
-  expect(bodyFileOf(cmd)).toBe('/tmp/review.md')
+  expect(bodyFileOf(cmd)).toEqual({ path: '/tmp/review.md' })
   expect(bodyFileOf('gh pr comment 23 -F -')).toBeNull()
   expect(bodyFileOf('git commit -F msg.txt')).toBeNull()
   expect(run(cmd, ok, { bodyFile: 'ZETETIC-REVIEW: APPROVE\n705020b1\n' })[0]).toMatchObject({ verdict: 'approve', head: '705020b1' })
@@ -133,4 +135,62 @@ test('a live friction is a refusal or a closed-rule tool error; a Bash exit or a
   let list = addFriction([], masked!)
   list = addFriction(list, masked!)
   expect(list).toEqual([{ ...masked!, count: 2 }])
+})
+
+test('a merge counts only when its exit status is the call and the result does not contradict it', () => {
+  const merged = (command: string, res: BashResult = ok) => run(command, res)[0]
+  expect(merged('gh pr merge 24 --squash')).toMatchObject({ kind: 'pr-merge', pr: '#24', ok: true })
+  expect(merged('gh pr merge 24 --squash || true', { text: 'refused by hook' })).toMatchObject({ ok: null })
+  expect(merged('gh pr merge 24 | tee log', { text: 'refused' })).toMatchObject({ ok: null })
+  expect(merged('gh pr merge 24 --auto --squash')).toMatchObject({ ok: null })
+  expect(merged('gh pr merge $PR --squash')).toMatchObject({ ok: null })
+  expect(merged('gh pr merge 24; echo done')).toMatchObject({ ok: null })
+  expect(merged('gh pr merge 24', { text: '✓ Squashed and merged pull request #24 (t)' })).toMatchObject({ ok: true })
+  expect(merged('gh pr merge 24', { text: 'Pull request #24 was already merged' })).toMatchObject({ ok: true })
+  expect(merged('gh pr merge 24', { text: 'Pull request #24 will be merged when checks pass' })).toMatchObject({ ok: null })
+  expect(merged('gh pr merge 24', { result: { gitOperation: { pr: { number: 24, action: 'merged' } } } })).toMatchObject({ ok: true, src: 'both' })
+  expect(merged('gh pr close 24 | tee log')).toMatchObject({ kind: 'pr-close', ok: null })
+})
+
+test('a test run whose exit status cannot be attributed to it is unknown, never ok and never red', () => {
+  const oks = (command: string, res: BashResult = ok) => run(command, res).map((e) => e.ok)
+  expect(oks('pytest || true')).toEqual([null])
+  expect(oks('pytest || true', failed(1))).toEqual([null])
+  expect(oks('pytest && bun test')).toEqual([true, true])
+  expect(oks('pytest && bun test', failed(1))).toEqual([null, null])
+  expect(oks('pytest; echo done')).toEqual([null])
+  expect(oks('echo start; pytest')).toEqual([true])
+  expect(oks('pytest; echo done', failed(1))).toEqual([null])
+  expect(oks('cd d && pytest && echo ok', failed(1))).toEqual([false])
+  expect(oks('cd d && pytest', failed(1))).toEqual([false])
+  expect(oks('pytest & wait')).toEqual([null])
+  expect(oks('make lint || pytest')).toEqual([null])
+  expect(oks('make lint || pytest', failed(1))).toEqual([null])
+})
+
+test('a verdict is the first line of the body: an earlier verdict quoted in prose is none', () => {
+  expect(verdictOf('the old line said\n"ZETETIC-REVIEW: APPROVE"\nbut no')).toBeNull()
+  expect(verdictOf('quoting "ZETETIC-REVIEW: APPROVE\nabc1234"')).toBeNull()
+  expect(verdictOf('\n  ZETETIC-REVIEW: APPROVE\nabc1234')).toEqual({ verdict: 'approve', head: 'abc1234' })
+  expect(run(`gh pr comment 24 -b "the old line said 'ZETETIC-REVIEW: APPROVE' but no"`)).toEqual([])
+  expect(run('gh pr comment 24 -b "ZETETIC-REVIEW: APPROVE\nhead: abc1234"')[0]).toMatchObject({ verdict: 'approve', head: 'abc1234' })
+  const heredoc = "gh pr comment 24 --body-file - <<'EOF'\nZETETIC-REVIEW: REQUEST-CHANGES\nhead: abc1234\nEOF"
+  expect(run(heredoc)[0]).toMatchObject({ verdict: 'changes', head: 'abc1234' })
+  expect(run("gh pr comment 24 --body-file - <<'EOF'\nI said ZETETIC-REVIEW: APPROVE earlier\nEOF")).toEqual([])
+})
+
+test('a body file is found through `cd` and `$(cat file)`; an unresolvable directory is an unreadable file', () => {
+  expect(bodyFileOf('cd /r && gh pr comment 24 -F v.md')).toEqual({ path: '/r/v.md' })
+  expect(bodyFileOf('cd sub && cd deeper && gh pr comment 24 -F v.md')).toEqual({ path: 'sub/deeper/v.md' })
+  expect(bodyFileOf('cd /r && gh pr comment 24 -F /abs/v.md')).toEqual({ path: '/abs/v.md' })
+  expect(bodyFileOf('gh pr comment 24 --body "$(cat v.md)"')).toEqual({ path: 'v.md' })
+  expect(bodyFileOf('cd "$DIR" && gh pr comment 24 -F v.md')).toEqual({ path: null })
+  expect(run('gh pr comment 24 --body "$(cat v.md)"', ok, { bodyFile: 'ZETETIC-REVIEW: APPROVE\nabc1234' })[0]).toMatchObject({ verdict: 'approve' })
+})
+
+test('a pull request key longer than GitHub allows names no pull request', () => {
+  const long = 'a'.repeat(200)
+  expect(run(`gh pr merge https://github.com/o/${long}/pull/5`)[0]).toMatchObject({ kind: 'pr-merge', ok: null })
+  expect(run(`gh pr merge https://github.com/o/${long}/pull/5`)[0]?.pr).toBeUndefined()
+  expect(run('gh pr merge 5 --repo o/r')[0]).toMatchObject({ pr: 'o/r#5', ok: true })
 })

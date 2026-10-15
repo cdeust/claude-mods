@@ -7,93 +7,13 @@
 // docs/insights-outcome-model.md.
 
 import type { EventSource, FrictionKind, LiveFriction, OutcomeEvent } from '../types'
+import { RE, type Segment, attributed, hasPipefail, segmentsOf } from './chain'
 import { signatureOf, toolErrorKind } from './friction'
+import { inlineBodyOf, verdictOf } from './review'
 
 export const MAX_EVENTS = 40 // source: own choice, events one turn record keeps (~120 bytes each, 5 KB): a turn that ran a test loop folds repeats (foldEvent); the rest are counted in eventsDropped
 export const MAX_LIVE_FRICTIONS = 10 // source: own choice, friction rows of one turn record, like FRICTION_TOP/3 of a session's rows
-const MAX_SEGMENT = 4000 // source: own choice, characters of a command classified; a longer one is a script written inline, and its first lines name its runner
 const LABEL_CAP = 40 // source: own choice, characters of a test label
-
-type Segment = { text: string; piped: boolean }
-
-// The command's simple commands in order. Splits at `&&`, `||`, `;`, newline, `&` and `|` outside
-// quotes and heredocs; `piped` marks a segment whose output goes into a pipe (its exit status is then
-// not the command's, unless pipefail is set). `$( )` and `( )` are not entered.
-type Op = { len: number; piped: boolean }
-
-const operatorAt = (c: string, i: number): Op | null => {
-  const ch = c[i]
-  const next = c[i + 1]
-  if ((ch === '&' && next === '&') || (ch === '|' && next === '|')) return { len: 2, piped: false }
-  if (ch === '|') return { len: 1, piped: true }
-  if (ch === '&' && (c[i - 1] === '>' || next === '>')) return null // a redirection (2>&1, &>), not a background operator
-  return ch === ';' || ch === '\n' || ch === '&' ? { len: 1, piped: false } : null
-}
-
-// The index just past the quoted chunk that opens at i (the whole rest of the command when unterminated).
-const quotedEnd = (c: string, i: number): number => {
-  const quote = c[i]
-  let j = i + 1
-  while (j < c.length && c[j] !== quote) j += quote === '"' && c[j] === '\\' ? 2 : 1
-  return Math.min(j + 1, c.length)
-}
-
-// The index just past a heredoc that opens at i (`<<'EOF'`), body included: it runs from the next line
-// to the line that is exactly the delimiter. null when none opens at i.
-const heredocEnd = (c: string, i: number): number | null => {
-  const open = /^<<-?\s*(["']?)([A-Za-z_][\w-]*)\1/.exec(c.slice(i))
-  if (open === null) return null
-  let pos = c.indexOf('\n', i)
-  while (pos >= 0 && pos < c.length) {
-    const next = c.indexOf('\n', pos + 1)
-    const stop = next < 0 ? c.length : next
-    if (c.slice(pos + 1, stop).trim() === open[2]) return stop
-    pos = next
-  }
-  return c.length
-}
-
-export const segmentsOf = (command: string): Segment[] => {
-  const out: Segment[] = []
-  let cur = ''
-  const flush = (piped: boolean) => {
-    const text = cur.trim()
-    if (text !== '') out.push({ text: text.slice(0, MAX_SEGMENT), piped })
-    cur = ''
-  }
-  let i = 0
-  while (i < command.length) {
-    const c = command[i]!
-    const end = c === '"' || c === "'" ? quotedEnd(command, i) : c === '\\' ? i + 2 : heredocEnd(command, i)
-    const op = end === null ? operatorAt(command, i) : null
-    if (end !== null) {
-      cur += command.slice(i, end)
-      i = end
-    } else if (op !== null) {
-      flush(op.piped)
-      i += op.len
-    } else {
-      cur += c
-      i++
-    }
-  }
-  flush(false)
-  return out
-}
-
-const PREFIX = String.raw`(?:^|[\s(])(?:env\s+)?(?:\w+=\S*\s+)*`
-const git = (verb: string) => new RegExp(`${PREFIX}git(?:\\s+-C\\s+\\S+|\\s+-c\\s+\\S+)*\\s+${verb}\\b`)
-const gh = (verb: string) => new RegExp(`${PREFIX}gh\\s+pr\\s+${verb}\\b`)
-const RE = {
-  commit: git('commit'),
-  revert: git('revert'),
-  reset: git('reset'),
-  push: git('push'),
-  create: gh('create'),
-  merge: gh('merge'),
-  close: gh('close'),
-  comment: gh('comment'),
-}
 
 // source: the test and gate commands this repo's CI and README "Developing" name, plus the other
 // runners the owner's projects use (pytest, bun, npm/pnpm/yarn, node --test, cargo, go, swift). A
@@ -193,25 +113,6 @@ const positional = (segment: string, verb: string): string | undefined => {
   return undefined
 }
 
-// The review verdict a `gh pr comment` body opens with (the reviewer protocol): ZETETIC-REVIEW:
-// APPROVE or REQUEST-CHANGES at the start of a line, the head sha cited on the next non-empty line.
-export const verdictOf = (body: string): { verdict: 'approve' | 'changes'; head?: string } | null => {
-  const m = /(?:^|[\n"'])[ \t]*ZETETIC-REVIEW:[ \t]*(APPROVE|REQUEST-CHANGES)\b[^\n]*(?:\n|$)((?:[ \t]*\n)*[^\n]*)/.exec(body)
-  if (m === null) return null
-  const head = new RegExp(`^[ \\t]*(?:head|sha|commit)?[: ]*(${SHA})\\b`, 'i').exec((m[2] ?? '').trimStart())?.[1]
-  return { verdict: m[1] === 'APPROVE' ? 'approve' : 'changes', ...(head === undefined ? {} : { head: head.toLowerCase() }) }
-}
-
-// A review body kept in a file: `gh pr comment ... --body-file <path>` or `-F <path>` (not `-`, which
-// reads the heredoc already in the command). The register reads it; a path it cannot read is a verdict
-// of 'unknown'.
-export const bodyFileOf = (command: string): string | null => {
-  if (!RE.comment.test(command)) return null
-  const m = /(?:--body-file|-F)[ =]("[^"]+"|'[^']+'|\S+)/.exec(command)
-  const path = m?.[1]?.replace(/^["']|["']$/g, '')
-  return path === undefined || path === '-' ? null : path
-}
-
 export type BashCall = {
   command: string
   at: number
@@ -229,17 +130,23 @@ const resetBack = (segment: string): number | undefined => {
 
 const shasIn = (segment: string): string[] => (segment.match(new RegExp(`(?<![\\w-])${SHA}(?![\\w-])`, 'g')) ?? []).map((s) => s.toLowerCase())
 
-type Ctx = { base: { at: number; agent?: string }; op: GitOperation; text: string; call: BashCall }
+// `segs`: the command's simple commands; `runners`: how many of them are test runs (decides whether a failure is attributable).
+type Ctx = { base: { at: number; agent?: string }; op: GitOperation; text: string; call: BashCall; segs: Segment[]; runners: number }
 
 const srcOf = (fromCommand: boolean, fromOp: boolean): EventSource => (fromCommand && fromOp ? 'both' : fromOp ? 'git-operation' : 'command')
 
-// A test or gate run of one segment, with its exit status (null when a pipe hides it).
-const testEvent = (seg: Segment, label: string, ctx: Ctx): OutcomeEvent => {
-  const piped = seg.piped && !/\bpipefail\b/.test(ctx.call.command)
-  return { ...ctx.base, kind: 'test', src: 'command', label, ok: piped ? null : exitOk(ctx.call.res) }
-}
+// The exit status of segment `idx` when the call's single status can be attributed to it (chain.ts attributed).
+const statusOf = (idx: number, ctx: Ctx): boolean | null => attributed(ctx.segs, idx, exitOk(ctx.call.res), ctx.runners, hasPipefail(ctx.call.command))
 
-const prOf = (arg: { repo: string; n: string } | null, segment: string): { pr?: string } => (arg === null ? {} : { pr: prKey(arg.repo || repoFlag(segment), arg.n) })
+// A test or gate run of one segment, with its exit status (null when not attributable: a pipe, `||`, `;`, several runners).
+const testEvent = (idx: number, label: string, ctx: Ctx): OutcomeEvent => ({ ...ctx.base, kind: 'test', src: 'command', label, ok: statusOf(idx, ctx) })
+
+export const MAX_PR_KEY = 151 // source: GitHub limits, 39 characters of owner, 100 of repository, '/', '#', and up to 10 digits of number; a longer key names no pull request
+
+const prOf = (arg: { repo: string; n: string } | null, segment: string): { pr?: string } => {
+  const pr = arg === null ? undefined : prKey(arg.repo || repoFlag(segment), arg.n)
+  return pr === undefined || pr.length > MAX_PR_KEY ? {} : { pr }
+}
 
 const createEvent = (s: string, ctx: Ctx): OutcomeEvent => {
   const { op, text } = ctx
@@ -247,16 +154,28 @@ const createEvent = (s: string, ctx: Ctx): OutcomeEvent => {
   return { ...ctx.base, kind: 'pr-create', src: srcOf(true, op.pr?.action === 'created'), ...prOf(found, s), ok: true }
 }
 
-const mergeOrCloseEvent = (s: string, ctx: Ctx): OutcomeEvent => {
+// source: gh's own confirmation of a merge ("Merged pull request #N", "Squashed and merged pull request
+// #N", "Pull request #N was already merged"), the text a merge prints when it has merged.
+const MERGED_TEXT = /\b(?:merged pull request|was already merged)\b/i
+
+// A merge or close counts (ok true) when the call proves it: gitOperation says so, or the segment's
+// exit status is the call's, the pull request is named, the merge is not queued (`--auto`), and the
+// result text, when there is any, confirms a merge. Anything else is ok null: not proven, not refuted.
+const mergeOrCloseEvent = (idx: number, s: string, ctx: Ctx): OutcomeEvent => {
   const merging = RE.merge.test(s)
   const arg = prNumber(positional(s, merging ? 'merge' : 'close')) ?? (ctx.op.pr?.number === undefined ? null : { repo: '', n: String(ctx.op.pr.number) })
   const agreed = ctx.op.pr?.action === (merging ? 'merged' : 'closed')
-  return { ...ctx.base, kind: merging ? 'pr-merge' : 'pr-close', src: srcOf(true, agreed), ...prOf(arg, s), ok: true }
+  const pr = prOf(arg, s)
+  const queued = merging && /--(?:auto|disable-auto)\b/.test(s)
+  const clean = statusOf(idx, ctx) === true && pr.pr !== undefined && !queued
+  const text = ctx.text.trim()
+  const ok = agreed || (clean && (!merging || text === '' || MERGED_TEXT.test(text))) ? true : null
+  return { ...ctx.base, kind: merging ? 'pr-merge' : 'pr-close', src: srcOf(true, agreed), ...pr, ok }
 }
 
 // A review verdict, from the comment body: inline in the command, or the file the register read.
 const verdictEvent = (s: string, ctx: Ctx): OutcomeEvent[] => {
-  const body = ctx.call.bodyFile !== undefined ? ctx.call.bodyFile : s
+  const body = ctx.call.bodyFile !== undefined ? ctx.call.bodyFile : inlineBodyOf(s)
   const pr = prOf(prNumber(positional(s, 'comment')), s)
   const v = body === null ? null : verdictOf(body)
   if (v !== null) return [{ ...ctx.base, kind: 'verdict', src: srcOf(true, ctx.op.pr?.action === 'commented'), ...pr, verdict: v.verdict, ...(v.head === undefined ? {} : { head: v.head }), ok: true }]
@@ -283,29 +202,33 @@ const commitEvent = (s: string, ctx: Ctx): OutcomeEvent => {
 }
 
 // The state-changing events of one segment (a call that errored claims none of them).
-const stateEvents = (s: string, ctx: Ctx): OutcomeEvent[] => {
+const stateEvents = (idx: number, s: string, ctx: Ctx): OutcomeEvent[] => {
   if (RE.commit.test(s)) return [commitEvent(s, ctx)]
   if (RE.revert.test(s)) return revertEvents(s, ctx)
   if (RE.reset.test(s)) return resetEvent(s, ctx)
   if (RE.push.test(s)) return [{ ...ctx.base, kind: 'push', src: srcOf(true, ctx.op.push !== undefined), ok: true }]
   if (RE.create.test(s)) return [createEvent(s, ctx)]
-  if (RE.merge.test(s) || RE.close.test(s)) return [mergeOrCloseEvent(s, ctx)]
+  if (RE.merge.test(s) || RE.close.test(s)) return [mergeOrCloseEvent(idx, s, ctx)]
   return RE.comment.test(s) ? verdictEvent(s, ctx) : []
 }
 
+const runnerLabel = (text: string): string | null => (RE.comment.test(text) || RE.commit.test(text) ? null : testLabel(text))
+
 // The events one Bash call shows, in command order. A call that errored shows only its test runs
-// (their exit status is the point) and the git operations `gitOperation` confirms: which segment of a
-// failed chain failed is not readable, so no other state change is claimed.
+// (their exit status is the point) and the version-control operations `gitOperation` confirms: which
+// segment of a failed chain failed is not readable, so no other state change is claimed.
 export const eventsOfBash = (call: BashCall): OutcomeEvent[] => {
   const { command, at, res } = call
   if (typeof command !== 'string' || res.deny !== undefined) return []
-  const ctx: Ctx = { base: { at, ...(call.agent === undefined ? {} : { agent: call.agent }) }, op: gitOperationOf(res), text: resultText(res), call }
+  const segs = segmentsOf(command)
+  const runners = segs.filter((g) => runnerLabel(g.text) !== null).length
+  const ctx: Ctx = { base: { at, ...(call.agent === undefined ? {} : { agent: call.agent }) }, op: gitOperationOf(res), text: resultText(res), call, segs, runners }
   const out: OutcomeEvent[] = []
-  for (const seg of segmentsOf(command)) {
-    const label = testLabel(seg.text)
-    if (label !== null && !RE.comment.test(seg.text) && !RE.commit.test(seg.text)) out.push(testEvent(seg, label, ctx))
-    else if (res.isError !== true) out.push(...stateEvents(seg.text, ctx))
-  }
+  segs.forEach((seg, idx) => {
+    const label = runnerLabel(seg.text)
+    if (label !== null) out.push(testEvent(idx, label, ctx))
+    else if (res.isError !== true) out.push(...stateEvents(idx, seg.text, ctx))
+  })
   // A call whose segments showed no commit but whose result says one happened (a wrapper script).
   const sha = ctx.op.commit?.sha
   if (sha !== undefined && !out.some((e) => e.kind === 'commit')) out.push({ ...ctx.base, kind: 'commit', src: 'git-operation', sha: sha.toLowerCase(), ok: true })

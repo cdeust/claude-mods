@@ -21,8 +21,25 @@ ledger (`LEDGER_BYTES`, serialized-size trim) covers them with no new key.
 
 `commit` (sha, amended or not) · `revert` (sha or HEAD) · `reset` (`HEAD~n`/`HEAD^` reaches back n) ·
 `test` (runner label, `ok` true / false / null) · `push` · `pr-create` · `pr-merge` · `pr-close` ·
-`verdict` (a `gh pr comment` whose body opens `ZETETIC-REVIEW: APPROVE|REQUEST-CHANGES`, the head sha
-on the next line; a body in `--body-file` is read, an unreadable one is `unknown`).
+`verdict` (a `gh pr comment` whose body's FIRST line is `ZETETIC-REVIEW: APPROVE|REQUEST-CHANGES`, the
+head sha on the next line; a verdict quoted deeper in a body is none. The body is the `--body` value,
+the heredoc `--body-file -` reads, or the file `--body-file`/`-F`/`$(cat file)` names, found through the
+`cd dir &&` before the comment; a body in a variable, or a file that cannot be read or located, is
+`unknown`).
+
+Rule of the model: an event states a fact only when its source proves it. When the call's exit status
+cannot be attributed to the command (below), the event's `ok` is `null` (unknown), never true and never
+false, and the judgement ignores it.
+
+Attribution of the exit status (`chain.ts` `attributed`). A Bash call has one status, the last
+command's. It is the status of a test run or a merge only when everything from that command to the end
+of the line is joined by `&&` (or `|` under `pipefail`), and no `||` is anywhere in the line. A failure
+is the status of a test run only when it is the one runner of the line: `pytest && bun test` that
+exits 1 says neither is red. `pytest || true`, `pytest; echo done`, `pytest | tee log`, `... & wait`
+say nothing. A `gh pr merge` counts (`ok: true`) when `gitOperation.action` is `merged`, or when its
+status is attributed, the pull request is named (a number, a URL, or `gitOperation`; a variable such as
+`$PR` is not), the merge is not queued (`--auto` merges later, if at all), and the result text, when
+there is any, says "Merged pull request" or "was already merged".
 
 Attribution: the engine's `agentId` on the `tool.call` event. Absent means the main thread. A review
 verdict or a merge is usually the main thread's; it is joined to the delegation by PR number, or by
@@ -36,24 +53,36 @@ What is not seen, by construction:
   `gitOperation` confirms it.
 - What a `git reset` with a target other than `HEAD~n` / `HEAD^` discarded. `HEAD~n` marks the n
   latest live commits `possiblyDiscarded`: reported, never counted as reverted.
-- A PR number is joined within one session. A merge in another session is not joined.
+- A PR is joined across sessions only by `owner/repo#N`: a call that named the PR by its number alone
+  is read as the repository the same session named it with, when that is one repository; otherwise it
+  joins nothing outside its session. The join covers the ledger the store keeps (the trim drops the
+  oldest turns, so an old session whose later events were dropped is judged on what is left).
+- A `--body-file` path is resolved through `cd dir &&` in the command; any other change of directory
+  (a `cd` into a variable, a subshell) makes the file unlocatable: `unknown`.
 - Hook timeouts: the engine raises no event for a hook that overran; they cannot be counted. A hook's
   refusal of a tool call is seen (it is a `deny`).
 
 ## 3. Judgement of a delegation (`hooks/outcome.ts` `judge(events, agentId)`)
 
-Evaluated at read time over the whole session, in this order; the first that holds decides.
+Evaluated at read time over the session and the other sessions' reviews, merges and closes of its pull requests, in this order; the first that holds decides.
 
 1. A commit of the delegation was reverted (`git revert <sha>`; `HEAD` resolves to the latest commit before it): **not achieved** (`reverted`).
 2. A PR of the delegation is merged, its last verdict is APPROVE, no commit of the delegation is newer than that verdict, and the cited head matches a live commit of the delegation: **achieved** (`merged-approved`).
 3. Merged with an APPROVE that is stale (a newer commit, or another head): **unclear** (`approve-stale`).
 4. A PR of the delegation was closed unmerged: **not achieved** (`closed`).
-5. The last verdict on an unmerged PR is REQUEST-CHANGES: **not achieved** (`changes-requested`).
-6. The final run of a test label failed and the delegation committed: **not achieved** (`tests-red`).
-7. Otherwise **unclear** (`no-signal`).
+5. A PR of the delegation was merged and its last verdict is REQUEST-CHANGES, with no APPROVE after it: **unclear** (`merged-unapproved`). It merged, so it is not changes-requested; it was never approved, so it is not achieved.
+6. A PR of the delegation is neither merged nor closed (open at the end of the ledger): **unclear** (`pending`). It is judged again when a later event, in this session or another, arrives: the judgement is made at read time.
+7. The final run of a test label failed and the delegation committed: **not achieved** (`tests-red`).
+8. Otherwise **unclear** (`no-signal`).
+
+A merge or close counts only when the call proved it (`ok` true); an unproven one is as if absent.
+Example: session 1 creates the PR and gets REQUEST-CHANGES (pending, unclear); session 2 fixes,
+is approved and merges. Session 1's delegation becomes `approve-stale` (merged on another head:
+unclear), session 2's `merged-approved`. Session 1 is never scored not achieved by a review that the
+next session answered.
 
 A PR belongs to the delegation if it created it, or a verdict on it cites the delegation's commit.
-`rounds` counts REQUEST-CHANGES verdicts on those PRs whatever the final state: a delegation that
+`rounds` counts REQUEST-CHANGES verdicts on those PRs (this session's and the other sessions' on the same `owner/repo#N`) whatever the final state: a delegation that
 needed two rounds and then merged is achieved with `rounds: 2`.
 
 ## 4. Judgement of a session

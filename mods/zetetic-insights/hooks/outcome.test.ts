@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { OutcomeEvent, TurnRecord } from '../types'
 import { delegationStats } from './delegations'
-import { combineOutcomes, eventsOf, judge } from './outcome'
+import { combineOutcomes, eventsBySession, eventsOf, judge } from './outcome'
 
 let clock = 0
 const ev = (kind: OutcomeEvent['kind'], rest: Partial<OutcomeEvent> = {}): OutcomeEvent => ({ at: ++clock, kind, src: 'command', ok: true, ...rest })
@@ -36,8 +36,7 @@ test('an APPROVE on an older head is stale: merged, but not credited', () => {
   expect(judge(events, 'A')).toMatchObject({ verdict: 'unclear', reason: 'approve-stale' })
 })
 
-test('not achieved: a REQUEST-CHANGES with no merge, a closed PR, a reverted commit', () => {
-  expect(judge([commit('aaaaaaa1', 'A'), create('#1', 'A'), verdict('#1', 'changes')], 'A')).toMatchObject({ verdict: 'not-achieved', reason: 'changes-requested', rounds: 1 })
+test('not achieved: a closed PR, a reverted commit', () => {
   expect(judge([commit('aaaaaaa1', 'A'), create('#1', 'A'), ev('pr-close', { pr: '#1' })], 'A')).toMatchObject({ verdict: 'not-achieved', reason: 'closed' })
   const reverted = [commit('aaaaaaa1', 'A'), create('#1', 'A'), verdict('#1', 'approve', 'aaaaaaa1'), merge('#1'), ev('revert', { sha: 'aaaaaaa' })]
   expect(judge(reverted, 'A')).toMatchObject({ verdict: 'not-achieved', reason: 'reverted', reverted: 1 })
@@ -127,4 +126,67 @@ test('a pull request named in full by one call and by number by another is one P
   const events = [commit('aaaaaaa1', 'A'), create('o/r#24', 'A'), verdict('#24', 'changes', 'aaaaaaa1'), commit('bbbbbbb2', 'A'), verdict('#24', 'approve', 'bbbbbbb2'), merge('#24')]
   expect(judge(events, 'A')).toMatchObject({ verdict: 'achieved', rounds: 1 })
   expect(judge(events, null)).toMatchObject({ rounds: 1 })
+})
+
+test('a merge after REQUEST-CHANGES with no later APPROVE is unclear: merged, but not reviewed good and not changes-requested', () => {
+  const events = [commit('aaaaaaa1', 'A'), create('o/r#1', 'A'), verdict('o/r#1', 'changes', 'aaaaaaa1'), merge('o/r#1')]
+  expect(judge(events, 'A')).toMatchObject({ verdict: 'unclear', reason: 'merged-unapproved', rounds: 1 })
+  expect(judge(events, null)).toMatchObject({ verdict: 'unclear', reason: 'merged-unapproved' })
+})
+
+test('a merged PR with no verdict is not pending: the events say nothing of its review', () => {
+  expect(judge([commit('aaaaaaa1', 'A'), create('#1', 'A'), merge('#1')], 'A')).toMatchObject({ verdict: 'unclear', reason: 'no-signal' })
+})
+
+test('a merge whose call could not be read (ok null) is no merge', () => {
+  const events = [commit('aaaaaaa1', 'A'), create('#1', 'A'), verdict('#1', 'approve', 'aaaaaaa1'), { ...merge('#1'), ok: null }]
+  expect(judge(events, 'A')).toMatchObject({ verdict: 'unclear', reason: 'pending' })
+})
+
+test('an unmerged PR still open is pending (unclear): REQUEST-CHANGES or no verdict, even with a red run', () => {
+  expect(judge([commit('aaaaaaa1', 'A'), create('#1', 'A'), verdict('#1', 'changes')], 'A')).toMatchObject({ verdict: 'unclear', reason: 'pending', rounds: 1 })
+  expect(judge([commit('aaaaaaa1', 'A'), create('#1', 'A')], 'A')).toMatchObject({ verdict: 'unclear', reason: 'pending' })
+  expect(judge([commit('aaaaaaa1', 'A'), create('#1', 'A'), test_('pytest', false, 'A')], 'A')).toMatchObject({ verdict: 'unclear', reason: 'pending' })
+  expect(judge([commit('aaaaaaa1'), create('#1'), verdict('#1', 'changes')], null)).toMatchObject({ verdict: 'unclear', reason: 'pending' })
+})
+
+const design = { model: 'opus', effort: 'high', shape: null }
+const agent = (agentId: string) => ({ agentId, type: 'engineer', phase: 'implementation' as const, model: 'claude-sonnet-5-5', steps: 9, errors: 0, design })
+
+test('two sessions: changes in the first, fix + APPROVE + merge in the second; the first is not a false negative', () => {
+  const s1 = record('s1', [commit('aaaaaaa1', 'A'), create('o/r#24', 'A'), verdict('o/r#24', 'changes', 'aaaaaaa1')], [agent('A')])
+  const s2 = record('s2', [commit('bbbbbbb2', 'B'), verdict('o/r#24', 'approve', 'bbbbbbb2'), merge('#24')], [agent('B')])
+  expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 1, 'not-achieved': 0, unclear: 1 })
+  const { outcomes } = combineOutcomes([s1, s2], new Map())
+  expect(outcomes.get('s1')).toBeUndefined()
+  expect(outcomes.get('s2')).toBe('achieved')
+  expect(delegationStats([s1]).outcomes).toEqual({ achieved: 0, 'not-achieved': 0, unclear: 1 })
+})
+
+test('two sessions: the same agent PR merged in a later session after an APPROVE of its own head is achieved', () => {
+  const s1 = record('s1', [commit('aaaaaaa1', 'A'), create('o/r#24', 'A'), verdict('o/r#24', 'changes', 'aaaaaaa1'), commit('bbbbbbb2', 'A')], [agent('A')])
+  const s2 = record('s2', [verdict('o/r#24', 'approve', 'bbbbbbb2'), merge('o/r#24')])
+  expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 1, 'not-achieved': 0, unclear: 0 })
+  expect(combineOutcomes([s1, s2], new Map()).outcomes.get('s1')).toBe('achieved')
+})
+
+test('two sessions: a number without a repository joins nothing across sessions; another PR of that number is not this one', () => {
+  const s1 = record('s1', [commit('aaaaaaa1', 'A'), create('o/r#24', 'A'), verdict('o/r#24', 'changes', 'aaaaaaa1')], [agent('A')])
+  const s2 = record('s2', [verdict('#24', 'approve', 'aaaaaaa1'), merge('#24')])
+  expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 0, 'not-achieved': 0, unclear: 1 })
+  expect(judge(eventsOf([s1]), 'A').reason).toBe('pending')
+  expect(combineOutcomes([s1, s2], new Map()).outcomes.get('s1')).toBeUndefined()
+})
+
+test('two sessions: a bare #N in both sessions is not known to be one PR, so nothing joins', () => {
+  const s1 = record('s1', [commit('aaaaaaa1', 'A'), create('#24', 'A'), verdict('#24', 'changes', 'aaaaaaa1')], [agent('A')])
+  const s2 = record('s2', [merge('#24')])
+  expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 0, 'not-achieved': 0, unclear: 1 })
+  expect(judge(eventsBySession([s1, s2]).get('s1')!.own, 'A', eventsBySession([s1, s2]).get('s1')!.foreign).reason).toBe('pending')
+})
+
+test('two sessions: a PR closed in a later session makes the first session not achieved', () => {
+  const s1 = record('s1', [commit('aaaaaaa1', 'A'), create('o/r#24', 'A')], [agent('A')])
+  const s2 = record('s2', [ev('pr-close', { pr: 'o/r#24' })])
+  expect(delegationStats([s1, s2]).outcomes).toEqual({ achieved: 0, 'not-achieved': 1, unclear: 0 })
 })
