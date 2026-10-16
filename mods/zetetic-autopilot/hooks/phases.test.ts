@@ -59,6 +59,7 @@ const step = (loopId: string, phase: Parameters<typeof stepped>[1]['phase'], adv
   effort: 'medium',
   phase,
   fileRead: false,
+  escalated: false,
   advisorCalls,
   at,
 })
@@ -94,7 +95,7 @@ test('steps that come in before the spawn answers are kept on the row the spawn 
   const a = s.loops.find((l) => l.id === 'a2')
   expect(a?.type).toBe('zetetic-team-subagents:test-engineer')
   expect(a?.phase).toBe('test')
-  expect(a?.runs).toEqual([{ phase: 'test', effort: 'medium', steps: 2, errors: 0, since: 2, reads: 0 }])
+  expect(a?.runs).toEqual([{ phase: 'test', effort: 'medium', steps: 2, errors: 0, since: 2, reads: 0, escalated: 0 }])
 })
 
 test('the advisor is counted with when it was called', () => {
@@ -154,10 +155,54 @@ test('merged keeps the sum of reads; a run recorded before reads existed stays u
   s = stepped(s, { ...step('a3', 'analysis'), effort: 'low', fileRead: true })
   s = stepped(s, { ...step('a3', 'analysis'), effort: 'low' })
   s = spawned(s, { id: 'a3', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 })
-  expect(s.loops.find((l) => l.id === 'a3')?.runs).toEqual([{ phase: 'analysis', effort: 'low', steps: 3, errors: 0, since: 2, reads: 2 }])
+  expect(s.loops.find((l) => l.id === 'a3')?.runs).toEqual([{ phase: 'analysis', effort: 'low', steps: 3, errors: 0, since: 2, reads: 2, escalated: 0 }])
   const old = { ...s, loops: s.loops.map((l) => ({ ...l, id: 'a4', runs: [{ phase: 'analysis' as const, effort: 'low', steps: 5, errors: 0, since: 1 }] })) }
   const grown = stepped(old, { ...step('a4', 'analysis'), effort: 'low', fileRead: true })
   expect(grown.loops.find((l) => l.id === 'a4')?.runs[0]).toEqual({ phase: 'analysis', effort: 'low', steps: 6, errors: 0, since: 1 })
+})
+
+test('escalated counts the steps a stuck escalation raised on the run they landed in; an older run stays unmeasured', () => {
+  let s = startTurn(emptyPhases(), 't1', 'claude-opus-5-5', 1)
+  s = stepped(s, step('main', 'analysis'))
+  s = stepped(s, { ...step('main', 'analysis'), escalated: true })
+  s = stepped(s, { ...step('main', 'test'), escalated: true })
+  s = stepped(s, step('main', 'test'))
+  expect(s.loops[0]?.runs.map((r) => [r.phase, r.steps, r.escalated])).toEqual([['analysis', 2, 1], ['test', 2, 1]])
+  // A run recorded before the count existed: its earlier steps were never counted, so it stays absent (not 0, not 1).
+  const old = { ...s, loops: s.loops.map((l) => ({ ...l, runs: [{ phase: 'test' as const, effort: 'medium', steps: 5, errors: 0, since: 1, reads: 0 }] })) }
+  const grown = stepped(old, { ...step('main', 'test'), escalated: true })
+  expect(grown.loops[0]?.runs).toEqual([{ phase: 'test', effort: 'medium', steps: 6, errors: 0, since: 1, reads: 0 }])
+})
+
+test('merged keeps the sum of escalated when every run carries it, else leaves it absent', () => {
+  let s = stepped(emptyPhases(), { ...step('a5', 'analysis'), escalated: true })
+  s = stepped(s, { ...step('a5', 'implementation'), escalated: false })
+  s = spawned(s, { id: 'a5', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 })
+  expect(s.loops.find((l) => l.id === 'a5')?.runs[0]?.escalated).toBe(1)
+  const fresh = spawned(emptyPhases(), { id: 'a6', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 })
+  expect(fresh.loops[0]?.runs[0]?.escalated).toBe(0)
+  const old = { ...fresh, loops: [{ ...fresh.loops[0]!, id: 'a7', type: 'agent', phase: null, runs: [{ phase: 'analysis' as const, effort: 'low', steps: 2, errors: 0, since: 1 }] }] }
+  expect(spawned(old, { id: 'a7', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 }).loops[0]?.runs[0]).not.toHaveProperty('escalated')
+})
+
+test('two escalated steps joined to one run add up to two', () => {
+  let s = startTurn(emptyPhases(), 't1', 'claude-opus-5-5', 1)
+  s = stepped(s, { ...step('main', 'analysis'), escalated: true })
+  s = stepped(s, { ...step('main', 'analysis'), escalated: true })
+  expect(s.loops[0]?.runs.map((r) => [r.phase, r.steps, r.escalated])).toEqual([['analysis', 2, 2]])
+})
+
+test('merged with one older run lacking the counts leaves reads and escalated absent, whatever the order of the runs', () => {
+  const fresh = spawned(emptyPhases(), { id: 'a8', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 })
+  const olderRun = { phase: 'analysis' as const, effort: 'low', steps: 2, errors: 0, since: 1 }
+  const newerRun = { phase: 'analysis' as const, effort: 'low', steps: 3, errors: 0, since: 2, reads: 1, escalated: 1 }
+  for (const runs of [[olderRun, newerRun], [newerRun, olderRun]]) {
+    const mixed = { ...fresh, loops: [{ ...fresh.loops[0]!, id: 'a9', type: 'agent', phase: null, runs }] }
+    const run = spawned(mixed, { id: 'a9', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 4 }).loops[0]?.runs[0]
+    expect(run?.steps).toBe(5)
+    expect(run).not.toHaveProperty('escalated')
+    expect(run).not.toHaveProperty('reads')
+  }
 })
 
 test('implementation work of the main loop: code and test files it writes, shell commands that change things', () => {

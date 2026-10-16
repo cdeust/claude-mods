@@ -96,12 +96,3 @@ export const resultText = (content: unknown): string | undefined => {
 // Exact counts, thousands grouped by a space: "119 304" (the design system's data surface).
 export const group = (n: number): string =>
   String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
-
-export type Decision = {
-  at: number
-  kind: 'effort' | 'model' | 'offload' | 'shape' | 'stuck'
-  subject: string
-  from: string
-  to: string
-  applied: boolean
-}
