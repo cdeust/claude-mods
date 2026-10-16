@@ -185,6 +185,26 @@ test('merged keeps the sum of escalated when every run carries it, else leaves i
   expect(spawned(old, { id: 'a7', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 }).loops[0]?.runs[0]).not.toHaveProperty('escalated')
 })
 
+test('two escalated steps joined to one run add up to two', () => {
+  let s = startTurn(emptyPhases(), 't1', 'claude-opus-5-5', 1)
+  s = stepped(s, { ...step('main', 'analysis'), escalated: true })
+  s = stepped(s, { ...step('main', 'analysis'), escalated: true })
+  expect(s.loops[0]?.runs.map((r) => [r.phase, r.steps, r.escalated])).toEqual([['analysis', 2, 2]])
+})
+
+test('merged with one older run lacking the counts leaves reads and escalated absent, whatever the order of the runs', () => {
+  const fresh = spawned(emptyPhases(), { id: 'a8', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 3 })
+  const olderRun = { phase: 'analysis' as const, effort: 'low', steps: 2, errors: 0, since: 1 }
+  const newerRun = { phase: 'analysis' as const, effort: 'low', steps: 3, errors: 0, since: 2, reads: 1, escalated: 1 }
+  for (const runs of [[olderRun, newerRun], [newerRun, olderRun]]) {
+    const mixed = { ...fresh, loops: [{ ...fresh.loops[0]!, id: 'a9', type: 'agent', phase: null, runs }] }
+    const run = spawned(mixed, { id: 'a9', type: 'Explore', description: 'x', model: 'claude-haiku-5-5', at: 4 }).loops[0]?.runs[0]
+    expect(run?.steps).toBe(5)
+    expect(run).not.toHaveProperty('escalated')
+    expect(run).not.toHaveProperty('reads')
+  }
+})
+
 test('implementation work of the main loop: code and test files it writes, shell commands that change things', () => {
   expect(isMainImplementation('Edit', { file_path: '/r/src/a.ts' })).toBe(true)
   expect(isMainImplementation('Write', { file_path: '/r/src/a.test.ts' })).toBe(true)
