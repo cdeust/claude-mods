@@ -1,7 +1,7 @@
 {
   "name": "zetetic-autopilot",
-  "version": "0.5.3",
-  "description": "Automatic effort and model: every request runs at the effort its grade calls for (zetetic-genius) and the main tool loop steps down the ladder; a subagent runs on the model its call or its agent definition pins (read from the definition file, since agent.spawn carries only the call's), an inheriting type on the family its kind and the turn's class call for, and keeps its definition's effort on every step; under quota or context pressure heavy models go one notch down (never up) and a long streaming tool result is written whole to a file in the session's tool-results directory and the model reads a preview and the path (nothing is cut). Owns `phases`: the phase each loop is in (planning, analysis, design, implementation, verification, test, review, report), read off its tool calls or, for an agent, its type, and the advisor calls of main with when they came. The tool loop of a phase the insights calibrated runs at that rung instead of medium (never above the request's grade). Starts in enforce; observe logs the decisions without applying them.",
+  "version": "0.7.0",
+  "description": "Automatic effort and model, and a quota that limits how many agents run, not how well one runs. Every request runs at the effort its grade calls for (zetetic-genius) and the main tool loop steps down the ladder. A subagent runs on the model its Agent call names, else the one its agent definition pins (read from the definition file, since agent.spawn carries only the call's), an inheriting type on the family its kind and the turn's class call for, and keeps its effort on every step: no pressure, quota or context, changes a model or an effort the orchestrator designed. Each spawn's requested, definition and decided model, what ran and a short reason are kept per session. Quota pressure limits concurrency: the cap on subagents running at once falls from max_parallel_agents (5) at an empty five-hour window to 1 at quota_pressure_percent, and a spawn past it is refused with a message the orchestrator reads (wait for a running agent to finish). Main itself drops to sonnet under quota pressure, and doing implementation work in the main loop is warned about (POLICY row, toast), never blocked. A long streaming tool result is written whole to a file in the session's tool-results directory and the model reads a preview and the path (nothing is cut). Owns `phases`: the phase each loop is in (planning, analysis, design, implementation, verification, test, review, report), read off its tool calls or, for an agent, its type, and the advisor calls of main with when they came. The tool loop of a phase the insights calibrated runs at that rung instead of medium (never above the request's grade). Starts in enforce; observe logs the decisions without applying them.",
   "types": "./types/index.d.ts",
   "dependencies": [
     "zetetic-genius"
@@ -10,7 +10,7 @@
     "policy_mode": {
       "type": "string",
       "title": "Policy mode",
-      "description": "enforce (default): every effort, model and lean decision is applied as logged in the cockpit's POLICY panel. observe: logged only, nothing applied.",
+      "description": "enforce (default): every effort, model, offload and cap decision is applied as logged in the cockpit's POLICY panel. observe: logged only, nothing applied.",
       "default": "enforce",
       "options": [
         "observe",
@@ -20,8 +20,14 @@
     "quota_pressure_percent": {
       "type": "number",
       "title": "Quota pressure (% of the five-hour window)",
-      "description": "At or past this share of the five-hour window, requests run at low effort, heavy subagents are spawned on sonnet and main drops to sonnet.",
+      "description": "Share of the five-hour window at which only one subagent may run at a time (the cap falls in a straight line from max_parallel_agents at 0% to 1 here); at or past it requests also run at low effort and main drops to sonnet. A subagent's own model and effort are never lowered.",
       "default": 80
+    },
+    "max_parallel_agents": {
+      "type": "number",
+      "title": "Parallel subagents with a free quota",
+      "description": "The most subagents running at once while the five-hour window is empty. It falls to 1 as the window fills to quota_pressure_percent. A spawn past the cap is refused with a message naming the count, the cap and the quota.",
+      "default": 5
     },
     "offload_threshold_chars": {
       "type": "number",

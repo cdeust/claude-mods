@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { LOOPS_CAP, emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped, toolPhase, typePhase } from './phases'
+import { LOOPS_CAP, emptyPhases, erred, finished, isFileReadStep, isMainImplementation, spawned, startTurn, stepPhase, stepped, toolPhase, typePhase } from './phases'
 
 const use = (name: string, input: unknown = {}) => ({ name, input })
 
@@ -158,4 +158,34 @@ test('merged keeps the sum of reads; a run recorded before reads existed stays u
   const old = { ...s, loops: s.loops.map((l) => ({ ...l, id: 'a4', runs: [{ phase: 'analysis' as const, effort: 'low', steps: 5, errors: 0, since: 1 }] })) }
   const grown = stepped(old, { ...step('a4', 'analysis'), effort: 'low', fileRead: true })
   expect(grown.loops.find((l) => l.id === 'a4')?.runs[0]).toEqual({ phase: 'analysis', effort: 'low', steps: 6, errors: 0, since: 1 })
+})
+
+test('implementation work of the main loop: code and test files it writes, shell commands that change things', () => {
+  expect(isMainImplementation('Edit', { file_path: '/r/src/a.ts' })).toBe(true)
+  expect(isMainImplementation('Write', { file_path: '/r/src/a.test.ts' })).toBe(true)
+  expect(isMainImplementation('Bash', { command: 'sed -i s/a/b/ src/a.ts' })).toBe(true)
+})
+
+test("the orchestrator's plumbing is not implementation work: fetch, worktree, hygiene, mkdir, gh", () => {
+  for (const command of [
+    'git fetch origin',
+    'git worktree add -b fix/x /w/mods/.claude/worktrees/x origin/fix/x',
+    'python3 /Users/cdeust/Developments/disk-hygiene/disk_hygiene.py --host claude register-worktree --repo /r --path /r/w',
+    'mkdir -p /r/w && cd /r',
+    'gh pr create --title t',
+    'claude plugin validate .',
+    'git -C /r merge-base a b',
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, false])
+  // a change to a file, even behind plumbing in the same line, still counts
+  expect(isMainImplementation('Bash', { command: 'git fetch && sed -i s/a/b/ src/a.ts' })).toBe(true)
+})
+
+test('orchestration is not implementation work: documents, reads, checks, tests, delivery, delegation', () => {
+  expect(isMainImplementation('Write', { file_path: '/r/notes/plan.md' })).toBe(false)
+  expect(isMainImplementation('Read', { file_path: '/r/a.ts' })).toBe(false)
+  expect(isMainImplementation('Bash', { command: 'git status' })).toBe(false)
+  expect(isMainImplementation('Bash', { command: 'claude plugin test' })).toBe(false)
+  expect(isMainImplementation('Bash', { command: 'git commit -m x && git push' })).toBe(false)
+  expect(isMainImplementation('Agent', { subagent_type: 'zetetic-team-subagents:engineer' })).toBe(false)
 })

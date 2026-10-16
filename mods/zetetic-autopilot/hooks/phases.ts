@@ -142,6 +142,27 @@ export const toolPhase = (name: string, input: unknown): Phase | undefined => {
   return mcpPhase(name)
 }
 
+// Commands that run the repository, the host or the session's worktrees: orchestration, whatever bashPhase
+// calls an unrecognised head. A change to a source file is not made by these.
+// source: the orchestrator's own first turn (fetch, worktree add, hygiene register-worktree, mkdir)
+const PLUMBING_RUN = /^(git|gh|claude|mkdir|rmdir|sleep|python3? \S*disk_hygiene\S*)\b/
+
+const heads = (command: string): string[] =>
+  (command.split('\n')[0] ?? '')
+    .split(/&&|\|\||;|\|/)
+    .map((s) => s.trim().replace(/^([A-Z_]+=\S+\s+)+/, ''))
+    .filter((s) => s !== '')
+
+// Work the owner's rule hands to a subagent ("aucune tâche ne tourne en session globale"): a file the main
+// loop writes (code or test; a document is design, the orchestrator's own), or a shell command that changes
+// things (the implementation phase of bashPhase, less the plumbing above; reads, checks, tests and delivery
+// are orchestration).
+export const isMainImplementation = (name: string, input: unknown): boolean => {
+  if (WRITING_TOOLS.has(name)) return toolPhase(name, input) !== 'design'
+  if (name !== 'Bash') return false
+  return heads(field(input, 'command')).some((h) => segmentPhase(h) === 'implementation' && !PLUMBING_RUN.test(h))
+}
+
 // A step's phase: the furthest along of its calls; a step that calls nothing and answers is the
 // report. Undefined when nothing in it names a phase (the loop stays where it was).
 export const stepPhase = (uses: readonly { name: string; input: unknown }[], answer: string): Phase | undefined => {

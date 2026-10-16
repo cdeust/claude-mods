@@ -59,21 +59,9 @@ export const pressureOf = (
   return 'none'
 }
 
-// Subagents under pressure go one notch down from the model they would run on, opus/fable to
-// sonnet; sonnet and haiku stay, so pressure never raises one. Owner choice 2026-10-07: no
-// protected agent type.
-const HEAVY = /opus|fable/i
-
-export const agentModelFor = (effective: string, pressure: Pressure): string | undefined =>
-  pressure !== 'none' && HEAVY.test(effective) ? 'sonnet' : undefined
-
-// A subagent's requests keep the effort its definition pinned (the engine sends it on every step,
-// measured 2026-10-14: security-auditor `high`, memory-writer `low`); the main loop's ladder is
-// not theirs. Under pressure the effort is capped at medium.
-export const agentEffortFor = (model: string, current: unknown, pressure: Pressure): Effort | undefined => {
-  const have = currentEffort(model, current)
-  return pressure !== 'none' && RANK[have] > RANK.medium ? 'medium' : undefined
-}
+// A subagent is not touched by pressure: the model and the effort the orchestrator designed (the call's,
+// else the definition's) run as designed, whatever the quota or the context. Quota limits how many
+// subagents run at once instead (concurrency.ts).
 
 // Memory offload (offload.ts): a result of these tools past the threshold is written whole to a
 // file. Only tools whose output is a stream (not a document); a third-party tool's is not ours.

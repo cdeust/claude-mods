@@ -22,13 +22,37 @@ export type ContextHealth = {
 export type Pressure = 'none' | 'quota' | 'context'
 
 // What the policy decided this session: observed, or applied under `enforce`. `unread` names a
-// source routing went on without (a dependency's state, an agent definition) and why.
+// source routing went on without (a dependency's state, an agent definition) and why. `cap` is a
+// spawn refused (or, observed, that would be) because the quota's cap on parallel subagents was
+// reached; `work` a warning that the main loop itself did implementation work (never applied).
 export type PolicyDecision = {
   at: number
-  kind: 'effort' | 'model' | 'offload' | 'stuck' | 'unread'
+  kind: 'effort' | 'model' | 'offload' | 'stuck' | 'unread' | 'cap' | 'work'
   subject: string
   from: string
   to: string
+  applied: boolean
+  // Why, for a model decision: absent on the other kinds and on rows written before it was kept.
+  reason?: string
+}
+
+// How one subagent's model was decided, kept per spawn so an outcome is attributed to the model
+// that ran (hooks/route.ts). `requested` is the Agent call's `model`, `definition` the model its
+// agent file pins (null: none, `inherit`, or the file was not read), `decided` what the router
+// settled on (the call's, else the definition's, else `inherit <parent model>`), `ran` what the
+// engine answered it runs on, `reason` the rule that decided as a short code (call, definition, kind,
+// inherit, unread: hooks/route.ts), `applied` true when a rewrite was sent (false when the call stood
+// as it was, or observe mode only logged the rewrite). Every string is clipped (spawns.ts), so the
+// size of a record, and of the store, is bounded.
+export type SpawnRoute = {
+  at: number
+  agentId: string
+  type: string
+  requested: string | null
+  definition: string | null
+  decided: string
+  ran: string
+  reason: 'call' | 'definition' | 'kind' | 'inherit' | 'unread'
   applied: boolean
 }
 
@@ -91,6 +115,9 @@ declare module 'claude-code' {
       context: ContextHealth | null
       policy: PolicyState
       phases: PhasesState
+      // The newest spawns' routes, newest last; every route is also kept in the plugin's $.store, in
+      // its session's key `spawns:<start time>:<session id>` (hooks/spawns.ts).
+      spawns: SpawnRoute[]
     }
   }
 }

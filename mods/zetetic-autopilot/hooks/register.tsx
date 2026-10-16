@@ -1,19 +1,19 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, EngineInterface, PluginState, Register, TurnStepChunk, TurnStepResult } from 'claude-code'
+import type { AgentSpawnResult, EngineInterface, Hook, PluginState, Register, TurnStepChunk, TurnStepResult } from 'claude-code'
 
-import type { ContextHealth, PhasesState, PolicyDecision, PolicyState } from '../types'
+import type { ContextHealth, PhasesState, PolicyDecision, PolicyState, SpawnRoute } from '../types'
 import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
-import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, ancestors, definitionPaths, parseDefinition } from './agents'
+import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH } from './agents'
+import { type Unread, expandHome, readDefinition } from './definitions'
+import { readContext } from './measure'
 import { DEFAULT_PREVIEW_CHARS, DEFAULT_THRESHOLD_CHARS, offloadOptions } from './offload'
 import { type Sink, offloadBlocks } from './offloadrow'
-import { placePath } from './paths'
-import { emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped } from './phases'
-import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
+import { emptyPhases, erred, finished, isFileReadStep, isMainImplementation, spawned, startTurn, stepPhase, stepped } from './phases'
+import { crossed } from './context'
 import {
   CHARS_PER_TOKEN,
   OFFLOAD_TOOLS,
   STUCK_ERRORS,
-  agentEffortFor,
   currentEffort,
   defaultEffort,
   effortFor,
@@ -21,9 +21,14 @@ import {
   group,
   pressureOf,
 } from './policy'
-import { type TaskClass, mainModelFor, routeAgentModel } from './route'
+import { type Routed, type TaskClass, mainModelFor, routeAgentModel } from './route'
+import { SETTINGS_PATH, unboundKeys, unboundMessage } from './config'
+import { ROUTES_PER_SESSION, clipped, spawnsKey, staleSpawnKeys } from './spawns'
+import { MAX_PARALLEL_AGENTS } from './concurrency'
+import { type GateSink, admit, configureGate, ended, released, resetGate, started } from './gate'
 
 const DECISIONS_CAP = 50 // source: bounds $.state size; a viewer shows the last rows only
+const SPAWNS_CAP = 50 // source: bounds $.state size; the full record is in $.store, one key per agent
 
 const context = atom({ plugin: 'zetetic-autopilot', key: 'context' } as const, null as ContextHealth | null)
 const policy = atom({ plugin: 'zetetic-autopilot', key: 'policy' } as const, {
@@ -39,6 +44,8 @@ const policy = atom({ plugin: 'zetetic-autopilot', key: 'policy' } as const, {
 
 const phases = atom({ plugin: 'zetetic-autopilot', key: 'phases' } as const, emptyPhases() as PhasesState)
 
+const spawns = atom({ plugin: 'zetetic-autopilot', key: 'spawns' } as const, [] as SpawnRoute[])
+
 // The classifier's verdict is zetetic-genius's state (a dependency): read, never written here.
 const geniusState = { plugin: 'zetetic-genius', key: 'state' } as const
 type Grade = { turnId: string | null; taskClass: TaskClass; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
@@ -48,19 +55,6 @@ const decide = (p: PolicyState, d: PolicyDecision, charsOffloaded = 0): PolicySt
   decisions: [...p.decisions, d].slice(-DECISIONS_CAP),
   charsOffloaded: p.charsOffloaded + charsOffloaded,
 })
-
-// Where a `~/` path lands on this machine: HOME, else USERPROFILE, and CLAUDE_CONFIG_DIR for what lives
-// in the engine's config directory (paths.ts). No home to place it is an error with that reason.
-async function expandHome($: EngineInterface, path: string): Promise<string> {
-  if (!path.startsWith('~/')) return path
-  const placed = placePath(
-    { home: await $.env.get('HOME'), userProfile: await $.env.get('USERPROFILE'), configDir: await $.env.get('CLAUDE_CONFIG_DIR') },
-    path,
-  )
-  if ('reason' in placed) throw new Error(placed.reason)
-
-  return placed.path
-}
 
 // The current grade. A genius mod that is not loaded leaves the value undefined, a known state
 // (no grade); a read that fails is another condition, named in a decision row (issue #6).
@@ -106,7 +100,6 @@ async function readCeilings($: EngineInterface): Promise<void> {
 // the session; a read that failed, or a record that could not be read, is asked again at the next
 // spawn, so a transient error does not stand until /clear (issue #11). The built-ins measured to
 // inherit pin nothing and have no file.
-type Unread = { unread: string; absent: boolean }
 const definitions = new Map<string, Definition | Unread>()
 
 async function definitionOf($: EngineInterface, type: string): Promise<Definition | Unread> {
@@ -115,81 +108,6 @@ async function definitionOf($: EngineInterface, type: string): Promise<Definitio
   const found = INHERITING_BUILT_INS.includes(type) ? {} : await readDefinition($, type)
   if (!('unread' in found) || found.absent) definitions.set(type, found)
   return found
-}
-
-// The folders whose `.claude/agents/` may hold a project agent: the working directory and each
-// folder above it up to the repository root (the first with a `.git`), so a session started in a
-// subdirectory finds the project's agents. No repository above: the working directory alone.
-async function projectDirs($: EngineInterface, cwd: string): Promise<string[]> {
-  const chain = ancestors(cwd)
-  for (const [i, dir] of chain.entries()) if (await $.fs.exists(`${dir}/.git`)) return chain.slice(0, i + 1)
-  return [cwd]
-}
-
-async function readDefinition($: EngineInterface, type: string): Promise<Definition | Unread> {
-  try {
-    const claudeDir = (await expandHome($, '~/.claude')).replace(/\/$/, '')
-    const installed = type.includes(':') ? await $.fs.read(await expandHome($, INSTALLED_PLUGINS_PATH)) : undefined
-    const cwd = await $.session.cwd()
-    const paths = definitionPaths(type, installed, claudeDir, cwd, type.includes(':') ? [] : await projectDirs($, cwd))
-    for (const path of paths) {
-      // A file that exists and cannot be read throws: it is not "no such file".
-      if (await $.fs.exists(path)) return parseDefinition(String(await $.fs.read(path)))
-    }
-    return paths.length === 0
-      ? { unread: 'no installed plugin provides it', absent: true }
-      : { unread: `no file at ${paths.join(', ')}`, absent: true }
-  } catch (error) {
-    return { unread: String(error).slice(0, 120), absent: false }
-  }
-}
-
-type Measured = {
-  context: {
-    tokens?: number
-    window: number
-    percent?: number
-    breakdown?: {
-      categories: readonly { name: string; tokens: number }[]
-      mcpTools: readonly { serverName: string; tokens: number }[]
-    }
-  }
-  rateLimits: readonly { kind: string; percentUsed: number }[]
-  cost?: { usd: number }
-}
-
-// A measure carries no breakdown; the one read before is kept until the next full read.
-async function readContext($: EngineInterface, m: Measured, before: ContextHealth | null): Promise<ContextHealth> {
-  const model = await $.session.model()
-  let warn: number | null = null
-  let hard: number | null = null
-  let source = THRESHOLDS_PATH
-  try {
-    const t = matchThresholds(await $.fs.read(await expandHome($, THRESHOLDS_PATH)), model)
-    if (t !== undefined) {
-      warn = t.warn
-      hard = t.hard
-    } else source = `${THRESHOLDS_PATH} has no match for ${model}`
-  } catch (error) {
-    // The file is the Stop guard's. A refusal, a missing file and a file that is not JSON all leave
-    // no thresholds; the viewer is told which, with the reason, instead of reading all three as absent.
-    source = `${THRESHOLDS_PATH} unreadable: ${(error instanceof Error ? error.message : String(error)).slice(0, 100)}`
-  }
-  const reading = { tokens: m.context.tokens ?? null, warn, hard }
-  return {
-    ...reading,
-    window: m.context.window,
-    percent: m.context.percent ?? null,
-    model,
-    thresholdsSource: source,
-    rateLimits: m.rateLimits.map((r) => ({ kind: r.kind, percentUsed: r.percentUsed })),
-    usd: m.cost?.usd ?? null,
-    categories:
-      m.context.breakdown?.categories.map((c) => ({ name: c.name, tokens: c.tokens })) ?? before?.categories ?? [],
-    mcpServers: m.context.breakdown === undefined ? (before?.mcpServers ?? []) : serversOf(m.context.breakdown.mcpTools),
-    band: band(reading),
-    readAt: await $.clock.now(),
-  }
 }
 
 // The full read, with the window broken down as /context does it: at start.
@@ -228,191 +146,285 @@ async function* tracked(
   return r
 }
 
-// A started subagent gets its row: the model the engine resolved, the phase its type names.
+// A started subagent gets its row: the model the engine resolved, the phase its type names; and its
+// route, in $.state for the viewers and in $.store (`spawns:<start>:<session>`, spawns.ts) for whoever
+// reads the record after the session, so an outcome is attributed to the model that ran and the rule
+// that chose it.
 async function placed(
   $: EngineInterface,
   e: { subagentType: string; description: string },
   r: AgentSpawnResult,
+  route: Omit<SpawnRoute, 'at' | 'agentId' | 'type' | 'ran'>,
 ): Promise<AgentSpawnResult> {
   if (r.deny !== undefined || r.agentId === undefined) return r
   const at = await $.clock.now()
   const id = r.agentId
   await update($, phases, (s) => spawned(s, { id, type: e.subagentType, description: e.description, model: r.model, at }))
+  const record: SpawnRoute = clipped({ at, agentId: id, type: e.subagentType, ...route, ran: r.model })
+  await update($, spawns, (s) => [...s, record].slice(-SPAWNS_CAP))
+  await keepRoute($, record)
   return r
 }
 
-type On = Parameters<Register>[0]
-
-// The state a session starts from, again after /clear, /resume and /branch; the context band and the
-// pressure the window and the context call for.
-function registerLifecycle(on: On, configured: (p: PolicyState) => PolicyState, quotaPercent: number): void {
-  on('session.start', async ($, e, next) => {
-    definitions.clear()
-    await update($, phases, () => emptyPhases())
-    await update($, policy, configured)
-    await refreshContext($)
-
-    return next(e)
-  })
-
-  // /clear, /resume and /branch reset $.state and never fire session.start again.
-  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
-    definitions.clear()
-    await update($, phases, () => emptyPhases())
-    await update($, policy, configured)
-    await refreshContext($)
-
-    return next(e)
-  })
-
-  on('session.measure', async ($, e, next) => {
-    const before = await read($, context)
-    const after = await readContext($, e, before)
-    await update($, context, () => after)
-    const pressure = pressureOf(after.rateLimits, quotaPercent, after.band)
-    await update($, policy, (p) => ({ ...p, pressure }))
-    const crossing = crossed(before, after)
-    if (crossing !== undefined)
-      $.ui.toast(
-        `context ${crossing}: ${group(after.tokens ?? 0)} tokens, the Stop guard will ${
-          crossing === 'hard' ? 'block the stop' : 'ask for a checkpoint'
-        }`,
-      )
-
-    return next(e)
-  })
+// An option key the engine does not read for this install (config.ts): a toast, and a row in the POLICY
+// panel, each time a session starts, instead of the defaults running unannounced.
+async function checkConfig($: EngineInterface, mode: string): Promise<void> {
+  try {
+    const settingsPath = await expandHome($, SETTINGS_PATH)
+    if (!(await $.fs.exists(settingsPath))) return
+    const settings = String(await $.fs.read(settingsPath))
+    const installedPath = await expandHome($, INSTALLED_PLUGINS_PATH)
+    const installed = (await $.fs.exists(installedPath)) ? String(await $.fs.read(installedPath)) : undefined
+    for (const u of unboundKeys(settings, installed, $.plugin.name, $.plugin.root)) {
+      const message = unboundMessage(u, mode)
+      await note($, 'options not bound', message)
+      $.ui.toast(message)
+    }
+  } catch (error) {
+    await note($, 'options not checked', String(error).slice(0, 120))
+  }
 }
 
-// The effort ladder and the model under quota.
-function registerEffort(on: On): void {
-  // Main: the effort ladder from the graded rung, the stuck escalation, and the model under
-  // quota. A subagent: the effort its definition pinned, capped under pressure. Observed, or
-  // applied under enforce. A generator, as the event streams.
-  on('turn.step', async function* ($, e, next) {
-    const p = await read($, policy)
-    const isMain = e.agentId === undefined
-    const grade = isMain ? await gradeOf($) : undefined
-    const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
-    const have = currentEffort(e.model, e.effort)
-    if (isMain && e.index === 0) await readCeilings($)
-    const phase = isMain ? (await read($, phases)).loops.find((l) => l.id === 'main')?.phase : undefined
-    const loop = phase === undefined || phase === null || e.index === 0 ? undefined : ceilings[phase]
-    let target =
-      (isMain ? effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) : agentEffortFor(e.model, e.effort, p.pressure)) ??
-      have
-    let kind: PolicyDecision['kind'] = 'effort'
-    if (isMain && p.errorsInRow >= STUCK_ERRORS) {
-      const raised = escalate(target)
-      if (raised !== target) {
-        target = raised
-        kind = 'stuck'
-      }
-      await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
-    }
-    const model = isMain ? mainModelFor(e.model, p.pressure) : undefined
-    if (target === have && model === undefined) return yield* tracked($, e, next(e))
-    const applied = p.mode === 'enforce'
-    const at = await $.clock.now()
-    const who = `${isMain ? 'main' : 'agent'} step ${e.index} (${e.model})`
-    if (target !== have) {
-      const subject = g !== undefined && e.index === 0 ? `${who} · ${g.taskClass}` : loop !== undefined ? `${who} · ${phase} calibrated` : who
-      await update($, policy, (s) => decide(s, { at, kind, subject, from: String(e.effort ?? 'default'), to: target, applied }))
-    }
-    if (model !== undefined && e.index === 0)
-      await update($, policy, (s) =>
-        decide(s, { at, kind: 'model', subject: 'main · quota pressure', from: e.model, to: model, applied }),
-      )
-    if (!applied) return yield* tracked($, e, next(e))
-    const out = { ...e, ...(target !== have ? { effort: target } : {}), ...(model !== undefined ? { model } : {}) }
-    return yield* tracked($, out, next(out))
-  })
+// This session's key in $.store (spawns.ts), set when the session opens; a spawn before that, or after
+// a failure to open it, is kept in $.state only, and the failure is a named row.
+let routesKey: string | undefined
+
+async function openRoutes($: EngineInterface): Promise<void> {
+  routesKey = undefined
+  try {
+    const now = await $.clock.now()
+    const key = spawnsKey(now, await $.session.id())
+    for (const stale of staleSpawnKeys(await $.store.keys(), now)) await $.store.delete(stale)
+    routesKey = key
+  } catch (error) {
+    await note($, 'spawn records', `not kept across sessions: ${String(error).slice(0, 100)}`)
+  }
 }
 
-// The model of a subagent, and the stuck signal.
-function registerRouting(on: On): void {
-  // Subagents: the model the call or the definition pinned stands, one notch down under pressure;
-  // an inheriting type runs on the family its kind and the turn's class call for.
-  on('agent.spawn', async ($, e, next) => {
-    const p = await read($, policy)
-    // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
-    // command, a notification) routes without one, as turn.step does.
-    const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
-    const mainTurn = (await read($, phases)).turnId
-    const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurn ? grade.taskClass : undefined
-    const found = e.model === undefined ? await definitionOf($, e.subagentType) : {}
-    if ('unread' in found) await note($, `${e.subagentType} definition`, found.unread)
-    const definition = 'unread' in found ? undefined : found
-    const target = routeAgentModel(e.subagentType, e.model, definition, e.parentModel, p.pressure, cls)
-    if (target === undefined) return placed($, e, await next(e))
-    const applied = p.mode === 'enforce'
+async function keepRoute($: EngineInterface, record: SpawnRoute): Promise<void> {
+  if (routesKey === undefined) return
+  try {
+    const kept = ((await $.store.get(routesKey)) ?? []) as SpawnRoute[]
+    await $.store.set(routesKey, [...kept, record].slice(-ROUTES_PER_SESSION))
+  } catch (error) {
+    await note($, 'spawn records', `not kept across sessions: ${String(error).slice(0, 100)}`)
+  }
+}
+
+const routeOf = (r: Routed, applied: boolean): Omit<SpawnRoute, 'at' | 'agentId' | 'type' | 'ran'> => ({
+  requested: r.requested,
+  definition: r.definition,
+  decided: r.model ?? r.stands,
+  reason: r.reason,
+  applied,
+})
+
+const onMeasure: Hook<'session.measure'> = async ($, e, next) => {
+  const before = await read($, context)
+  const after = await readContext($, e, before)
+  await update($, context, () => after)
+  await update($, policy, (p) => ({ ...p, pressure: pressureOf(after.rateLimits, p.quotaPercent, after.band) }))
+  const crossing = crossed(before, after)
+  if (crossing !== undefined)
+    $.ui.toast(
+      `context ${crossing}: ${group(after.tokens ?? 0)} tokens, the Stop guard will ${
+        crossing === 'hard' ? 'block the stop' : 'ask for a checkpoint'
+      }`,
+    )
+
+  return next(e)
+}
+
+// Main: the effort ladder from the graded rung, the stuck escalation, and the model under
+// quota. A subagent is left as designed. Observed, or applied under enforce. A generator, as the
+// event streams.
+const onStep: Hook<'turn.step'> = async function* ($, e, next) {
+  const p = await read($, policy)
+  const isMain = e.agentId === undefined
+  const grade = isMain ? await gradeOf($) : undefined
+  const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
+  const have = currentEffort(e.model, e.effort)
+  if (isMain && e.index === 0) await readCeilings($)
+  const phase = isMain ? (await read($, phases)).loops.find((l) => l.id === 'main')?.phase : undefined
+  const loop = phase === undefined || phase === null || e.index === 0 ? undefined : ceilings[phase]
+  // A subagent's requests keep the effort its definition or call pinned: the ladder is main's.
+  let target = (isMain ? effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) : undefined) ?? have
+  let kind: PolicyDecision['kind'] = 'effort'
+  if (isMain && p.errorsInRow >= STUCK_ERRORS) {
+    const raised = escalate(target)
+    if (raised !== target) {
+      target = raised
+      kind = 'stuck'
+    }
+    await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
+  }
+  const model = isMain ? mainModelFor(e.model, p.pressure) : undefined
+  if (target === have && model === undefined) return yield* tracked($, e, next(e))
+  const applied = p.mode === 'enforce'
+  const at = await $.clock.now()
+  const who = `${isMain ? 'main' : 'agent'} step ${e.index} (${e.model})`
+  if (target !== have) {
+    const subject = g !== undefined && e.index === 0 ? `${who} · ${g.taskClass}` : loop !== undefined ? `${who} · ${phase} calibrated` : who
+    await update($, policy, (s) => decide(s, { at, kind, subject, from: String(e.effort ?? 'default'), to: target, applied }))
+  }
+  if (model !== undefined && e.index === 0)
+    await update($, policy, (s) =>
+      decide(s, { at, kind: 'model', subject: 'main · quota pressure', from: e.model, to: model, applied }),
+    )
+  if (!applied) return yield* tracked($, e, next(e))
+  const out = { ...e, ...(target !== have ? { effort: target } : {}), ...(model !== undefined ? { model } : {}) }
+  return yield* tracked($, out, next(out))
+}
+
+// The cap's view of the mod: its rows go to the POLICY panel, an agent the engine says is gone closes its row.
+const gateSink = ($: EngineInterface): GateSink => ({
+  decide: async (d) => {
+    await update($, policy, (s) => decide(s, d))
+  },
+  note: (subject, reason) => note($, subject, reason),
+  gone: async (id, at) => {
+    await update($, phases, (s) => finished(s, id, at))
+  },
+})
+
+// Subagents: the model the call or the definition pinned stands, under any pressure; an inheriting
+// type runs on the family its kind and the turn's class call for. The quota's cap on how many run at
+// once comes first (admit).
+const onSpawn: Hook<'agent.spawn'> = async ($, e, next) => {
+  const p = await read($, policy)
+  const gate = await admit($, e, p, gateSink($))
+  if (gate.deny !== undefined) return { deny: gate.deny }
+  try {
+    const r = await spawnRouted($, e, next, p)
+    if (r.deny === undefined && r.agentId !== undefined) started(r.agentId)
+    return r
+  } finally {
+    released(gate.held)
+  }
+}
+
+async function spawnRouted(
+  $: EngineInterface,
+  e: Parameters<Hook<'agent.spawn'>>[1],
+  next: Parameters<Hook<'agent.spawn'>>[2],
+  p: PolicyState,
+): Promise<AgentSpawnResult> {
+  // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
+  // command, a notification) routes without one, as turn.step does.
+  const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
+  const mainTurn = (await read($, phases)).turnId
+  const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurn ? grade.taskClass : undefined
+  // Read whatever the call says: the record names the definition's model beside the call's.
+  const found = await definitionOf($, e.subagentType)
+  if ('unread' in found && e.model === undefined) await note($, `${e.subagentType} definition`, found.unread)
+  const definition = 'unread' in found ? undefined : found
+  const routed = routeAgentModel(e.subagentType, e.model, definition, e.parentModel, cls)
+  const applied = p.mode === 'enforce' && routed.model !== undefined
+  if (routed.model !== undefined) {
     const d: PolicyDecision = {
       at: await $.clock.now(),
       kind: 'model',
       subject: `${e.subagentType}${cls === undefined ? '' : ` · ${cls}`}`,
       from: e.model ?? definition?.model ?? `inherit ${e.parentModel}`,
-      to: target,
+      to: routed.model,
       applied,
+      reason: `inheriting ${e.subagentType} routed to ${routed.model} by its kind${cls === undefined ? '' : ` on a ${cls} turn`}`,
     }
     await update($, policy, (s) => decide(s, d))
-    return placed($, e, await next(applied ? { ...e, model: target } : e))
-  })
-
-  // The stuck signal: main's tool errors in a row, read by the next turn.step.
-  on('tool.call', async ($, e, next) => {
-    const ran = await next(e)
-    const agentId = (e as { agentId?: string }).agentId
-    const isBlocked = ran.deny !== undefined || ran.isError === true
-    if (agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: isBlocked ? s.errorsInRow + 1 : 0 }))
-    if (isBlocked) await update($, phases, (s) => erred(s, agentId ?? 'main'))
-
-    return ran
-  })
+  }
+  return placed($, e, await next(applied ? { ...e, model: routed.model } : e), routeOf(routed, applied))
 }
 
-// Memory offload (offload.ts, offloadrow.ts). The session's tool-results directory comes from the
-// transcript path every classic SessionStart carries; the engine's retention sweeps it
-// (`cleanupPeriodDays`, 30 days by default) and this mod deletes nothing.
-function registerOffload(on: On, problems: readonly string[]): void {
-  let transcriptPath: string | undefined
-  on('classic.SessionStart', async ($, e, next) => {
-    transcriptPath = e.transcript_path
-    for (const problem of problems) await note($, 'offload option', problem)
+// The turn main was last warned in (a warning a turn, not a toast a call). Reset with the session.
+let warnedTurn: string | null | undefined
 
-    return next(e)
-  })
+// Owner rule, 2026-10-15: no task runs in the global session, all is delegated. A call of the main loop
+// that writes code or changes things is the work a subagent is for: a row each time, a toast once a turn.
+// It warns and never blocks: the call goes ahead.
+async function nudgeMain($: EngineInterface, e: { tool: string }): Promise<void> {
+  const turnId = (await read($, phases)).turnId
+  const at = await $.clock.now()
+  await update($, policy, (s) =>
+    decide(s, { at, kind: 'work', subject: `main · ${e.tool}`, from: 'main loop', to: 'delegate to a subagent', applied: false }),
+  )
+  if (warnedTurn === turnId) return
+  warnedTurn = turnId
+  $.ui.toast(`main ran ${e.tool}: implementation belongs to a subagent, delegate it (owner rule 2026-10-15)`)
+}
 
-  // A stream tool's result past the threshold is written whole to a file; the stored row carries a
-  // preview, the path and the size. A result that cannot be written stays whole, and a row says why.
-  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
-    const tool = e.origin.kind === 'tool' ? e.origin.tool : undefined
-    if (tool === undefined || !OFFLOAD_TOOLS.has(tool)) return next(e)
-    const p = await read($, policy)
-    const sink: Sink = {
-      note: (subject, reason) => note($, subject, reason),
-      offloaded: async (plan, applied) => {
-        const kept = plan.chars - plan.message.length
-        const d: PolicyDecision = {
-          at: await $.clock.now(),
-          kind: 'offload',
-          subject: tool,
-          from: `${group(plan.chars)} chars`,
-          to: `${plan.files[0]?.path} · about ${group(Math.round(kept / CHARS_PER_TOKEN))} tokens kept out of context`,
-          applied,
-        }
-        await update($, policy, (s) => decide(s, d, applied ? kept : 0))
-      },
-    }
-    const options = { thresholdChars: p.offloadThresholdChars, previewChars: p.offloadPreviewChars }
-    const content = await offloadBlocks($, e.uuid, tool, e.message.content, { options, enforce: p.mode === 'enforce', transcriptPath, sink })
+// The stuck signal: main's tool errors in a row, read by the next turn.step.
+const onToolCall: Hook<'tool.call'> = async ($, e, next) => {
+  const agentId = (e as { agentId?: string }).agentId
+  if (agentId === undefined && isMainImplementation(e.tool, e)) await nudgeMain($, e)
+  const ran = await next(e)
+  const isBlocked = ran.deny !== undefined || ran.isError === true
+  if (agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: isBlocked ? s.errorsInRow + 1 : 0 }))
+  if (isBlocked) await update($, phases, (s) => erred(s, agentId ?? 'main'))
 
-    return next(content === undefined ? e : { ...e, message: { ...e.message, content } })
-  })
+  return ran
+}
+
+// Memory offload (offload.ts, offloadrow.ts): a stream tool's result past the threshold is written whole to a
+// file in the session's tool-results directory, which comes from the transcript path every classic SessionStart
+// carries; the engine's retention sweeps it (`cleanupPeriodDays`, 30 days by default) and this mod deletes
+// nothing. The stored row carries a preview, the path and the size; a result that cannot be written stays
+// whole, and a row says why.
+let transcriptPath: string | undefined
+
+const onAppend: Hook<'session.append'> = async ($, e, next) => {
+  const tool = e.origin.kind === 'tool' ? e.origin.tool : undefined
+  if (tool === undefined || !OFFLOAD_TOOLS.has(tool)) return next(e)
+  const p = await read($, policy)
+  const sink: Sink = {
+    note: (subject, reason) => note($, subject, reason),
+    offloaded: async (plan, applied) => {
+      const kept = plan.chars - plan.message.length
+      const d: PolicyDecision = {
+        at: await $.clock.now(),
+        kind: 'offload',
+        subject: tool,
+        from: `${group(plan.chars)} chars`,
+        to: `${plan.files[0]?.path} · about ${group(Math.round(kept / CHARS_PER_TOKEN))} tokens kept out of context`,
+        applied,
+      }
+      await update($, policy, (s) => decide(s, d, applied ? kept : 0))
+    },
+  }
+  const options = { thresholdChars: p.offloadThresholdChars, previewChars: p.offloadPreviewChars }
+  const content = await offloadBlocks($, e.uuid, tool, e.message.content, { options, enforce: p.mode === 'enforce', transcriptPath, sink })
+
+  return next(content === undefined ? e : { ...e, message: { ...e.message, content } })
+}
+
+// The stuck counter is a turn's own; main's ends with its turn.
+const onComplete: Hook<'turn.complete'> = async ($, e, next) => {
+  if (e.agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
+  else ended(e.agentId)
+  const at = await $.clock.now()
+  await update($, phases, (s) => finished(s, e.agentId ?? 'main', at))
+
+  return next(e)
+}
+
+// What a session starts from: no definition, phase or route known, this session's store key, the options
+// checked, the configured fields set afresh (a hot reload keeps $.state from the previous load).
+async function begin($: EngineInterface, mode: PolicyState['mode'], configured: (p: PolicyState) => PolicyState): Promise<void> {
+  definitions.clear()
+  resetGate()
+  warnedTurn = undefined
+  await update($, phases, () => emptyPhases())
+  await update($, spawns, () => [])
+  await openRoutes($)
+  await checkConfig($, mode)
+  await update($, policy, configured)
+  await refreshContext($)
 }
 
 export const register: Register = (on, options) => {
   const mode: PolicyState['mode'] = options.policy_mode === 'enforce' ? 'enforce' : 'observe'
   const quotaPercent = Number(options.quota_pressure_percent ?? 80)
   const offload = offloadOptions(options.offload_threshold_chars, options.offload_preview_chars)
+  configureGate(Number(options.max_parallel_agents ?? MAX_PARALLEL_AGENTS))
   // A hot reload keeps $.state from the previous load: the configured fields are set afresh.
   const configured = (p: PolicyState): PolicyState => ({
     ...p,
@@ -421,8 +433,32 @@ export const register: Register = (on, options) => {
     offloadThresholdChars: offload.options.thresholdChars,
     offloadPreviewChars: offload.options.previewChars,
   })
-  registerLifecycle(on, configured, quotaPercent)
-  registerEffort(on)
-  registerRouting(on)
-  registerOffload(on, offload.problems)
+
+  on('session.start', async ($, e, next) => {
+    await begin($, mode, configured)
+
+    return next(e)
+  })
+
+  // /clear, /resume and /branch reset $.state and never fire session.start again.
+  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
+    await begin($, mode, configured)
+
+    return next(e)
+  })
+
+  // Every start, /clear, /resume and /branch included: the transcript names the tool-results directory.
+  on('classic.SessionStart', async ($, e, next) => {
+    transcriptPath = e.transcript_path
+    for (const problem of offload.problems) await note($, 'offload option', problem)
+
+    return next(e)
+  })
+
+  on('session.measure', onMeasure)
+  on('turn.step', onStep)
+  on('agent.spawn', onSpawn)
+  on('tool.call', onToolCall)
+  on('session.append', { door: 'tool-result' }, onAppend)
+  on('turn.complete', onComplete)
 }
