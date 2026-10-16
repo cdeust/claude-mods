@@ -85,7 +85,7 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
   on('state.get', ($, e, next) => {
     const plugin = (e as { plugin?: string }).plugin
     if (plugin === 'zetetic-autopilot')
-      return { value: { value: ((e as { key?: string }).key === 'phases' ? phases : { decisions: [] }) as never, version: 1 } }
+      return { value: { value: ((e as { key?: string }).key === 'phases' ? phases : { mode: 'enforce', decisions: [], pressure: 'none' }) as never, version: 1 } }
     if (plugin === 'zetetic-genius') return { value: { value: { classified: { turnId: 't1', taskClass: 'bugfix', effort: 'high' } } as never, version: 1 } }
     return next(e)
   })

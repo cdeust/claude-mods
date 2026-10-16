@@ -4,7 +4,7 @@ import type { Calibration, Effort, Phase, TurnRecord, Verdict } from '../types'
 import { emptyCalibration } from './learn'
 import { type Cell, UNCLASSIFIED, cellsOf, decisions, phaseStats, pool } from './rungs'
 
-const cell = (phase: Phase, effort: string, session: string, steps: number, errors: number, taskClass = 'bugfix', at = 1): Cell => ({ phase, effort, taskClass, session, at, steps, errors, base: null, escalated: false, pressured: false })
+const cell = (phase: Phase, effort: string, session: string, steps: number, errors: number, taskClass = 'bugfix', at = 1): Cell => ({ phase, effort, taskClass, session, at, steps, errors, base: null, escalated: false, pressured: false, unenforced: false, decisionsLost: false })
 const sessions = ['a', 'b', 'c', 'd']
 // A phase over the four sessions at one rung: `steps` and `errors` in each.
 const over = (phase: Phase, effort: string, steps: number, errors: number, ids = sessions, taskClass = 'bugfix'): Cell[] => ids.map((s) => cell(phase, effort, s, steps, errors, taskClass))
@@ -13,7 +13,7 @@ const calibrated = (phases: Partial<Record<Phase, Effort>>): Calibration => ({ .
 
 test('a run becomes a cell with the effort it had, its task class and its session; no effort and no class are named', () => {
   const rec = { session: 's', turnId: 't', at: 5, taskClass: null, main: [{ phase: 'test', effort: null, steps: 3, errors: 1 }], agents: [], advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0 } as TurnRecord
-  expect(cellsOf([rec])).toEqual([{ phase: 'test', effort: 'default', taskClass: UNCLASSIFIED, session: 's', at: 5, steps: 3, errors: 1, base: null, escalated: false, pressured: false }])
+  expect(cellsOf([rec])).toEqual([{ phase: 'test', effort: 'default', taskClass: UNCLASSIFIED, session: 's', at: 5, steps: 3, errors: 1, base: null, escalated: false, pressured: false, unenforced: false, decisionsLost: false }])
 })
 
 test('rows keep the runs of every rung, pre-move ones included, each with its Wilson interval and whether it is resolved', () => {
