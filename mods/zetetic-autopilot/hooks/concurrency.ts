@@ -34,6 +34,21 @@ export const parallelCap = (usedPercent: number | undefined, quotaPercent: numbe
 export const fiveHourPercent = (rateLimits: readonly { kind: string; percentUsed: number }[]): number | undefined =>
   rateLimits.find((r) => r.kind === 'five_hour')?.percentUsed
 
+// Who is inside the orchestrator's budget: a spawn of the main loop's own Agent call, a fork of main included.
+// The refusal says "wait for a running agent to finish, then spawn this one again", which only a caller that can
+// wait and call again can act on, and the count is of the agents main started. Outside, neither refused nor
+// counted (AgentSpawnInput, Claude Code 2.1.301 mods types):
+// - `parentAgentId` set: "absent from main"; the spawn happens inside a subagent's or a teammate's loop and is
+//   part of the work of the place its parent already holds. Refusing it locked a chain k deep at cap k.
+// - `workflow` set: a script's agent(). "A hook can only refuse it", and the script cannot wait and retry: the
+//   refusal is an error inside the run. $.agent.list() does not list a workflow's agents either.
+// - `isTeammate`: "goes idle between turns and wakes on a message", so its turn.complete frees nothing.
+// A fork of main stays inside: `fork` is an Agent call main made (subagentType `fork`), main can wait, and it
+// spends the quota any subagent does. The engine's own forks (compaction, memory) raise no agent.spawn: the
+// event is raised for the Agent tool's agents and a workflow's agent() only.
+export const inBudget = (e: { parentAgentId?: string; workflow?: unknown; isTeammate?: true }): boolean =>
+  e.parentAgentId === undefined && e.workflow === undefined && e.isTeammate !== true
+
 // A spawn is refused when `running` agents already fill the cap.
 export const isRefused = (running: number, cap: number): boolean => running >= cap
 

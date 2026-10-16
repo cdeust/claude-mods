@@ -24,7 +24,7 @@ import {
 import { type Routed, type TaskClass, mainModelFor, routeAgentModel } from './route'
 import { SETTINGS_PATH, unboundKeys, unboundMessage } from './config'
 import { ROUTES_PER_SESSION, clipped, spawnsKey, staleSpawnKeys } from './spawns'
-import { MAX_PARALLEL_AGENTS } from './concurrency'
+import { MAX_PARALLEL_AGENTS, inBudget } from './concurrency'
 import { type GateSink, admit, configureGate, ended, released, resetGate, started } from './gate'
 
 const DECISIONS_CAP = 50 // source: bounds $.state size; a viewer shows the last rows only
@@ -289,9 +289,10 @@ const gateSink = ($: EngineInterface): GateSink => ({
 
 // Subagents: the model the call or the definition pinned stands, under any pressure; an inheriting
 // type runs on the family its kind and the turn's class call for. The quota's cap on how many run at
-// once comes first (admit).
+// once comes first (admit), for the main loop's own spawns only (inBudget).
 const onSpawn: Hook<'agent.spawn'> = async ($, e, next) => {
   const p = await read($, policy)
+  if (!inBudget(e)) return spawnRouted($, e, next, p)
   const gate = await admit($, e, p, gateSink($))
   if (gate.deny !== undefined) return { deny: gate.deny }
   try {
@@ -314,12 +315,15 @@ async function spawnRouted(
   const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
   const mainTurn = (await read($, phases)).turnId
   const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurn ? grade.taskClass : undefined
-  // Read whatever the call says: the record names the definition's model beside the call's.
-  const found = await definitionOf($, e.subagentType)
+  // Read whatever the call says: the record names the definition's model beside the call's. A fork has no
+  // definition: it runs as its parent, and the engine ignores a rewrite of its model or of a workflow agent's
+  // content (AgentSpawnInput.model, .workflow), so neither is sent one.
+  const rewritable = !e.fork && e.workflow === undefined
+  const found = e.fork ? {} : await definitionOf($, e.subagentType)
   if ('unread' in found && e.model === undefined) await note($, `${e.subagentType} definition`, found.unread)
   const definition = 'unread' in found ? undefined : found
   const routed = routeAgentModel(e.subagentType, e.model, definition, e.parentModel, cls)
-  const applied = p.mode === 'enforce' && routed.model !== undefined
+  const applied = p.mode === 'enforce' && routed.model !== undefined && rewritable
   if (routed.model !== undefined) {
     const d: PolicyDecision = {
       at: await $.clock.now(),
