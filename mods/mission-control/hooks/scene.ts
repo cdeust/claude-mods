@@ -31,7 +31,9 @@ export const rung = (effort: string | null): number => {
   return i < 0 ? 0 : Math.min(i + 1, 4)
 }
 
-export type Segment = { phase: Phase; effort: string | null; t0: number; t1: number; steps: number; errors: number }
+// `model`: the model the run's steps ran on (main's turn model, or the agent's); absent on a segment
+// built by hand, read as unknown.
+export type Segment = { phase: Phase; effort: string | null; t0: number; t1: number; steps: number; errors: number; model?: string }
 export type Lane = { id: string; label: string; model: string; isRunning: boolean; segments: Segment[]; advisor: number[] }
 export type Gauge = { phase: Phase; calibrated: string | null; ran: string | null }
 export type Curve = { phase: Phase; rates: number[]; moveAt: number | null; move: string | null }
@@ -43,13 +45,41 @@ export type Mechanical = InsightsState['mechanical']
 export type Frictions = InsightsState['frictions']
 // `probes`: how many of the insights' sessions were left out of `sessions` as probes.
 export type Models = { window: ModelSteps[]; sessions: SessionModels[]; probes: number }
-export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models; delegations: Delegations | null; mechanical: Mechanical | null; frictions: Frictions | null }
+// `brief`: the self-calibration text the insights put at the end of the model's system prompt, as sent.
+export type Scene = { t0: number; t1: number; spans: Span[]; turnId: string | null; lanes: Lane[]; gauges: Gauge[]; curves: Curve[]; models: Models; delegations: Delegations | null; mechanical: Mechanical | null; frictions: Frictions | null; brief?: string | null }
+
+// A session's steps in the order they ran, as runs of one family (oldest first). The insights sends
+// it from 0.10.0 on (`sequence`); an older one sends none and the session draws no step lane.
+export const sequenceOf = (s: SessionModels): ModelSteps[] | null => {
+  const seq = (s as SessionModels & { sequence?: unknown }).sequence
+  return Array.isArray(seq) ? (seq as ModelSteps[]) : null
+}
 
 // A model id as its family: the first of fable, opus, sonnet, haiku found in it, else other.
 export const familyOf = (model: unknown): ModelFamily => {
   if (typeof model !== 'string' || model === '') return 'unknown'
   const m = model.toLowerCase()
   return (['fable', 'opus', 'sonnet', 'haiku'] as const).find((f) => m.includes(f)) ?? 'other'
+}
+
+// A family's rank in a step lane, cheap to dear: the dearest family among a column's steps is the one
+// drawn. other and unknown rank below every named family, so they show only where nothing else ran.
+const RANKED: readonly ModelFamily[] = ['haiku', 'sonnet', 'opus', 'fable']
+export const rankOf = (f: ModelFamily): number => RANKED.indexOf(f)
+
+// A session's steps over `width` columns, the oldest left: each column covers its share of the steps
+// and shows the dearest family among them, null where there is none. When the steps are fewer than
+// the columns, a step spans several. O(steps + width).
+export const stepLane = (runs: readonly ModelSteps[], width: number): (ModelFamily | null)[] => {
+  const steps: ModelFamily[] = runs.flatMap((r) => Array.from({ length: Math.max(0, r.steps) }, () => r.family))
+  return Array.from({ length: Math.max(0, width) }, (_, x) => {
+    if (steps.length === 0) return null
+    const from = Math.floor((x * steps.length) / width)
+    const to = Math.max(from + 1, Math.floor(((x + 1) * steps.length) / width))
+    let top = steps[from]!
+    for (let i = from; i < to && i < steps.length; i++) if (rankOf(steps[i]!) > rankOf(top)) top = steps[i]!
+    return top
+  })
 }
 
 // Steps added per family, in FAMILIES order, a family with no step left out.
@@ -63,6 +93,7 @@ const tally = (parts: readonly { model: string; steps: number }[]): ModelSteps[]
 // last step (or now, while it runs).
 const segmentsOf = (loop: LoopPhases, now: number): Segment[] =>
   loop.runs.map((r, i) => ({
+    model: loop.model,
     phase: r.phase,
     effort: r.effort,
     t0: r.since,
@@ -98,7 +129,7 @@ const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number)
   const main = phases.loops.find((l) => l.id === 'main')
   const pastRuns = history
     .filter((t) => t.turnId !== phases.turnId)
-    .flatMap((t) => t.runs.map((r) => ({ model: t.model, seg: { phase: r.phase as Phase, effort: r.effort, t0: r.since, t1: r.until, steps: r.steps, errors: r.errors } as Segment })))
+    .flatMap((t) => t.runs.map((r) => ({ model: t.model, seg: { phase: r.phase as Phase, effort: r.effort, t0: r.since, t1: r.until, steps: r.steps, errors: r.errors, model: t.model } as Segment })))
     .filter(({ seg }) => counted(seg))
   const mainLive = (main === undefined ? [] : segmentsOf(main, now)).filter(counted)
   const mainSegments = [...pastRuns.map(({ seg }) => seg), ...mainLive]
@@ -135,8 +166,10 @@ const lanesOf = (phases: PhasesState, history: readonly PastTurn[], now: number)
   return { lanes: [mainLane, ...agentLanes], window }
 }
 
-// A session is a probe when all its steps together are at most PROBE_STEPS.
-const isProbe = (s: SessionModels): boolean => s.steps.reduce((n, f) => n + f.steps, 0) <= PROBE_STEPS
+// A session is a probe when the insights flags it so; an insights before the flag (no `probe`) is
+// read by the step count: all its steps together at most PROBE_STEPS.
+const isProbe = (s: SessionModels): boolean =>
+  typeof (s as { probe?: unknown }).probe === 'boolean' ? s.probe : s.steps.reduce((n, f) => n + f.steps, 0) <= PROBE_STEPS
 
 // The probes are counted apart and the last MODEL_ROWS real sessions kept: filtering first, so probes never take a row.
 const modelsOf = (window: ModelSteps[], insights: InsightsState | null): Models => {
@@ -198,6 +231,7 @@ export const sceneOf = (phases: PhasesState | null, insights: InsightsState | nu
     mechanical: insights?.mechanical ?? null,
     // An older insights (before 0.7.0) has no frictions: null draws no section, never a crash.
     frictions: insights?.frictions ?? null,
+    brief: typeof insights?.brief === 'string' ? insights.brief : null,
   }
 }
 
@@ -246,6 +280,20 @@ const layAxis = (scene: Scene) => {
 export const columnOf = (scene: Scene, t: number, width: number): number => {
   const axis = axisOf(scene)
   return axis.total <= 0 ? 0 : Math.min(width - 1, Math.max(0, Math.floor((axis.at(t) / axis.total) * width)))
+}
+
+// The window's lanes as one strip on the lanes' own time axis: per column the dearest family of any
+// run covering it, null where nothing ran.
+export const windowLane = (scene: Scene, width: number): (ModelFamily | null)[] => {
+  const out: (ModelFamily | null)[] = Array.from({ length: Math.max(0, width) }, () => null)
+  for (const lane of scene.lanes)
+    for (const s of lane.segments) {
+      const f = familyOf(s.model ?? lane.model)
+      const c0 = columnOf(scene, s.t0, width)
+      const c1 = Math.max(c0, columnOf(scene, s.t1, width))
+      for (let c = c0; c <= c1; c++) if (out[c] == null || rankOf(f) > rankOf(out[c]!)) out[c] = f
+    }
+  return out
 }
 
 // The columns where a pause was cut, for a dashed mark; and the active time the axis shows.

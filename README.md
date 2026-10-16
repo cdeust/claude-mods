@@ -1,6 +1,6 @@
 # claude-mods
 
-Claude Code mods and a separate [Codex adapter](codex/README.md) for the ai-architect.tools harness.
+Claude Code mods and a separate [Codex adapter](codex/README.md) for the ai-architect.tools agent setup.
 The Claude mods keep one concern per mod, state shared through
 `dependencies`:
 
@@ -12,7 +12,7 @@ The Claude mods keep one concern per mod, state shared through
 | `zetetic-autopilot` | `context`, `policy`, `phases`: effort ladder, model routing (a subagent's own definition first), pressure, offloaded tool results; the phase each loop is in and the advisor calls | `zetetic-genius` |
 | `zetetic-insights` | `insights`: the turn ledger across sessions ($.store), joined with `/insights` session outcomes and `.zetetic/goals`; per-phase effort proposals, `/calibrate apply\|reset`, the calibration file the autopilot reads | `zetetic-autopilot`, `zetetic-genius` |
 | `cortex-cockpit` | `stats`, `ledger`, `tally`, `stages`, `hygiene`; the `/cortex` pane draws the rest (PHASES, INSIGHTS, POLICY...) | the four above |
-| `mission-control` | `renderer`; the `/mission` pane: the turn's lanes by phase (bar height = effort, advisor calls, failed calls), effort per phase, learning curves per phase. Pixels in kitty or Ghostty outside tmux, coloured cells elsewhere | `zetetic-autopilot`, `zetetic-insights` |
+| `mission-control` | `renderer`; the `/mission` pane in two bands. For you: the turn's lanes by phase (bar height = effort, advisor calls, failed calls), the model per step of the recent sessions (a step lane, dearer models taller), the share of steps per model, learning curves per phase. For Claude: the brief in its system prompt, effort per phase, the live delegations and frictions. Pixels in kitty or Ghostty outside tmux, coloured cells elsewhere | `zetetic-autopilot`, `zetetic-insights` |
 | `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
 | `superpowers` | third-party skills library (obra/superpowers, MIT), pinned to v7.0.0 `bb92a77`: listed here so it installs with the mods; which skills we keep is decided after measurement | nothing |
 

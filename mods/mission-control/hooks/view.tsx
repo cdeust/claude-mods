@@ -3,11 +3,11 @@
 
 import type { Elements } from 'claude-code'
 
-import { IDLE, LABEL, delegationLines, familiesPresent, frictionLines, modelRows, paintCells, probeNote, segmentWidths, shareText } from './cells'
-import { GRID, INK, INK_2, MUTED, familyColor, phaseColor } from './palette'
+import { BRIEF_HEADER, IDLE, LABEL, MODEL_HEADER, type Piece, bandLine, briefLines, delegationLines, frictionLines, legendLine, paintCells, probeNote, sessionLines, shareLines, shareTrack, stripPieces } from './cells'
+import { GRID, INK, INK_2, MUTED, phaseColor } from './palette'
 import { MAX_IMAGE_COLUMNS } from './bitmap'
 import { curvePicture, lanesPicture } from './pixels'
-import { type Scene, WINDOW_MS, curveScale, curveSummary, rung } from './scene'
+import { type Scene, WINDOW_MS, curveScale, curveSummary, rung, windowLane } from './scene'
 
 export type Ui = Elements['terminal']
 
@@ -40,65 +40,11 @@ const Gauges = (ui: Ui, scene: Scene) => {
   )
 }
 
-// STEPS BY MODEL as text rows: coloured blocks, the same widths as the cells' section.
-const Models = (ui: Ui, scene: Scene, columns: number) => {
-  const { Box, Text } = ui
-  const track = Math.max(1, columns - LABEL - 24)
-  return (
-    <Box flexDirection="column">
-      <Text color={hex(INK)}>STEPS BY MODEL (this window, then the last sessions)</Text>
-      <Text>
-        <Text>{' '.repeat(LABEL)}</Text>
-        {familiesPresent(scene).map((f) => (
-          <Text>
-            <Text color={hex(familyColor(f))}>█</Text>
-            <Text color={hex(INK_2)}>{` ${f}  `}</Text>
-          </Text>
-        ))}
-      </Text>
-      {modelRows(scene).map((row) => {
-        const total = row.steps.reduce((n, s) => n + s.steps, 0)
-        const widths = segmentWidths(row.steps, track)
-        return (
-          <Text>
-            <Text color={hex(INK_2)}>{row.label.padEnd(LABEL)}</Text>
-            {total === 0 && <Text color={hex(MUTED)}>no step yet</Text>}
-            {row.steps.map((s, k) => (
-              <Text color={hex(familyColor(s.family))}>{'█'.repeat(widths[k]!)}</Text>
-            ))}
-            {total > 0 && <Text color={hex(INK_2)}>{`  ${shareText(row.steps)}`}</Text>}
-          </Text>
-        )
-      })}
-      {scene.models.probes > 0 && <Text color={hex(MUTED)}>{probeNote(scene)}</Text>}
-    </Box>
-  )
-}
-
-// DELEGATIONS as text rows: the same pieces and colours as the cells' section.
-const Delegations = (ui: Ui, scene: Scene) => {
+// Lines of coloured pieces as text rows: the same lines the cells painter writes.
+const Lines = (ui: Ui, lines: readonly Piece[][]) => {
   const { Box, Text } = ui
   return (
     <Box flexDirection="column">
-      {delegationLines(scene).map((line) => (
-        <Text>
-          {line.map((p) => (
-            <Text color={hex(p.color)}>{p.text}</Text>
-          ))}
-        </Text>
-      ))}
-    </Box>
-  )
-}
-
-// FRICTIONS as text rows: the same rows as the cells' section; nothing when the insights sends none.
-const Frictions = (ui: Ui, scene: Scene, columns: number) => {
-  const { Box, Text } = ui
-  const lines = frictionLines(scene, columns)
-  if (lines.length === 0) return null
-  return (
-    <Box flexDirection="column">
-      <Text> </Text>
       {lines.map((line) => (
         <Text>
           {line.map((p) => (
@@ -110,33 +56,32 @@ const Frictions = (ui: Ui, scene: Scene, columns: number) => {
   )
 }
 
-export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
+// FOR YOU, under the lanes: the step lane of each session and the share of steps, as text rows.
+const PixelsModels = (ui: Ui, scene: Scene, columns: number) => {
+  const { Box, Text } = ui
+  return (
+    <Box flexDirection="column">
+      <Text> </Text>
+      <Text color={hex(INK)}>{MODEL_HEADER}</Text>
+      {Lines(ui, [[{ text: ' '.repeat(LABEL), color: INK }, ...legendLine(scene)]])}
+      {scene.models.sessions.length === 0 && <Text color={hex(MUTED)}>no session in the ledger yet</Text>}
+      {Lines(ui, sessionLines(scene, Math.max(1, columns - LABEL - RIGHT)))}
+      {scene.models.probes > 0 && <Text color={hex(MUTED)}>{probeNote(scene)}</Text>}
+      <Text> </Text>
+      {Lines(ui, shareLines(scene, shareTrack(columns)))}
+      <Text> </Text>
+    </Box>
+  )
+}
+
+// FOR YOU, last: each phase's learning curve as a picture, on the one shared scale.
+const PixelsCurves = (ui: Ui, scene: Scene, track: number) => {
   const { Box, Text, Image } = ui
-  // Image boxes are 1 to 255 columns (ImageProps): a wider pane leaves the rest of the row empty.
-  const track = Math.min(MAX_IMAGE_COLUMNS, Math.max(1, columns - LABEL))
   const curveColumns = Math.max(1, track - RIGHT)
-  const lanes = lanesPicture(scene, track)
   const pct = (r: number) => `${Math.round(r * 100)}%`
   const scale = curveScale(scene.curves)
   return (
     <Box flexDirection="column">
-      <Text color={hex(INK)}>
-        MISSION CONTROL <Text color={hex(MUTED)}>{`turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length === 0 ? 'idle' : `${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}`}, last ${WINDOW_MS / 60_000} min`}</Text>
-      </Text>
-      <Text> </Text>
-      {scene.lanes.length === 0 && <Text color={hex(MUTED)}>{IDLE}</Text>}
-      <Box flexDirection="row">
-        <Box flexDirection="column" width={LABEL}>
-          {scene.lanes.flatMap((l) => [
-            <Text color={hex(l.isRunning ? INK : INK_2)}>{l.label.slice(0, LABEL - 2)}</Text>,
-            <Text color={hex(MUTED)}>{l.segments.map((s) => s.phase.slice(0, 4)).filter((p, i, a) => a.indexOf(p) === i).join(' ')}</Text>,
-          ])}
-        </Box>
-        <Image key="lanes" source={lanes.source()} columns={track} rows={Math.max(1, scene.lanes.length) * 2} alt={`${scene.lanes.length} lanes; the terminal draws no pixels here, set renderer to cells`} />
-      </Box>
-      <Text> </Text>
-      {Gauges(ui, scene)}
-      <Text> </Text>
       <Text color={hex(INK)}>{`FAILED CALLS PER STEP, BY PHASE${scene.curves.length === 0 ? '' : ` - one scale, 0-${pct(scale)}`}`}</Text>
       {scene.curves.length === 0 && <Text color={hex(MUTED)}>no phase has two points yet: the ledger fills as turns complete</Text>}
       {scene.curves.map((c) => (
@@ -153,11 +98,63 @@ export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
           </Box>
         </Box>
       ))}
+    </Box>
+  )
+}
+
+// FOR CLAUDE: the brief as sent, the effort per phase, the live evidence.
+const PixelsForClaude = (ui: Ui, scene: Scene, columns: number) => {
+  const { Box, Text } = ui
+  return (
+    <Box flexDirection="column">
       <Text> </Text>
-      {Models(ui, scene, columns)}
+      {Lines(ui, [bandLine('FOR CLAUDE', 'what the model reads, and what steers it', columns)])}
       <Text> </Text>
-      {Delegations(ui, scene)}
-      {Frictions(ui, scene, columns)}
+      <Text color={hex(INK)}>{BRIEF_HEADER}</Text>
+      {Lines(ui, briefLines(scene, columns))}
+      <Text> </Text>
+      {Gauges(ui, scene)}
+      <Text> </Text>
+      <Text color={hex(MUTED)}>LIVE EVIDENCE (the next session's brief is made from it)</Text>
+      {Lines(ui, delegationLines(scene))}
+      {frictionLines(scene, columns).length > 0 && <Text> </Text>}
+      {Lines(ui, frictionLines(scene, columns))}
+    </Box>
+  )
+}
+
+export const PixelsView = (ui: Ui, scene: Scene, columns: number) => {
+  const { Box, Text, Image } = ui
+  // Image boxes are 1 to 255 columns (ImageProps): a wider pane leaves the rest of the row empty.
+  const track = Math.min(MAX_IMAGE_COLUMNS, Math.max(1, columns - LABEL))
+  const lanes = lanesPicture(scene, track)
+  return (
+    <Box flexDirection="column">
+      <Text color={hex(INK)}>
+        MISSION CONTROL <Text color={hex(MUTED)}>{`turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length === 0 ? 'idle' : `${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}`}, last ${WINDOW_MS / 60_000} min`}</Text>
+      </Text>
+      <Text> </Text>
+      {Lines(ui, [bandLine('FOR YOU', 'what ran, and how it went', columns)])}
+      <Text> </Text>
+      {scene.lanes.length === 0 && <Text color={hex(MUTED)}>{IDLE}</Text>}
+      <Box flexDirection="row">
+        <Box flexDirection="column" width={LABEL}>
+          {scene.lanes.flatMap((l) => [
+            <Text color={hex(l.isRunning ? INK : INK_2)}>{l.label.slice(0, LABEL - 2)}</Text>,
+            <Text color={hex(MUTED)}>{l.segments.map((s) => s.phase.slice(0, 4)).filter((p, i, a) => a.indexOf(p) === i).join(' ')}</Text>,
+          ])}
+        </Box>
+        <Image key="lanes" source={lanes.source()} columns={track} rows={Math.max(1, scene.lanes.length) * 2} alt={`${scene.lanes.length} lanes; the terminal draws no pixels here, set renderer to cells`} />
+      </Box>
+      <Text>
+        <Text color={hex(INK_2)}>{'model'.padEnd(LABEL)}</Text>
+        {stripPieces(windowLane(scene, track)).map((p) => (
+          <Text color={hex(p.color)}>{p.text}</Text>
+        ))}
+      </Text>
+      {PixelsModels(ui, scene, columns)}
+      {PixelsCurves(ui, scene, track)}
+      {PixelsForClaude(ui, scene, columns)}
     </Box>
   )
 }

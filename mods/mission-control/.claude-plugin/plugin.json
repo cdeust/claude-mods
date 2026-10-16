@@ -1,7 +1,7 @@
 {
   "name": "mission-control",
-  "version": "0.5.0",
-  "description": "A graphical pane of the harness at work: every agent of the turn as a swimlane coloured by phase, bar height its effort, with advisor calls and failed tool calls marked; the effort each phase is calibrated to; and each phase's learning curve from the insights ledger, with the calibration's moves. Drawn in pixels where the terminal has the kitty graphics protocol (kitty, Ghostty, outside tmux), in coloured cells everywhere else (iTerm2, tmux). /mission opens it.",
+  "version": "0.6.0",
+  "description": "A graphical pane of the harness at work, in two bands. FOR YOU: every agent of the turn as a swimlane coloured by phase, bar height its effort, with advisor calls and failed tool calls marked, the model at work under them; each recent session as a step lane of the model per step; the share of steps per model; each phase's learning curve from the insights ledger. FOR CLAUDE: the self-calibration brief as the model reads it, the effort each phase is calibrated to, and the live delegations and frictions the next brief is made from. Drawn in pixels where the terminal has the kitty graphics protocol (kitty, Ghostty, outside tmux), in coloured cells everywhere else (iTerm2, tmux). /mission opens it.",
   "types": "./types/index.d.ts",
   "dependencies": ["zetetic-autopilot", "zetetic-insights"],
   "userConfig": {

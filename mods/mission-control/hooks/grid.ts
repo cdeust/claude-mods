@@ -85,6 +85,14 @@ export class Grid {
     return base64(bytes)
   }
 
+  // The first `rows` rows as a grid of their own: a painter lays out on the tallest grid and keeps
+  // the rows it drew, so no height is computed twice.
+  cropped(rows: number): Grid {
+    const g = new Grid(this.columns, Math.min(this.rows, Math.max(1, rows)), this.background)
+    g.words.set(this.words.subarray(0, g.words.length))
+    return g
+  }
+
   // The glyphs as text rows, for tests and for the `alt` of nothing.
   glyphRows(): string[] {
     const out: string[] = []

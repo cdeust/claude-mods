@@ -1,15 +1,15 @@
 import { expect, test } from 'claude-code/testing'
 
-import { paintCells, segmentWidths } from './cells'
+import { paintCells } from './cells'
 import { INSIGHTS, PHASES } from './fixture'
-import { type Curve, sceneOf } from './scene'
+import { type Curve, sceneOf, stepLane } from './scene'
 
 const scene = sceneOf(PHASES, INSIGHTS, 100_000)
 
 // source: claude-code types, RasterProps: one printable width-1 BMP character per cell (blocks,
-// box drawing, braille too), or the whole tree is refused. The painter uses ASCII, the lower
-// blocks, the shade and braille; anything else is a defect.
-const isAllowed = (c: number) => (c >= 0x20 && c < 0x7f) || (c >= 0x2580 && c <= 0x259f) || (c >= 0x2800 && c <= 0x28ff)
+// box drawing, braille too), or the whole tree is refused. The painter uses ASCII, box drawing
+// (the bands' rules, the cut mark), the blocks, the shade and braille; anything else is a defect.
+const isAllowed = (c: number) => (c >= 0x20 && c < 0x7f) || (c >= 0x2500 && c <= 0x259f) || (c >= 0x2800 && c <= 0x28ff)
 
 test('every cell is a glyph the Raster accepts, and cells holds exactly columns × rows triplets', () => {
   for (const columns of [40, 80, 143, 200]) {
@@ -25,12 +25,14 @@ test('the lanes, effort and curves read as drawn', () => {
   expect(rows[0]).toBe('MISSION CONTROL turn turn-000 - 3 lanes, last 10 min')
   // main: analysis at high (▆), implementation at medium (▄), test at medium; the advisor star
   // under analysis, 3 failed calls at the end of test.
-  expect(rows[2]).toMatch(/^main {11}▆{12,14}▄+$/)
-  expect(rows[3]).toMatch(/^ {15}analysis \*.*implementation.*test.*x3$/)
-  expect(rows[5]).toMatch(/analysis +x1$/)
-  expect(rows[4]!.startsWith('Explore')).toBe(true)
-  expect(rows[6]!.startsWith('code-reviewer')).toBe(true)
-  expect(rows.find((r) => r.startsWith('test ')) ).toMatch(/^test {11}█{12}░{4}  high \/ medium$/)
+  expect(rows[2]).toMatch(/^── FOR YOU  what ran, and how it went ─+$/)
+  expect(rows[4]).toMatch(/^main {11}▆{12,14}▄+$/)
+  expect(rows[5]).toMatch(/^ {15}analysis \*.*implementation.*test.*x3$/)
+  expect(rows[7]).toMatch(/analysis +x1$/)
+  expect(rows[6]!.startsWith('Explore')).toBe(true)
+  expect(rows[8]!.startsWith('code-reviewer')).toBe(true)
+  expect(rows[10]).toMatch(/^model {10}▇+$/)
+  expect(rows.find((r) => /^test {11}[█░]/.test(r))).toMatch(/^test {11}█{12}░{4}  high \/ medium$/)
   // analysis peaks at 10% on the shared 0-40% scale: its dots are in the three rows from its name down.
   const at = rows.findIndex((r) => r.startsWith('analysis') && /last/.test(r))
   expect(rows.slice(at, at + 3).some((r) => /[⠁-⣿]/.test(r))).toBe(true)
@@ -58,7 +60,7 @@ test('failed calls of runs closer than a mark are summed into one count, never p
     mechanical: null,
     frictions: null,
   }
-  const marks = paintCells(crowded, 60).glyphRows()[3]!.trim()
+  const marks = paintCells(crowded, 60).glyphRows()[5]!.trim()
   expect(marks).toBe('test                                    x7')
 })
 
@@ -67,46 +69,13 @@ test('a long pause is cut from the axis: two bursts share the track, a dashed ma
   const lanes = [{ id: 'main', label: 'main', model: 'm', isRunning: false, segments: [seg(0, 30_000), seg(630_000, 660_000)], advisor: [] }]
   const bursts = { t0: 0, t1: 660_000, spans: [{ t0: 0, t1: 30_000 }, { t0: 630_000, t1: 660_000 }], turnId: 't', lanes, gauges: [], curves: [], models: { window: [], sessions: [], probes: 0 }, delegations: null, mechanical: null, frictions: null }
   const rows = paintCells(bursts, 15 + 100).glyphRows()
-  const bar = rows[2]!.slice(15)
-  const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[3]!.slice(15).indexOf('┊')
+  const bar = rows[4]!.slice(15)
+  const cut = bar.indexOf('┊') >= 0 ? bar.indexOf('┊') : rows[5]!.slice(15).indexOf('┊')
   // 60 s of work over 100 columns, the cut taking 4 % of it: each burst ~48 columns, not 5.
   expect(bar.split('').filter((c) => c === '▄').length).toBeGreaterThan(90)
   expect(cut).toBeGreaterThan(40)
   expect(cut).toBeLessThan(60)
-  expect(rows[4]).toMatch(/1m00s of work, 1 pause cut/)
-})
-
-test('segmentWidths always sums to the track, every family with steps getting a column when the track allows', () => {
-  const widths = (steps: number[], track: number) => segmentWidths(steps.map((n, i) => ({ family: (['haiku', 'sonnet', 'opus'] as const)[i % 3]!, steps: n })), track)
-  expect(widths([1000], 20)).toEqual([20])
-  expect(widths([1000], 1)).toEqual([1])
-  expect(widths([1, 1, 1], 20)).toEqual([8, 6, 6])
-  expect(widths([1, 1, 1], 1)).toEqual([1, 0, 0])
-  expect(widths([1, 1, 1], 3)).toEqual([1, 1, 1])
-  expect(widths([1, 1000], 21)).toEqual([1, 20])
-  expect(widths([1, 1, 1, 1, 1000], 5)).toEqual([1, 1, 1, 1, 1].map((w, i) => (i === 4 ? 1 : w)))
-  expect(widths([0, 0], 10)).toEqual([0, 0])
-  for (let track = 1; track <= 40; track++)
-    for (const steps of [[1, 2, 3], [7, 7, 7], [1, 1, 1000], [5, 0, 5], [999, 1, 1]])
-      expect(widths(steps, track).reduce((a, b) => a + b, 0)).toBe(track)
-})
-
-test('STEPS BY MODEL: a header, a legend, the window then one row per session', () => {
-  const rows = paintCells(scene, 60).glyphRows().map((r) => r.trimEnd())
-  const at = rows.findIndex((r) => r.startsWith('STEPS BY MODEL'))
-  const section = rows.slice(at, at + 5)
-  expect(section).toEqual([
-    'STEPS BY MODEL (this window, then the last sessions)',
-    '               █ haiku  █ sonnet  █ opus',
-    'window         █████████████████████  haiku 15% opus 85%',
-    'abc10001       █████████████████████  sonnet 30% opus 70%',
-    'def20002       █████████████████████  haiku 12% sonnet 30% o',
-  ])
-})
-
-test('a row with no step prints no step yet', () => {
-  const rows = paintCells(sceneOf(null, null, 5), 50).glyphRows().map((r) => r.trimEnd())
-  expect(rows.find((r) => r.startsWith('window'))).toBe('window         no step yet')
+  expect(rows[7]).toMatch(/1m00s of work, 1 pause cut/)
 })
 
 test('DELEGATIONS: the header, the counts with their names, the newest rows first, the heavy share', () => {
@@ -234,12 +203,82 @@ test('sessions of one step are probes: counted apart, not drawn as 100% rows', (
   expect(s.models.probes).toBe(3)
   const rows = paintCells(s, 100).glyphRows().join('\n')
   expect(rows).toMatch(/\+3 probe sessions hidden/)
-  expect(rows).not.toMatch(/haiku 100%/)
-  expect(rows).toMatch(/sonnet 83% opus 17%/)
+  expect(rows).toMatch(/SHARE OF STEPS \(the 1 session above, 24 steps\)/)
+  expect(rows).toMatch(/sonnet +█+░* +83% +20/)
+  expect(rows).toMatch(/opus +█+░* +17% +4/)
+  expect(rows).not.toMatch(/haiku +█/)
 })
 
 test('no lane in the window says idle, in the header and the lanes area', () => {
   const rows = paintCells(sceneOf(null, null, 5), 80).glyphRows()
   expect(rows[0]).toMatch(/idle, last 10 min/)
-  expect(rows[2]).toMatch(/idle: no agent in the last 10 min/)
+  expect(rows[4]).toMatch(/idle: no agent in the last 10 min/)
+})
+
+test('stepLane: each column shows the dearest family among its steps, the oldest step left', () => {
+  // 4 steps over 2 columns: (haiku, opus) then (sonnet, haiku).
+  expect(stepLane([{ family: 'haiku', steps: 1 }, { family: 'opus', steps: 1 }, { family: 'sonnet', steps: 1 }, { family: 'haiku', steps: 1 }], 2)).toEqual(['opus', 'sonnet'])
+  // Fewer steps than columns: each step spans its columns.
+  expect(stepLane([{ family: 'haiku', steps: 1 }, { family: 'opus', steps: 1 }], 4)).toEqual(['haiku', 'haiku', 'opus', 'opus'])
+  // other and unknown never hide a named family; alone they are drawn.
+  expect(stepLane([{ family: 'unknown', steps: 1 }, { family: 'haiku', steps: 1 }], 1)).toEqual(['haiku'])
+  expect(stepLane([{ family: 'other', steps: 2 }], 2)).toEqual(['other', 'other'])
+  expect(stepLane([], 3)).toEqual([null, null, null])
+  // fable is the dearest.
+  expect(stepLane([{ family: 'opus', steps: 3 }, { family: 'fable', steps: 1 }], 1)).toEqual(['fable'])
+})
+
+test('MODEL PER STEP: one lane per session in step order, its step count after it, a legend above', () => {
+  const g = paintCells(scene, 60)
+  const rows = g.glyphRows().map((r) => r.trimEnd())
+  const at = rows.findIndex((r) => r.startsWith('MODEL PER STEP'))
+  expect(rows[at + 1]).toBe('               ▃ haiku   ▅ sonnet   ▇ opus')
+  expect(rows[at + 2]).toMatch(/^abc10001 {7}▇{14}▅{10}▇{11} 100 st$/)
+  expect(rows[at + 3]).toMatch(/^def20002 {7}▇{7}▃{4}▅{11}▇{13} 100 st$/)
+  // Colour and height follow the order: def20002 starts on opus, has haiku a fifth in, ends on opus.
+  const fg = (x: number, y: number) => g.words[(y * g.columns + x) * 3 + 1]!
+  expect(fg(15, at + 3)).toBe(0xaf005f)
+  expect(fg(15 + 8, at + 3)).toBe(0x00af5f)
+  expect(fg(15 + 34, at + 3)).toBe(0xaf005f)
+})
+
+test('MODEL PER STEP: an insights that sends no step order says so instead of inventing one', () => {
+  const old = { ...INSIGHTS, models: INSIGHTS.models.map((m) => ({ ...m, sequence: undefined })) } as unknown as typeof INSIGHTS
+  const rows = paintCells(sceneOf(PHASES, old, 100_000), 90).glyphRows().map((r) => r.trimEnd())
+  expect(rows).toContain('abc10001       step order not sent (zetetic-insights before 0.10)')
+})
+
+test('SHARE OF STEPS: one row per family, the share and the count printed in full at every width', () => {
+  for (const columns of [40, 60, 100]) {
+    const rows = paintCells(scene, columns).glyphRows().map((r) => r.trimEnd())
+    const at = rows.findIndex((r) => r.startsWith('SHARE OF STEPS'))
+    expect(rows[at]).toBe('SHARE OF STEPS (the 2 sessions above, 200 steps)'.slice(0, columns))
+    expect(rows[at + 1]).toMatch(/^haiku {10}█+░+ +6% {2}12$/)
+    expect(rows[at + 2]).toMatch(/^sonnet {9}█+░+ +30% {2}60$/)
+    expect(rows[at + 3]).toMatch(/^opus {11}█+░+ +64% {2}128$/)
+    for (const r of rows.slice(at + 1, at + 4)) expect(r.length).toBeLessThanOrEqual(columns)
+  }
+})
+
+test('two bands: FOR YOU above, FOR CLAUDE below holding the brief as sent, the effort and the live evidence', () => {
+  const rows = paintCells(scene, 100).glyphRows().map((r) => r.trimEnd())
+  const you = rows.findIndex((r) => r.startsWith('── FOR YOU'))
+  const claude = rows.findIndex((r) => r.startsWith('── FOR CLAUDE'))
+  expect(you).toBe(2)
+  for (const s of ['MODEL PER STEP', 'SHARE OF STEPS', 'FAILED CALLS']) {
+    const at = rows.findIndex((r) => r.startsWith(s))
+    expect(at > you && at < claude).toBe(true)
+  }
+  for (const s of ['SELF-CALIBRATION BRIEF', 'EFFORT', 'DELEGATIONS', 'FRICTIONS']) expect(rows.findIndex((r) => r.startsWith(s))).toBeGreaterThan(claude)
+  const brief = rows.findIndex((r) => r.startsWith('SELF-CALIBRATION BRIEF'))
+  expect(rows[brief + 1]).toBe('Self-calibration (zetetic-insights ledger, last 5 sessions). Measured, not prescribed:')
+  // A long "- " line wraps under its own text.
+  expect(rows[brief + 2]!.startsWith('- main thread on opus/fable: 25%')).toBe(true)
+  expect(rows[brief + 3]!.startsWith('  ')).toBe(true)
+  expect(Math.max(...rows.map((r) => r.length))).toBeLessThanOrEqual(100)
+})
+
+test('no brief says so in the FOR CLAUDE band', () => {
+  const rows = paintCells(sceneOf(null, null, 5), 90).glyphRows().map((r) => r.trimEnd())
+  expect(rows).toContain('no brief this session: the ledger had nothing to say when it started')
 })

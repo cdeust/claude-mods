@@ -34,15 +34,19 @@ export const phaseColor = (phase: Phase): number => SLOTS[PHASE_ORDER.indexOf(ph
 
 export const rgb = (color: number): [number, number, number] => [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff]
 
-// A second categorical dimension, the model family, drawn only in the STEPS BY MODEL section and
-// always beside its printed family name (the secondary encoding the 6-8 band needs). Exact xterm
-// entries again.
-// source: same palette's slots (blue, purple, green, orange) and its neutrals, one per family.
+// A second categorical dimension, the model family, drawn only in the model sections, always beside
+// its printed family name and, in a step lane, at its own height (the secondary encoding). Exact
+// xterm entries again. The earlier slots (sonnet #5f87d7 beside opus #8787d7) failed once a lane put
+// them side by side: normal-vision ΔE 5.1, protan 1.3.
+// source: `validate_palette.js --mode dark --surface #1c1c1c --pairs all` over every 3-colour set of
+// the xterm cube inside the band (51 entries), best worst-pair kept: haiku/sonnet/opus pass with CVD
+// ΔE 17.1, normal 34.2; fable the best fourth, all four CVD 10.1, normal 19.3. Opus is 2.4:1 on the
+// surface, under 3:1: the relief the validator names is the printed family name, always present.
 const FAMILY_SLOTS: Record<ModelFamily, number> = {
   haiku: 0x00af5f,
-  sonnet: 0x5f87d7,
-  opus: 0x8787d7,
-  fable: 0xd75f00,
+  sonnet: 0x005fff,
+  opus: 0xaf005f,
+  fable: 0xaf5f00,
   other: 0xbcbcbc,
   unknown: 0x444444,
 }

@@ -3,23 +3,25 @@
 
 import type { InsightsState, PhasesState } from './scene'
 
-const run = (phase: string, effort: string | null, steps: number, errors: number, since: number) => ({ phase, effort, steps, errors, since })
+// A run's steps, failed calls and start.
+type Counts = [number, number, number]
+const run = (phase: string, effort: string | null, n: Counts) => ({ phase, effort, steps: n[0], errors: n[1], since: n[2] })
 
 export const PHASES = {
   turnId: 'turn-0001-abcd',
   loops: [
     {
       id: 'main', type: 'main', description: 'main loop', model: 'claude-opus-5-5', effort: 'high', phase: 'test', status: 'running',
-      runs: [run('analysis', 'high', 6, 0, 0), run('implementation', 'medium', 10, 0, 30_000), run('test', 'medium', 8, 3, 70_000)],
+      runs: [run('analysis', 'high', [6, 0, 0]), run('implementation', 'medium', [10, 0, 30_000]), run('test', 'medium', [8, 3, 70_000])],
       advisorCalls: 1, wrote: true, updatedAt: 100_000,
     },
     {
       id: 'a1', type: 'Explore', description: 'look around', model: 'claude-haiku-5-5', effort: 'low', phase: 'analysis', status: 'done',
-      runs: [run('analysis', 'low', 5, 1, 5_000)], advisorCalls: 0, wrote: false, updatedAt: 40_000,
+      runs: [run('analysis', 'low', [5, 1, 5_000])], advisorCalls: 0, wrote: false, updatedAt: 40_000,
     },
     {
       id: 'a2', type: 'zetetic-team-subagents:code-reviewer', description: 'review', model: 'claude-opus-5-5', effort: 'high', phase: 'review', status: 'running',
-      runs: [run('review', 'high', 4, 0, 80_000)], advisorCalls: 0, wrote: false, updatedAt: 95_000,
+      runs: [run('review', 'high', [4, 0, 80_000])], advisorCalls: 0, wrote: false, updatedAt: 95_000,
     },
   ],
   advisor: { session: 1, uses: [{ at: 20_000, turnId: 'turn-0001-abcd', phase: 'analysis', when: 'before-write', calls: 1 }] },
@@ -44,10 +46,12 @@ export const INSIGHTS = {
   ],
   mechanical: { sessions: 5, heavyReads: 30, heavySteps: 120, unmeasured: 0, share: 0.25 },
   calibration: { version: 1, phases: { test: 'high' }, evidence: {}, changes: {}, updatedAt: 1 },
+  // Each session's steps in the order they ran (`sequence`), summing to its `steps`.
   models: [
-    { session: 'abc10001-aaaa', at: 1000, steps: [{ family: 'sonnet', steps: 30 }, { family: 'opus', steps: 70 }] },
-    { session: 'def20002-bbbb', at: 2000, steps: [{ family: 'haiku', steps: 12 }, { family: 'sonnet', steps: 30 }, { family: 'opus', steps: 58 }] },
+    { session: 'abc10001-aaaa', at: 1000, probe: false, probeReason: null, steps: [{ family: 'sonnet', steps: 30 }, { family: 'opus', steps: 70 }], sequence: [{ family: 'opus', steps: 40 }, { family: 'sonnet', steps: 30 }, { family: 'opus', steps: 30 }] },
+    { session: 'def20002-bbbb', at: 2000, probe: false, probeReason: null, steps: [{ family: 'haiku', steps: 12 }, { family: 'sonnet', steps: 30 }, { family: 'opus', steps: 58 }], sequence: [{ family: 'opus', steps: 20 }, { family: 'haiku', steps: 12 }, { family: 'sonnet', steps: 30 }, { family: 'opus', steps: 38 }] },
   ],
+  brief: 'Self-calibration (zetetic-insights ledger, last 5 sessions). Measured, not prescribed:\n- main thread on opus/fable: 25% of its measured steps only read files (Read, Grep, Glob); those reads need no heavy model.\n- delegations: 9 (7 with a DESIGN block); overkill 2, underpowered 0, undesigned 1, rerouted 0.',
   trends: [
     { phase: 'analysis', points: points([0.1, 0.05, 0.08, 0.02]), move: null },
     { phase: 'test', points: points([0.4, 0.35, 0.3, 0.1, 0.05]), move: { at: 3000, from: 'medium', to: 'high' } },

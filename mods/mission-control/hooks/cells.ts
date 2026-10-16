@@ -1,9 +1,11 @@
-// The scene painted into one grid of cells: lanes, the effort per phase, the learning curves.
-// Pure; the register file hands the grid to a `Raster`.
+// The scene painted into one grid of cells, in two bands: FOR YOU (what ran: the lanes, the model per
+// step, the share of steps, the learning curves) and FOR CLAUDE (what reaches the model: the brief in
+// its system prompt, the effort the autopilot runs each phase at, and the live evidence the next
+// brief is made from). Pure; the register file hands the grid to a `Raster`.
 
-import { Grid, MAX_COLUMNS } from './grid'
+import { Grid, MAX_COLUMNS, MAX_ROWS } from './grid'
 import { CRITICAL, GRID, INK, INK_2, MUTED, SURFACE, familyColor, phaseColor } from './palette'
-import { FAMILIES, curveScale, curveSummary, type Curve, type Gauge, type Lane, type ModelFamily, type ModelSteps, type Scene, PROBE_STEPS, WINDOW_MS, columnOf, cutsOf, familyOf, rung } from './scene'
+import { FAMILIES, curveScale, curveSummary, type Curve, type Gauge, type Lane, type ModelFamily, type ModelSteps, type Scene, PROBE_STEPS, WINDOW_MS, columnOf, cutsOf, familyOf, rung, sequenceOf, stepLane, windowLane } from './scene'
 
 export const LABEL = 15 // source: own choice, the longest phase name ("implementation") is 14, and a space
 const RIGHT = 10 // the curves' value column
@@ -28,51 +30,6 @@ export const probeNote = (scene: Scene): string => `+${scene.models.probes} prob
 export const IDLE = `idle: no agent in the last ${WINDOW_MS / 60_000} min`
 
 const pct = (r: number): string => `${Math.round(r * 100)}%`
-
-const heightOf = (scene: Scene): number =>
-  2 + Math.max(1, scene.lanes.length) * 2 + 2 + 2 + Math.max(1, scene.gauges.length) + 1 + 1 + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 3 + scene.models.sessions.length + (scene.models.probes > 0 ? 1 : 0) + 1 + delegationLines(scene).length + frictionLines(scene, MAX_COLUMNS).length + (scene.frictions == null ? 0 : 1)
-
-// The room the printed shares take to the right of a model bar (two spaces, three families).
-const SHARES = 24 // source: own choice, "  haiku 12% sonnet 30% opus 58%" is 31 and is cut at the edge
-
-// The bar's columns per family, in the order given, summing to exactly `track`: floor of each
-// share, every family with steps at least one column, the difference (the rounding, or the
-// columns the minimums took) added to or taken from the widest. A track shorter than the number
-// of families gives its columns to the largest ones.
-export const segmentWidths = (steps: readonly ModelSteps[], track: number): number[] => {
-  const total = steps.reduce((n, s) => n + s.steps, 0)
-  const widths = steps.map(() => 0)
-  if (total <= 0 || track <= 0) return widths
-  const order = steps.map((_, i) => i).filter((i) => steps[i]!.steps > 0).sort((a, b) => steps[b]!.steps - steps[a]!.steps || a - b)
-  if (track < order.length) {
-    for (const i of order.slice(0, track)) widths[i] = 1
-    return widths
-  }
-  for (const i of order) widths[i] = Math.max(1, Math.floor((steps[i]!.steps / total) * track))
-  let diff = track - widths.reduce((n, w) => n + w, 0)
-  widths[order[0]!]! += Math.max(0, diff)
-  for (; diff < 0; diff++) widths[widths.reduce((best, w, i) => (w > widths[best]! ? i : best), 0)]!--
-  return widths
-}
-
-export const shareText = (steps: readonly ModelSteps[]): string => {
-  const total = steps.reduce((n, s) => n + s.steps, 0)
-  return steps.map((s) => `${s.family} ${Math.round((s.steps / total) * 100)}%`).join(' ')
-}
-
-// The window's row, then one per session; each with the label it carries, its families in the
-// fixed order and only those with a step.
-export const modelRows = (scene: Scene): { label: string; steps: ModelSteps[] }[] =>
-  [
-    { label: 'window', steps: scene.models.window },
-    ...scene.models.sessions.map((s) => ({ label: s.session.slice(0, 8), steps: s.steps })),
-  ].map((r) => ({ label: r.label, steps: r.steps.filter((s) => s.steps > 0).sort((a, b) => FAMILIES.indexOf(a.family) - FAMILIES.indexOf(b.family)) }))
-
-// The families with a step in any row, in the fixed order.
-export const familiesPresent = (scene: Scene): ModelFamily[] => {
-  const seen = new Set(modelRows(scene).flatMap((r) => r.steps.map((s) => s.family)))
-  return FAMILIES.filter((f) => seen.has(f))
-}
 
 // The DELEGATIONS section as lines of coloured pieces, shared by both painters. Every number is the
 // insights field it names; the colour never carries the meaning alone (the count is printed).
@@ -119,43 +76,132 @@ export const frictionLines = (scene: Scene, columns: number): Piece[][] => {
   return lines
 }
 
-function frictions(g: Grid, scene: Scene, top: number): void {
-  frictionLines(scene, g.columns).forEach((line, i) => {
-    let x = 0
-    for (const p of line) x = g.text(x, top + i, p.text, p.color)
-  })
+
+
+// Shared by both painters: the families' legend, the step lanes and the share bars, as lines of
+// coloured pieces. A family's colour is always beside its printed name (the legend, the share rows).
+const BLOCK = '\u2588'
+const LIGHT = '\u2591'
+
+// The families drawn in the model sections, in the fixed order.
+export const familiesShown = (scene: Scene): ModelFamily[] => {
+  const seen = new Set<ModelFamily>([
+    ...scene.models.window.map((s) => s.family),
+    ...scene.models.sessions.flatMap((s) => [...s.steps.map((m) => m.family), ...(sequenceOf(s) ?? []).map((m) => m.family)]),
+  ])
+  return FAMILIES.filter((f) => seen.has(f))
 }
 
-function delegations(g: Grid, scene: Scene, top: number): void {
-  delegationLines(scene).forEach((line, i) => {
-    let x = 0
-    for (const p of line) x = g.text(x, top + i, p.text, p.color)
-  })
-}
+// A family's height in a step lane, cheap to dear, so the lane climbs like stairs and the colour is
+// never the only cue: haiku a third, sonnet a half and more, opus near full, fable full; other and
+// unknown a sliver (U+2581..U+2588 lower blocks).
+const STEP: Record<ModelFamily, string> = { unknown: '\u2581', other: '\u2581', haiku: '\u2583', sonnet: '\u2585', opus: '\u2587', fable: '\u2588' }
 
-function models(g: Grid, scene: Scene, top: number): void {
-  g.text(0, top, 'STEPS BY MODEL (this window, then the last sessions)', INK)
-  let x = LABEL
-  for (const f of familiesPresent(scene)) {
-    g.put(x, top + 1, FULL, familyColor(f))
-    x = g.text(x + 1, top + 1, ` ${f}  `, INK_2)
+export const legendLine = (scene: Scene): Piece[] =>
+  familiesShown(scene).flatMap((f, i) => [
+    { text: `${i === 0 ? '' : '   '}${STEP[f]}`, color: familyColor(f) },
+    { text: ` ${f}`, color: INK_2 },
+  ])
+
+// A strip of families as pieces: one block per column at its family's height, runs of one family
+// merged; null is a space.
+export const stripPieces = (strip: readonly (ModelFamily | null)[]): Piece[] => {
+  const out: Piece[] = []
+  for (const f of strip) {
+    const color = f === null ? SURFACE : familyColor(f)
+    const glyph = f === null ? ' ' : STEP[f]
+    const last = out[out.length - 1]
+    if (last !== undefined && last.color === color) last.text += glyph
+    else out.push({ text: glyph, color })
   }
-  const track = Math.max(1, g.columns - LABEL - SHARES)
-  modelRows(scene).forEach((row, i) => {
-    const y = top + 2 + i
-    g.text(0, y, row.label, INK_2)
-    if (row.steps.length === 0) {
-      g.text(LABEL, y, 'no step yet', MUTED)
-      return
-    }
-    const widths = segmentWidths(row.steps, track)
-    let c = LABEL
-    row.steps.forEach((s, k) => {
-      for (let w = 0; w < widths[k]!; w++) g.put(c++, y, FULL, familyColor(s.family))
-    })
-    g.text(LABEL + track, y, `  ${shareText(row.steps)}`, INK_2)
+  return out
+}
+
+const total = (steps: readonly ModelSteps[]): number => steps.reduce((n, s) => n + s.steps, 0)
+
+// MODEL PER STEP: one lane per session shown, its steps in the order they ran over `track` columns.
+export const MODEL_HEADER = 'MODEL PER STEP (last sessions, oldest step left; a column shows its dearest model, dearer is taller)'
+export const sessionLines = (scene: Scene, track: number): Piece[][] =>
+  scene.models.sessions.map((s) => {
+    const seq = sequenceOf(s)
+    const label: Piece = { text: s.session.slice(0, 8).padEnd(LABEL), color: INK_2 }
+    if (seq === null) return [label, { text: 'step order not sent (zetetic-insights before 0.10)', color: MUTED }]
+    return [label, ...stripPieces(stepLane(seq, track)), { text: ` ${total(seq)} st`, color: MUTED }]
   })
-  if (scene.models.probes > 0) g.text(0, top + 2 + modelRows(scene).length, probeNote(scene), MUTED)
+
+// SHARE OF STEPS: one row per family over the sessions shown, a bar of its share of the whole and
+// the share and the count printed in full after it, never cut.
+const share = (part: number, whole: number): string => {
+  const p = Math.round((100 * part) / whole)
+  return p === 0 && part > 0 ? '<1%' : `${p}%`
+}
+
+export const shareLines = (scene: Scene, track: number): Piece[][] => {
+  const by = new Map<ModelFamily, number>()
+  for (const s of scene.models.sessions) for (const m of s.steps) by.set(m.family, (by.get(m.family) ?? 0) + m.steps)
+  const whole = [...by.values()].reduce((n, v) => n + v, 0)
+  const head: Piece[] = [{ text: `SHARE OF STEPS (the ${scene.models.sessions.length} session${scene.models.sessions.length === 1 ? '' : 's'} above, ${whole} steps)`, color: INK }]
+  if (whole === 0) return [head, [{ text: 'no session with a step yet', color: MUTED }]]
+  const rows = FAMILIES.filter((f) => (by.get(f) ?? 0) > 0).map((f): Piece[] => {
+    const n = by.get(f)!
+    const filled = Math.min(track, Math.max(1, Math.round((n / whole) * track)))
+    return [
+      { text: f.padEnd(LABEL), color: INK_2 },
+      { text: BLOCK.repeat(filled), color: familyColor(f) },
+      { text: LIGHT.repeat(track - filled), color: GRID },
+      { text: ` ${share(n, whole).padStart(4)}`, color: INK },
+      { text: `  ${n}`, color: MUTED },
+    ]
+  })
+  return [head, ...rows]
+}
+
+// The share bar's columns: what the row leaves after the label and the printed share and count.
+export const shareTrack = (columns: number): number => Math.max(1, columns - LABEL - 14)
+
+// The band that opens each half of the pane: its name, what it holds, a rule to the edge.
+export const bandLine = (name: string, what: string, columns: number): Piece[] => {
+  const head = `\u2500\u2500 ${name} `
+  const rest = ` ${what} `
+  return [
+    { text: head.slice(0, columns), color: INK },
+    { text: rest.slice(0, Math.max(0, columns - head.length)), color: MUTED },
+    { text: '\u2500'.repeat(Math.max(0, columns - head.length - rest.length)), color: GRID },
+  ]
+}
+
+// The brief as the model reads it, wrapped to the pane: a "- " line continues under its text.
+export const BRIEF_HEADER = 'SELF-CALIBRATION BRIEF (end of the system prompt, frozen at session start)'
+export const briefLines = (scene: Scene, columns: number): Piece[][] => {
+  if (scene.brief == null) return [[{ text: 'no brief this session: the ledger had nothing to say when it started', color: MUTED }]]
+  const out: Piece[][] = []
+  for (const raw of scene.brief.split('\n').map(ascii)) {
+    const indent = raw.startsWith('- ') ? '  ' : ''
+    let line = raw
+    while (line.length > columns) {
+      const at = line.lastIndexOf(' ', columns)
+      const cutAt = at > indent.length ? at : columns
+      out.push([{ text: line.slice(0, cutAt), color: INK_2 }])
+      line = indent + line.slice(cutAt).trimStart()
+    }
+    out.push([{ text: line, color: INK_2 }])
+  }
+  return out
+}
+
+// A line of pieces at (x, y); a glyph outside what the Raster takes is drawn as `?`.
+const RASTER_OK = (c: number): boolean => (c >= 0x20 && c < 0x7f) || (c >= 0x2500 && c <= 0x259f) || (c >= 0x2800 && c <= 0x28ff)
+function write(g: Grid, x: number, y: number, line: readonly Piece[]): void {
+  for (const p of line)
+    for (const ch of p.text) {
+      const c = ch.codePointAt(0)!
+      g.put(x++, y, RASTER_OK(c) ? c : 0x3f, p.color)
+    }
+}
+
+function writeAll(g: Grid, top: number, lines: readonly Piece[][]): number {
+  lines.forEach((line, i) => write(g, 0, top + i, line))
+  return top + lines.length
 }
 
 function lanes(g: Grid, scene: Scene, top: number): number {
@@ -199,7 +245,11 @@ function lanes(g: Grid, scene: Scene, top: number): number {
   for (const c of cutsOf(scene, width).columns)
     for (let y = top; y < top + scene.lanes.length * 2; y++)
       if (g.words[(y * g.columns + LABEL + c) * 3] === 0x20) g.put(LABEL + c, y, DASH, GRID)
-  return top + scene.lanes.length * 2
+  // Under the lanes, on their time axis: the dearest model at work in each column.
+  const y = top + scene.lanes.length * 2
+  write(g, 0, y, [{ text: 'model', color: INK_2 }])
+  write(g, LABEL, y, stripPieces(windowLane(scene, width)))
+  return y + 1
 }
 
 function gauges(g: Grid, list: readonly Gauge[], top: number): number {
@@ -240,23 +290,40 @@ function curve(g: Grid, c: Curve, scale: number, top: number): void {
 }
 
 export const paintCells = (scene: Scene, columns: number): Grid => {
-  const g = new Grid(Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, columns)), heightOf(scene), SURFACE)
+  const g = new Grid(Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, columns)), MAX_ROWS, SURFACE)
+  const w = g.columns
   g.text(0, 0, 'MISSION CONTROL', INK)
   g.text(16, 0, `turn ${(scene.turnId ?? '-').slice(0, 8)} - ${scene.lanes.length === 0 ? 'idle' : `${scene.lanes.length} lane${scene.lanes.length === 1 ? '' : 's'}`}, last ${WINDOW_MS / 60_000} min`, MUTED)
-  let y = lanes(g, scene, 2)
-  const cuts = cutsOf(scene, g.columns - LABEL)
+
+  // FOR YOU: what ran, and how it went.
+  write(g, 0, 2, bandLine('FOR YOU', 'what ran, and how it went', w))
+  let y = lanes(g, scene, 4)
+  const cuts = cutsOf(scene, w - LABEL)
   g.text(LABEL, y, `${duration(cuts.activeMs)} of work${cuts.columns.length === 0 ? '' : `, ${cuts.columns.length} pause${cuts.columns.length === 1 ? '' : 's'} cut`}`, MUTED)
-  g.text(g.columns - 3, y, 'now', MUTED)
+  g.text(w - 3, y, 'now', MUTED)
   y += 2
-  y = gauges(g, scene.gauges, y) + 1
+  g.text(0, y, MODEL_HEADER.slice(0, w), INK)
+  write(g, LABEL, y + 1, legendLine(scene))
+  y += 2
+  if (scene.models.sessions.length === 0) g.text(0, y++, 'no session in the ledger yet', MUTED)
+  y = writeAll(g, y, sessionLines(scene, Math.max(1, w - LABEL - RIGHT)))
+  if (scene.models.probes > 0) g.text(0, y++, probeNote(scene), MUTED)
+  y = writeAll(g, y + 1, shareLines(scene, shareTrack(w))) + 1
   g.text(0, y, `FAILED CALLS PER STEP, BY PHASE${scene.curves.length === 0 ? '' : ` - one scale, 0-${pct(curveScale(scene.curves))}`}`, INK)
   y += 1
   if (scene.curves.length === 0) g.text(0, y, 'no phase has two points yet: the ledger fills as turns complete', MUTED)
   scene.curves.forEach((c, i) => curve(g, c, curveScale(scene.curves), y + i * (CURVE_ROWS + 1)))
-  const m = y + Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 1
-  models(g, scene, m)
-  const d = m + 2 + modelRows(scene).length + (scene.models.probes > 0 ? 1 : 0) + 1
-  delegations(g, scene, d)
-  frictions(g, scene, d + delegationLines(scene).length + 1)
-  return g
+  y += Math.max(1, scene.curves.length * (CURVE_ROWS + 1)) + 1
+
+  // FOR CLAUDE: what reaches the model, and what it is made from.
+  write(g, 0, y, bandLine('FOR CLAUDE', 'what the model reads, and what steers it', w))
+  y += 2
+  g.text(0, y++, BRIEF_HEADER.slice(0, w), INK)
+  y = writeAll(g, y, briefLines(scene, w)) + 1
+  y = gauges(g, scene.gauges, y) + 1
+  g.text(0, y++, 'LIVE EVIDENCE (the next session\'s brief is made from it)', MUTED)
+  y = writeAll(g, y, delegationLines(scene))
+  const f = frictionLines(scene, w)
+  if (f.length > 0) y = writeAll(g, y + 1, f)
+  return g.cropped(y)
 }
