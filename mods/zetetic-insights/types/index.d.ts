@@ -7,7 +7,9 @@ export type Effort = 'low' | 'medium' | 'high'
 
 // `reads` mirrors the autopilot's PhaseRun.reads: steps whose every call was Read, Grep or Glob.
 // Absent on records written before it was kept: such records are not measured.
-export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number }
+// `escalated`: the run sits on a rung the autopilot's stuck escalation chose (3 failed calls in a row raise
+// a step one notch), not the one the graded base and the ceiling gave (hooks/reach.ts); set only when true.
+export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number; escalated?: true }
 
 // The design contract a delegation was dispatched under, read from the DESIGN block of its prompt
 // (the dispatch-contract skill): the model and effort the orchestrator chose and the genius shape it
@@ -103,6 +105,12 @@ export type TurnRecord = {
   turnId: string
   at: number
   taskClass: string | null
+  // The effort the request classifier graded the turn at (zetetic-genius `classified.effort`), the rung its
+  // tool loop starts from; absent when the turn was not graded. `pressured`: quota or context pressure held
+  // the autopilot's ladder down at the end of the turn (set only when true). Both say why a run sits on its
+  // rung, which a move of the ceiling is compared on (hooks/reach.ts).
+  base?: string
+  pressured?: true
   main: RunRecord[]
   agents: AgentRecord[]
   // The model main ran on this turn (autopilot phases, main loop); absent on records written before
@@ -151,18 +159,21 @@ export type RateInterval = { errors: number; steps: number; lo: number; hi: numb
 export type Finding = {
   phase: Phase
   effort: string
-  kind: 'unreachable' | 'unresolved' | 'no-reference' | 'unstable' | 'held'
+  kind: 'unreachable' | 'unmeasured' | 'unresolved' | 'no-reference' | 'unstable' | 'held'
   // One sentence with the numbers.
   note: string
 }
 
-// A phase's statistics for one side of a move (hooks/effect.ts): failed calls and steps by task class, and the outcome
+// A phase's statistics for one side of a move (hooks/effect.ts), of the steps the move governed (hooks/reach.ts): failed calls and steps by task class, and the outcome
 // of each session that side holds, keyed by the first 8 characters of the session id.
 export type Snapshot = { byClass: Record<string, { steps: number; errors: number }>; sessions: Record<string, 'achieved' | 'not-achieved' | 'unclear'> }
 // One applied move: the runs before it, frozen when it was made (the ledger may later trim them), and
 // the runs after it, frozen when a later move of the same phase superseded it (null while it is the last).
 export type Move = { phase: Phase; at: number; from: Effort; to: Effort; pre: Snapshot; post: Snapshot | null }
-export type Credit = 'benefit' | 'harm' | 'inconclusive' | 'insufficient'
+// `no-baseline`: no step before the move was governed by it (a move made under 0.8.x kept no statistics;
+// or no graded turn ran at the rung it left): nothing can show it harmful, so nothing protects it.
+// `insufficient`: the rung moved to has no governed step yet.
+export type Credit = 'benefit' | 'harm' | 'inconclusive' | 'insufficient' | 'no-baseline'
 // The effect of a move: the difference post - pre with its interval (Newcombe), for the failed-call rate and for the
 // share of sessions achieved. A move is credited only on a comparison of the same phase and the same task classes.
 export type DeltaInterval = { d: number; lo: number; hi: number }

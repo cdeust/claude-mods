@@ -42,6 +42,13 @@ test("a goal's state is its last status line", () => {
   expect(goalStatus('# G\nno status\n')).toBe('none')
 })
 
+test('M20 the moves of a calibration file survive reading it: their frozen pre statistics are never discarded', () => {
+  const move = { phase: 'test' as const, at: 7, from: 'medium' as const, to: 'high' as const, pre: { byClass: { bugfix: { steps: 160, errors: 48 } }, sessions: { abcdef12: 'achieved' as const } }, post: null }
+  const c = { ...emptyCalibration(), phases: { test: 'high' as const }, changes: { test: { at: 7, from: 'medium' as const, to: 'high' as const } }, moves: [move], updatedAt: 7 }
+  expect(parseCalibration(JSON.stringify(c)).moves).toEqual([move])
+  expect(parseCalibration(JSON.stringify({ ...c, moves: 'not a list' })).moves).toEqual([])
+})
+
 test('applying writes the new effort and its evidence; a calibration file of another shape is refused', () => {
   const c = applied(emptyCalibration(), [{ phase: 'test', from: 'medium', to: 'high', evidence: 'e', rate: { errors: 1, steps: 2, lo: 0, hi: 1 }, reference: { errors: 0, steps: 2, lo: 0, hi: 1 } }], 7)
   expect(c).toEqual({
