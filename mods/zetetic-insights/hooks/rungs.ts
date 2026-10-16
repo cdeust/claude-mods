@@ -11,11 +11,23 @@ import { HALF_WIDTH, type Interval, isResolved, newcombe, wilson } from './stats
 export const UNCLASSIFIED = 'unclassified' // a turn the genius grade did not class
 
 // One main run of one turn: the unit every statistic below pools.
-export type Cell = { phase: Phase; effort: string; taskClass: string; session: string; at: number; steps: number; errors: number }
+// `base`: the graded effort of its turn (null: not graded); `escalated`, `pressured`: why else it sat on its rung (hooks/reach.ts).
+export type Cell = { phase: Phase; effort: string; taskClass: string; session: string; at: number; steps: number; errors: number; base: string | null; escalated: boolean; pressured: boolean }
 
 export const cellsOf = (records: readonly TurnRecord[]): Cell[] =>
   records.flatMap((r) =>
-    r.main.map((run) => ({ phase: run.phase, effort: run.effort ?? 'default', taskClass: r.taskClass ?? UNCLASSIFIED, session: r.session, at: r.at, steps: run.steps, errors: run.errors })),
+    r.main.map((run) => ({
+      phase: run.phase,
+      effort: run.effort ?? 'default',
+      taskClass: r.taskClass ?? UNCLASSIFIED,
+      session: r.session,
+      at: r.at,
+      steps: run.steps,
+      errors: run.errors,
+      base: r.base ?? null,
+      escalated: run.escalated === true,
+      pressured: r.pressured === true,
+    })),
   )
 
 export type Pool = { steps: number; errors: number; sessions: string[] }
@@ -76,7 +88,7 @@ const decide = (cells: readonly Cell[], phase: Phase, rung: Effort, outcomes: Re
   const ref = pool(cellsAt(cells, phase, rung, false))
   const im = intervalOf(mine)
   const ir = intervalOf(ref)
-  if (mine.steps === 0) return { dir: null }
+  if (mine.steps === 0) return { dir: null, finding: { kind: 'unmeasured', note: `no step ran at ${rung}, the ceiling: the rung is unmeasured, the phase's other rows say nothing of it` } }
   if (!isResolved(im)) return { dir: null, finding: { kind: 'unresolved', note: `${mine.errors}/${mine.steps} steps failed at ${rung} (${span(im)}): wider than +-${pct(HALF_WIDTH)}` } }
   if (!isResolved(ir)) return { dir: null, finding: { kind: 'no-reference', note: `the other phases at ${rung} give ${ref.errors}/${ref.steps} steps (${span(ir)}): no resolved reference` } }
   const up = notch(rung, 1)
@@ -111,6 +123,10 @@ const unreachable = (cells: readonly Cell[], phase: Phase, now: Effort): Finding
     return [{ phase, effort: rung, kind: 'unreachable' as const, note: `${mine.errors}/${mine.steps} steps failed at ${rung} (${span(im)}) against ${span(ir)} elsewhere; the ceiling at ${now} cannot lift them, their effort is the grade's base` }]
   })
 
+// A move is undone when its measured effect is harm, or when it has no baseline to be measured against
+// (hooks/effect.ts movesOf): nothing can ever show it harmful, so holding it would hold it for good.
+const mayUndo = (credit: Credit | undefined): boolean => credit === 'harm' || credit === 'no-baseline'
+
 // One proposal per phase at most, and what held the others back. `credits`: the measured effect of each phase's last move.
 export const decisions = (
   cells: readonly Cell[],
@@ -130,7 +146,7 @@ export const decisions = (
     }
     const last = calibration.changes[phase]
     if (!stable(cells, phase, now, outcomes, d)) findings.push({ phase, effort: now, kind: 'unstable', note: `${d.dir} ${now} -> ${d.to} does not hold when one session is left out` })
-    else if (last?.from === d.to && credits.get(phase) !== 'harm') findings.push({ phase, effort: now, kind: 'held', note: `undoing ${last.from} -> ${last.to} needs that move's measured effect to be harm (it is ${credits.get(phase) ?? 'not measured'})` })
+    else if (last?.from === d.to && !mayUndo(credits.get(phase))) findings.push({ phase, effort: now, kind: 'held', note: `undoing ${last.from} -> ${last.to} needs that move's measured effect to be harm (it is ${credits.get(phase) ?? 'not measured'})` })
     else proposals.push({ phase, from: now, to: d.to, evidence: evidenceOf(phase, now, d), rate: asRate(d.mine, d.im), reference: asRate(d.ref, d.ir) })
   }
   return { proposals, findings }

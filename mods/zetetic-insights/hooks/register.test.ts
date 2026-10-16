@@ -86,7 +86,7 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
     const plugin = (e as { plugin?: string }).plugin
     if (plugin === 'zetetic-autopilot')
       return { value: { value: ((e as { key?: string }).key === 'phases' ? phases : { decisions: [] }) as never, version: 1 } }
-    if (plugin === 'zetetic-genius') return { value: { value: { classified: { turnId: 't1', taskClass: 'bugfix' } } as never, version: 1 } }
+    if (plugin === 'zetetic-genius') return { value: { value: { classified: { turnId: 't1', taskClass: 'bugfix', effort: 'high' } } as never, version: 1 } }
     return next(e)
   })
   on('turn.complete', () => ({ text: '' }))
@@ -108,7 +108,7 @@ const evidenceStore = (): Record<string, unknown> => {
   const store: Record<string, unknown> = {}
   for (const s of ['p1', 'p2', 'p3', 'p4']) {
     const run = (phase: string, errors: number) => ({ phase, effort: 'medium', steps: 30, errors })
-    store[`turns:${s}`] = [{ session: s, turnId: `t-${s}`, at: 10, taskClass: 'bugfix', main: [run('test', 9), run('analysis', 1)], agents: [], advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0, nonInteractive: false }]
+    store[`turns:${s}`] = [{ session: s, turnId: `t-${s}`, at: 10, taskClass: 'bugfix', base: 'high', main: [run('test', 9), run('analysis', 1)], agents: [], advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0, nonInteractive: false }]
     store[`ended:${s}`] = { at: 11 }
   }
   return store
@@ -133,7 +133,7 @@ test('observe: a main turn is kept in the ledger and its evidence proposed with 
   expect(done.text).toBe('Applied: test medium → high.')
   const file = JSON.parse(w.written[CAL] ?? '{}')
   expect(file.phases).toEqual({ test: 'high' })
-  // The move is recorded with the runs before it, frozen: 160 steps at medium in one task class.
+  // The move is recorded with the runs before it, frozen: the 160 graded steps at medium in one task class.
   expect(file.moves.length).toBe(1)
   expect(file.moves[0]).toMatchObject({ phase: 'test', from: 'medium', to: 'high', post: null })
   expect(file.moves[0].pre.byClass.bugfix).toEqual({ steps: 160, errors: 48 })

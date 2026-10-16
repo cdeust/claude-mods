@@ -4,7 +4,7 @@ import type { Calibration, Effort, Phase, TurnRecord, Verdict } from '../types'
 import { emptyCalibration } from './learn'
 import { type Cell, UNCLASSIFIED, cellsOf, decisions, phaseStats, pool } from './rungs'
 
-const cell = (phase: Phase, effort: string, session: string, steps: number, errors: number, taskClass = 'bugfix', at = 1): Cell => ({ phase, effort, taskClass, session, at, steps, errors })
+const cell = (phase: Phase, effort: string, session: string, steps: number, errors: number, taskClass = 'bugfix', at = 1): Cell => ({ phase, effort, taskClass, session, at, steps, errors, base: null, escalated: false, pressured: false })
 const sessions = ['a', 'b', 'c', 'd']
 // A phase over the four sessions at one rung: `steps` and `errors` in each.
 const over = (phase: Phase, effort: string, steps: number, errors: number, ids = sessions, taskClass = 'bugfix'): Cell[] => ids.map((s) => cell(phase, effort, s, steps, errors, taskClass))
@@ -13,7 +13,7 @@ const calibrated = (phases: Partial<Record<Phase, Effort>>): Calibration => ({ .
 
 test('a run becomes a cell with the effort it had, its task class and its session; no effort and no class are named', () => {
   const rec = { session: 's', turnId: 't', at: 5, taskClass: null, main: [{ phase: 'test', effort: null, steps: 3, errors: 1 }], agents: [], advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0 } as TurnRecord
-  expect(cellsOf([rec])).toEqual([{ phase: 'test', effort: 'default', taskClass: UNCLASSIFIED, session: 's', at: 5, steps: 3, errors: 1 }])
+  expect(cellsOf([rec])).toEqual([{ phase: 'test', effort: 'default', taskClass: UNCLASSIFIED, session: 's', at: 5, steps: 3, errors: 1, base: null, escalated: false, pressured: false }])
 })
 
 test('rows keep the runs of every rung, pre-move ones included, each with its Wilson interval and whether it is resolved', () => {
@@ -75,7 +75,7 @@ test('the rung that ran is read: a phase that ran only at low is not moved by a 
   const cells = [...over('implementation', 'low', 40, 16), ...over('report', 'low', 40, 2)]
   const { proposals, findings } = decisions(cells, new Map(), emptyCalibration())
   expect(proposals).toEqual([])
-  expect(findings).toEqual([{ phase: 'implementation', effort: 'low', kind: 'unreachable', note: expect.stringMatching(/cannot lift them, their effort is the grade's base/) }])
+  expect(findings.filter((f) => f.kind === 'unreachable')).toEqual([{ phase: 'implementation', effort: 'low', kind: 'unreachable', note: expect.stringMatching(/cannot lift them, their effort is the grade's base/) }])
   // With the ceiling at low the same rows are the ones that govern: the move is raised from low.
   const atLow = decisions(cells, new Map(), calibrated({ implementation: 'low', report: 'low' }))
   expect(atLow.proposals.map((p) => [p.phase, p.from, p.to])).toEqual([['implementation', 'low', 'medium']])
@@ -95,11 +95,61 @@ test("undoing a phase's last move needs that move's measured effect to be harm",
   const cells = [...over('review', 'low', 40, 20), ...over('test', 'low', 40, 1)] // review fails at low: raise back to medium
   const held = decisions(cells, new Map(), moved, new Map([['review', 'inconclusive']]))
   expect(held.proposals).toEqual([])
-  expect(held.findings.map((f) => f.kind)).toEqual(['held'])
+  expect(held.findings.filter((f) => f.phase === 'review').map((f) => f.kind)).toEqual(['held'])
   const harmed = decisions(cells, new Map(), moved, new Map([['review', 'harm']]))
   expect(harmed.proposals.map((p) => [p.phase, p.from, p.to])).toEqual([['review', 'low', 'medium']])
 })
 
 test('pool sums steps and errors and names the sessions once', () => {
   expect(pool([cell('test', 'low', 'a', 3, 1), cell('test', 'low', 'a', 2, 0), cell('test', 'low', 'b', 5, 5)])).toEqual({ steps: 10, errors: 6, sessions: ['a', 'b'] })
+})
+
+test('a run keeps why it sat on its rung: the graded base of its turn, the stuck escalation, the pressure', () => {
+  const rec = { session: 's', turnId: 't', at: 5, taskClass: 'critical', base: 'high', pressured: true, main: [{ phase: 'test', effort: 'high', steps: 3, errors: 1, escalated: true }, { phase: 'test', effort: 'medium', steps: 9, errors: 0 }], agents: [], advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 1 } as TurnRecord
+  expect(cellsOf([rec]).map((c) => [c.effort, c.base, c.escalated, c.pressured])).toEqual([['high', 'high', true, true], ['medium', 'high', false, true]])
+})
+
+// A phase with no step at its ceiling must not read as "the evidence supports the rung" (finding 6 of #26's review).
+test('a phase that ran only below its ceiling gets a finding saying its ceiling is unmeasured, not silence', () => {
+  const { proposals, findings } = decisions([...over('report', 'low', 40, 0), ...over('test', 'medium', 30, 1)], new Map(), emptyCalibration())
+  expect(proposals).toEqual([])
+  expect(findings.filter((f) => f.phase === 'report')).toEqual([{ phase: 'report', effort: 'medium', kind: 'unmeasured', note: expect.stringMatching(/^no step ran at medium, the ceiling/) }])
+})
+
+// Mutants M1, M3, M4, M9, M28 of #26's review: each gate of the rule has a case only it decides.
+const rows = (phase: Phase, effort: string, ids: string[], steps: number, errors: number[], taskClass = 'bugfix'): Cell[] => ids.map((s, i) => cell(phase, effort, s, steps, errors[i]!, taskClass))
+
+test('M1 a raise needs the phase interval wholly above the reference: a higher rate whose interval overlaps it is not a move', () => {
+  const cells = [...rows('test', 'medium', sessions, 30, [6, 5, 5, 4]), ...rows('analysis', 'medium', sessions, 30, [3, 3, 2, 2])] // 20/120 against 10/120: both resolved, intervals overlap
+  const { proposals } = decisions(cells, new Map(), emptyCalibration())
+  expect(proposals).toEqual([])
+})
+
+test('M3 a lowering is held back when the rung below, in the task classes both ran, fails confidently more', () => {
+  const cells = [...over('review', 'medium', 40, 0), ...over('test', 'medium', 40, 10), ...rows('review', 'low', ['e', 'f', 'g', 'h'], 40, [10, 10, 10, 10])]
+  const { proposals } = decisions(cells, achieved(sessions), emptyCalibration())
+  expect(proposals.map((p) => p.phase)).toEqual(['test']) // review is not lowered
+})
+
+test('M4 a lowering needs the Wilson lower bound of the achieved share above half: 3 of 4 judged sessions is not enough', () => {
+  const cells = [...over('review', 'medium', 40, 0), ...over('test', 'medium', 40, 10)]
+  const three = new Map<string, Verdict>([['a', 'achieved'], ['b', 'achieved'], ['c', 'achieved'], ['d', 'not-achieved']])
+  const { proposals, findings } = decisions(cells, three, emptyCalibration())
+  expect(proposals.map((p) => p.phase)).toEqual(['test'])
+  expect(findings.filter((f) => f.phase === 'review').map((f) => f.note)).toEqual([expect.stringMatching(/3\/4 judged sessions achieved: not more than half with confidence/)])
+})
+
+test('M9 the rung above is compared on the classes both rungs ran, not on the classes only it ran', () => {
+  const cells = [
+    ...over('test', 'medium', 30, 9),
+    ...over('analysis', 'medium', 30, 1),
+    ...over('test', 'high', 30, 9), // bugfix at high fails as much as at medium: not worse
+    ...over('test', 'high', 30, 25, sessions, 'critical'), // a class only high ran: not compared
+  ]
+  expect(decisions(cells, new Map(), emptyCalibration()).proposals.map((p) => [p.phase, p.to])).toEqual([['test', 'high']])
+})
+
+test('M28 only the rungs below the ceiling are unreachable: a row above it fails more and is not reported as unlifted', () => {
+  const cells = [...over('test', 'medium', 30, 1), ...over('analysis', 'medium', 30, 1), ...over('test', 'high', 30, 9), ...over('analysis', 'high', 30, 1)]
+  expect(decisions(cells, new Map(), emptyCalibration()).findings.filter((f) => f.kind === 'unreachable')).toEqual([])
 })

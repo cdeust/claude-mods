@@ -4,7 +4,7 @@ import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 import type { AgentRecord, Calibration, Design, Finding, InsightsState, ProbeCount, ProbeReason, TurnRecord, Verdict } from '../types'
 import { briefOf, mechanicalShare } from './brief'
 import { delegationStats, parseDesign } from './delegations'
-import { effectLine, effectsOf, movesWith } from './effect'
+import { effectLine, effectsOf, movesOf, movesWith } from './effect'
 import { recurringIn, schedulePush, setServer } from './handover'
 import {
   CALIBRATION_PATH,
@@ -26,6 +26,7 @@ import { sessionModels } from './models'
 import { originStamp, observeCall, setOrigin, takeObserved } from './observe'
 import { combineOutcomes } from './outcome'
 import { type ProbeInfo, probesOf, withoutProbes } from './probes'
+import { withEscalation } from './reach'
 import { type Cell, cellsOf, decisions, phaseStats } from './rungs'
 import { cut, expandHome, INITIAL } from './shared'
 import { held, ledger, loadLedger, loaded, markEnded, markTranscript, note, saved } from './store-io'
@@ -128,7 +129,7 @@ async function writeCalibration($: EngineInterface, c: Calibration): Promise<voi
 // What the learning sessions' runs say under a calibration: the rows, the proposals, what held the others
 // back, and the measured effect of each applied move (the last move's credit gates undoing it).
 function evidenceOf(calibration: Calibration) {
-  const { effects, credits } = effectsOf(calibration.moves, runs, verdicts)
+  const { effects, credits } = effectsOf(movesOf(calibration), runs, verdicts)
   const { proposals, findings } = decisions(runs, verdicts, calibration, credits)
   return { phases: phaseStats(runs, verdicts), proposals, findings, effects }
 }
@@ -199,7 +200,7 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   const frictions = held.layout === null ? undefined : new Map([...frictionsBySession(held.layout)].filter(([s]) => s !== held.ownSid))
   const decided = probesOf(ledger(), held.layout?.transcripts)
   const learning = withoutProbes(ledger(), decided)
-  const effects = effectsOf(c.calibration.moves, cellsOf(learning), combineOutcomes(learning, outcomes).outcomes).effects
+  const effects = effectsOf(movesOf(c.calibration), cellsOf(learning), combineOutcomes(learning, outcomes).outcomes).effects
   const brief = briefOf(ledger(), frictions, decided, effects)
   await recompute($, {
     mode,
@@ -224,6 +225,8 @@ async function recordTurn($: EngineInterface): Promise<void> {
   const grade = (await $.state.get(GENIUS_STATE)).value?.classified
   const policy = (await $.state.get(AUTOPILOT_POLICY)).value
   const uses = phases.advisor.uses.filter((u) => u.turnId === phases.turnId)
+  const stuck = policy?.decisions.filter((d) => d.kind === 'stuck' && d.at >= since) ?? []
+  const graded = grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade : null
   const sid = await $.session.id()
   if (!(await loaded($, sid))) return
   const seen = takeObserved()
@@ -231,8 +234,13 @@ async function recordTurn($: EngineInterface): Promise<void> {
     session: sid,
     turnId: phases.turnId ?? '',
     at: await $.clock.now(),
-    taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
-    main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
+    taskClass: graded?.taskClass ?? null,
+    ...(typeof graded?.effort === 'string' ? { base: graded.effort } : {}),
+    ...(policy?.pressure === 'quota' || policy?.pressure === 'context' ? { pressured: true as const } : {}),
+    main: withEscalation(
+      main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
+      stuck.map((d) => d.to),
+    ),
     mainModel: main.model,
     agents: pending.agents,
     ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),
@@ -241,7 +249,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
       beforeWrite: uses.filter((u) => u.when === 'before-write').reduce((n, u) => n + u.calls, 0),
       atCompletion: uses.filter((u) => u.when === 'at-completion').reduce((n, u) => n + u.calls, 0),
     },
-    stuck: policy?.decisions.filter((d) => d.kind === 'stuck' && d.at >= since).length ?? 0,
+    stuck: stuck.length,
     ...originStamp(),
     ...(seen.events.length > 0 ? { events: seen.events } : {}),
     ...(seen.eventsDropped > 0 ? { eventsDropped: seen.eventsDropped } : {}),

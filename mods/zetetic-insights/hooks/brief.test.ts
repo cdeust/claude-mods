@@ -188,3 +188,12 @@ test('a credited calibration move is a line of the brief with its delta and inte
   expect(text).toMatch(/\n- calibration move, measured: review medium -> low: failed calls \+30 pts \[\+22, \+38\] \(200 -> 200 steps\), sessions achieved -100 pts \[-100, -40\] \(4 -> 5\); harm\./)
   expect(composeBrief({ ...base, effects: [credited('inconclusive')] })).not.toMatch(/calibration move/)
 })
+
+test('M24 the brief shows the newest credited move, not the oldest', () => {
+  const base = { delegations: { ...emptyDelegations(), total: 1 }, models: [], mechanical: { sessions: 3, heavyReads: 0, heavySteps: 0, unmeasured: 0, share: null } }
+  const older = { ...credited('harm'), phase: 'test' as const, at: 5 }
+  const newer = { ...credited('benefit'), phase: 'review' as const, at: 9 }
+  const text = composeBrief({ ...base, effects: [older, newer] }) ?? ''
+  expect(text).toMatch(/calibration move, measured: review medium -> low:.*; benefit\./)
+  expect(text).not.toMatch(/calibration move, measured: test /)
+})
