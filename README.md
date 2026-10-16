@@ -33,6 +33,9 @@ to both say which text is whose:
   guard that failed; Claude reads the refusal's rule and fix as the tool's error (the same error when the
   guard itself failed), and, in the context of the result of its `git worktree add`, that the worktree was not
   registered and its cleanup is not covered.
+- `harness-fleet`: the user reads the `/fleet` pane and its toasts; Claude reads only what a button the user
+  presses puts in front of it (review, take an issue, draft an issue), as "The harness-fleet plugin sent a
+  message: ..." in the plugin's own voice: the owner is "the owner" in it, never "me" or "I".
 
 ## Developing
 
