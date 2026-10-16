@@ -29,6 +29,10 @@ to both say which text is whose:
   spawn is refused (which spawn, how many run, the cap and the window: no instruction); Claude reads, in the
   context of main's first implementing tool result of a turn, the rule to delegate to a subagent, and, as
   the Agent tool's error, the cap refusal with the way out (wait for a running agent to finish, spawn again).
+- `cortex-guard`: the user reads a toast for each refusal, for a worktree that was not registered, and for a
+  guard that failed; Claude reads the refusal's rule and fix as the tool's error (the same error when the
+  guard itself failed), and, in the context of the result of its `git worktree add`, that the worktree was not
+  registered and its cleanup is not covered.
 
 ## Developing
 

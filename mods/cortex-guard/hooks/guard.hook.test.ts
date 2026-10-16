@@ -51,7 +51,7 @@ test('a path whose real location is a wiki page is refused even under another sp
   expect(out.deny).toMatch(/canonical wiki page/)
 })
 
-// Registration through disk_hygiene.py is a background step; off here so the test owns every call.
+// Registration through disk_hygiene.py is a step after the call; off here so the test owns every call.
 test(
   'git worktree add outside the repo is refused; inside it runs',
   { options: { hygiene_script: '' } },
@@ -83,4 +83,25 @@ test('a guard whose real-path read fails still refuses a protected spelling', as
   on('tool.call', () => ({ result: 'ran' }))
   const out = await $.tool.call({ tool: 'Write', file_path: 'wiki/lessons/new.md', content: 'x' })
   expect(out.deny).toMatch(/wiki-write-only/)
+})
+
+// Audience: when the guard itself throws, the call is refused (fail closed). Claude reads the deny as the tool's
+// error; the user would otherwise see nothing of it, so a toast says the guard failed and the call was refused.
+test('a guard that fails refuses the call to Claude and tells the user in a toast', async ($, on) => {
+  const toasts: string[] = []
+  on('fs.stat', ($$, e) => ({ value: { kind: 'file', size: 1, mtimeMs: 0, realPath: e.path } as never }))
+  on('clock.now', () => {
+    throw new Error('clock offline')
+  })
+  on('ui.toast', ($$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('tool.call', () => ({ result: 'ran' }))
+  const out = await $.tool.call({ tool: 'Edit', file_path: '/r/wiki/adr/cortex/1060-x.md', old_string: 'a', new_string: 'b' })
+  expect(out.deny).toBe('cortex-guard: its guard failed on Edit, so the call was refused.')
+  expect(toasts).toHaveLength(1)
+  expect(toasts[0]).toContain('guard failed on Edit')
+  expect(toasts[0]).toContain('refused')
+  expect(toasts[0]).not.toBe(out.deny)
 })

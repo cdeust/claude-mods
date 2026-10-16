@@ -3,8 +3,9 @@ import type { TestBody } from 'claude-code/testing'
 
 // The registration of a worktree through the hygiene script, on a machine that is not the
 // owner's: the script's place is computed from HOME, a missing file is said once, a refusal from
-// the machine is shown. Registration runs in the background after the call; each test waits on
-// the toast it produces, the event that ends it.
+// the machine is shown. Registration runs after the call; each test waits on
+// the toast it produces, the event that ends it. The call itself waits for the registration, so that
+// a failure can be told to Claude in the call's result (the audience tests at the end).
 
 const SCRIPT = '/home/t/Developments/disk-hygiene/disk_hygiene.py'
 const ADD = { tool: 'Bash', command: 'git worktree add -b f /r/.claude/worktrees/f main' } as const
@@ -198,4 +199,50 @@ test('an absolute path in the option is used as given', { options: { hygiene_scr
   await $.tool.call({ ...ADD })
   await done
   expect(scriptRuns(seen)[0]?.[1]).toBe('/opt/h.py')
+})
+
+// Audience: `$.ui.toast` is read by the user alone and a tool.call result's `context` by the model alone (the
+// engine's declarations). A worktree that did not get registered is news for both: the user is toasted, and
+// Claude, which ran `git worktree add`, is told on the result of that call that its cleanup is not covered.
+const NEW = '/r/.claude/worktrees/f'
+
+test('a worktree that is not registered is toasted to the user and told to Claude in the result context', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', ($$, e) =>
+    (e as { argv: string[] }).argv[1] === '--version'
+      ? { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+      : { value: { exitCode: 2, stdout: '', stderr: 'sandbox: write denied' } as never },
+  )
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.result).toBe('ran')
+  expect(seen.toasts).toEqual(['worktree NOT registered (sandbox: write denied)'])
+  expect(ran.context).toHaveLength(1)
+  expect(ran.context?.[0]).toContain(NEW)
+  expect(ran.context?.[0]).toContain('NOT registered')
+  expect(ran.context?.[0]).toContain('cleanup is not covered')
+  expect(ran.context?.[0]).toContain('sandbox: write denied')
+  expect(ran.context?.[0]).not.toBe(seen.toasts[0])
+})
+
+test('a missing script tells Claude as well; a later worktree tells Claude again and the user not again', async ($, on) => {
+  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' })
+  const first = await $.tool.call({ ...ADD })
+  expect(first.context?.[0]).toContain('cleanup is not covered')
+  expect(seen.toasts).toHaveLength(1)
+  const second = await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g /r/.claude/worktrees/g main' })
+  expect(second.context?.[0]).toContain('/r/.claude/worktrees/g')
+  expect(seen.toasts).toHaveLength(1)
+})
+
+test('a worktree that is registered tells Claude nothing', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }))
+  const ran = await $.tool.call({ ...ADD })
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(ran.context).toBeUndefined()
+})
+
+test('registration switched off by the option tells Claude nothing: no cleanup was promised', { options: { hygiene_script: '' } }, async ($, on) => {
+  stubs(on, '/home/t', { deny: 'would be missing' })
+  expect((await $.tool.call({ ...ADD })).context).toBeUndefined()
 })
