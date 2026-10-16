@@ -51,6 +51,7 @@ test('fewer failed calls with confidence is a benefit; the same rate is inconclu
   expect(effectOf(m, after(40, 12), new Map())).toMatchObject({ credit: 'inconclusive' })
   expect(effectOf(m, [], new Map()).credit).toBe('insufficient')
   expect(effectOf(m, [cell('medium', 's6', 200, 40, 0)], new Map()).credit).toBe('insufficient') // the rung moved to never ran
+  expect(effectOf(m, [cell('low', 's6', 200, 40, 0, 'analysis')], new Map()).credit).toBe('insufficient') // it ran, in no class the baseline has
 })
 
 test('the pre statistics survive the ledger trimming the runs they came from', () => {

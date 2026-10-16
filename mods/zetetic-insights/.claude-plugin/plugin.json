@@ -1,7 +1,7 @@
 {
   "name": "zetetic-insights",
   "version": "0.9.0",
-  "description": "The learning loop: every main turn is kept in a ledger across sessions (phase, effort, steps, failed tool calls, agents, advisor calls), joined with the outcomes observed at tool.call (commits kept or reverted, test exits, PR verdicts and merges, no transcript) and the ones /insights writes, and the project's goals; probe sessions are counted and kept out; a phase whose evidence, read on the rung each run had and with Wilson intervals, says so gets its tool-loop effort moved one notch (every applied move is measured pre/post on the same phase and task classes), written to a calibration file the autopilot reads. /calibrate apply, /calibrate reset. Starts in observe: proposals are shown, not applied.",
+  "description": "The learning loop: every main turn is kept in a ledger across sessions (phase, effort, steps, failed tool calls, agents, advisor calls), joined with the outcomes observed at tool.call (commits kept or reverted, test exits, PR verdicts and merges, no transcript) and the ones /insights writes, and the project's goals; probe sessions are counted and kept out; a phase whose evidence, read on the rung each run had and with Wilson intervals, says so gets its tool-loop effort moved one notch (every applied move is measured pre/post on the same phase, the same task classes and the steps its ceiling decided), written to a calibration file the autopilot reads. /calibrate apply, /calibrate reset. Starts in observe: proposals are shown, not applied.",
   "types": "./types/index.d.ts",
   "dependencies": ["zetetic-autopilot", "zetetic-genius"],
   "userConfig": {
