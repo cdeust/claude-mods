@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MAX_PARALLEL_AGENTS, MIN_PARALLEL_AGENTS, fiveHourPercent, isRefused, parallelCap, refusalMessage, stillRunning } from './concurrency'
+import { MAX_PARALLEL_AGENTS, MIN_PARALLEL_AGENTS, capStatus, fiveHourPercent, isRefused, parallelCap, refusalMessage, stillRunning } from './concurrency'
 
 test('the cap falls in bands of 20 points from 5 to 1 across the default quota mark of 80', () => {
   const at = (u: number) => parallelCap(u, 80)
@@ -50,6 +50,17 @@ test('the refusal names the running count, the cap, the quota and the way out', 
   expect(m).toContain('Wait for a running agent to finish')
   expect(refusalMessage(1, 1, 95, 80)).toContain('1 subagent is running')
   expect(refusalMessage(1, 1, undefined, 80)).toContain('an unread share')
+})
+
+test('the status for the user states the same numbers as the refusal and leaves out the way out', () => {
+  const s = capStatus('x:engineer', 2, 2, 71.4, 80)
+  expect(s).toContain('spawn of x:engineer refused')
+  expect(s).toContain('2 subagents running')
+  expect(s).toContain('cap 2 at 71%')
+  expect(s).toContain('five-hour window')
+  expect(s).not.toMatch(/wait|again/i)
+  expect(capStatus('x', 1, 1, 95, 80)).toContain('1 subagent running')
+  expect(capStatus('x', 1, 1, undefined, 80)).toContain('an unread share')
 })
 
 test('the five-hour window is read out of the rate limits, and only that one', () => {

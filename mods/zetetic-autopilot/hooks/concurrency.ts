@@ -61,12 +61,24 @@ export const inBudget = (e: { parentAgentId?: string; workflow?: unknown; isTeam
 // A spawn is refused when `running` agents already fill the cap.
 export const isRefused = (running: number, cap: number): boolean => running >= cap
 
+// The cap as the quota sets it: its value, the window's use, and the band the cap falls across.
+const capOf = (cap: number, usedPercent: number | undefined, quotaPercent: number, max: number): string =>
+  `${cap} at ${usedPercent === undefined ? 'an unread share' : `${Math.round(usedPercent)}%`} of the five-hour window ` +
+  `(the cap falls from ${max} to ${MIN_PARALLEL_AGENTS} as the window fills to ${quotaPercent}%)`
+
+// Two readers, two texts (the engine's declarations: a toast "leaves the transcript and the model untouched", a
+// spawn's deny is "the Agent tool's error" the model reads). The refusal below is the model's, with the way out.
+// The status after it is the user's, who cannot spawn or wait: the fact, and no instruction.
+//
 // The reason the orchestrator reads as the Agent tool's error: the counts, the quota, the way out.
 export const refusalMessage = (running: number, cap: number, usedPercent: number | undefined, quotaPercent: number, max = MAX_PARALLEL_AGENTS): string =>
-  `zetetic-autopilot: ${running} subagent${running === 1 ? ' is' : 's are'} running and the cap is ${cap} at ` +
-  `${usedPercent === undefined ? 'an unread share' : `${Math.round(usedPercent)}%`} of the five-hour window ` +
-  `(the cap falls from ${max} to ${MIN_PARALLEL_AGENTS} as the window fills to ${quotaPercent}%). ` +
-  'Wait for a running agent to finish, then spawn this one again.'
+  `zetetic-autopilot: ${running} subagent${running === 1 ? ' is' : 's are'} running and the cap is ` +
+  `${capOf(cap, usedPercent, quotaPercent, max)}. Wait for a running agent to finish, then spawn this one again.`
+
+// What the user reads (a toast, and the POLICY row): which spawn was refused and the numbers behind it.
+export const capStatus = (subagentType: string, running: number, cap: number, usedPercent: number | undefined, quotaPercent: number, max = MAX_PARALLEL_AGENTS): string =>
+  `zetetic-autopilot: spawn of ${subagentType} refused, ${running} subagent${running === 1 ? '' : 's'} running, cap ` +
+  `${capOf(cap, usedPercent, quotaPercent, max)}`
 
 // Of the agents the autopilot believes are running (spawned, no turn.complete seen), those the engine's own
 // list confirms are alive. The list is consulted only on the path that would refuse: an agent that ended

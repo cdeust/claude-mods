@@ -16,6 +16,20 @@ The Claude mods keep one concern per mod, state shared through
 | `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
 | `superpowers` | third-party skills library (obra/superpowers, MIT), pinned to v7.0.0 `bb92a77`: listed here so it installs with the mods; which skills we keep is decided after measurement | nothing |
 
+## Audience
+
+Each output of a mod has one reader, and the engine fixes the reader by the API the output goes through
+(there is no per-call option): `$.ui.toast`, `$.ui.log`, `$.ui.status`, panes and rows are the user's, and
+the model never sees them; a `tool.call` result's `context`, a `prompt.submit` `context` and `prompt.compose`
+sections are Claude's, and the user never sees them; a `deny` is the model's tool error (the transcript
+draws it too). A text is written for its reader, and one string is never sent to both. The mods that send
+to both say which text is whose:
+
+- `zetetic-autopilot`: the user reads a toast when main implements (what main ran) and when a subagent
+  spawn is refused (which spawn, how many run, the cap and the window: no instruction); Claude reads, in the
+  context of main's first implementing tool result of a turn, the rule to delegate to a subagent, and, as
+  the Agent tool's error, the cap refusal with the way out (wait for a running agent to finish, spawn again).
+
 ## Developing
 
 Each mod is validated, tested and type-checked on its own:

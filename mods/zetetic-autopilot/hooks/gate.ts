@@ -4,7 +4,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { PolicyDecision, PolicyState } from '../types'
-import { MAX_PARALLEL_AGENTS, fiveHourPercent, isRefused, parallelCap, refusalMessage, stillRunning } from './concurrency'
+import { MAX_PARALLEL_AGENTS, capStatus, fiveHourPercent, isRefused, parallelCap, refusalMessage, stillRunning } from './concurrency'
 
 // What the gate tells the rest of the mod: a cap row, a reading it could not make, an agent the engine
 // says is gone.
@@ -86,11 +86,12 @@ export async function admit(
     // Observe lets it go ahead: it is in flight like any admitted spawn and holds the place it gives back,
     // taken in the same synchronous step as the count.
     if (!applied) admitting += 1
-    const message = refusalMessage(count, cap, used, p.quotaPercent, maxParallel)
-    await sink.decide({ at, kind: 'cap', subject: e.subagentType, from: `${count} running`, to: `cap ${cap}`, applied, reason: message })
+    // The row and the toast are the user's: the fact. The deny is Claude's: the fact and the way out.
+    const status = capStatus(e.subagentType, count, cap, used, p.quotaPercent, maxParallel)
+    await sink.decide({ at, kind: 'cap', subject: e.subagentType, from: `${count} running`, to: `cap ${cap}`, applied, reason: status })
     if (!applied) return { held: true }
-    $.ui.toast(message)
-    return { held: false, deny: message }
+    $.ui.toast(status)
+    return { held: false, deny: refusalMessage(count, cap, used, p.quotaPercent, maxParallel) }
   } catch (error) {
     await sink.note('agent cap', `not applied: ${String(error).slice(0, 100)}`)
     return { held: false }
