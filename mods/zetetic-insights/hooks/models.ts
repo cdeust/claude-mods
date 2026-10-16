@@ -2,7 +2,7 @@
 // family, per session. The one counting procedure the panel shows; pure, so the register and the
 // tests share it.
 
-import type { ModelFamily, SessionModels, TurnRecord } from '../types'
+import type { ModelFamily, ModelSteps, SessionModels, TurnRecord } from '../types'
 import type { ProbeInfo } from './probes'
 
 export const MODEL_SESSIONS = 12 // source: own choice, the sessions the panel shows, the newest last
@@ -21,19 +21,31 @@ export const familyOf = (model: string): ModelFamily => {
   return 'other'
 }
 
+// Steps appended in the order they ran, a run of the same family as the last one added to it.
+const appendRun = (seq: ModelSteps[], family: ModelFamily, steps: number): void => {
+  if (steps <= 0) return
+  const last = seq[seq.length - 1]
+  if (last?.family === family) last.steps += steps
+  else seq.push({ family, steps })
+}
+
 // Each session's steps by family, the newest MODEL_SESSIONS working sessions by their latest record, oldest
 // first, probes (hooks/probes.ts) flagged and not counted among them. Every main run and every agent step is added to exactly one family, so a session's family
 // steps sum to its main steps plus its agent steps. A main turn with no mainModel (a record kept
 // before it was) is unknown. The sums are O(records); the sessions are sorted by their latest turn.
+// `sequence` holds the same steps in the order they ran: the turns by `at`, and inside a turn main's
+// runs then its agents, in the order kept (a record keeps no time per agent, so that is the finest
+// order the ledger knows). Its families sum to `steps`.
 export const sessionModels = (records: readonly TurnRecord[], probes: ReadonlyMap<string, ProbeInfo> = new Map()): SessionModels[] => {
-  const by = new Map<string, { at: number; steps: Map<ModelFamily, number> }>()
+  const by = new Map<string, { at: number; steps: Map<ModelFamily, number>; sequence: ModelSteps[] }>()
   const add = (session: string, at: number, family: ModelFamily, steps: number) => {
-    const row = by.get(session) ?? { at, steps: new Map<ModelFamily, number>() }
+    const row = by.get(session) ?? { at, steps: new Map<ModelFamily, number>(), sequence: [] }
     row.at = Math.max(row.at, at)
     row.steps.set(family, (row.steps.get(family) ?? 0) + steps)
+    appendRun(row.sequence, family, steps)
     by.set(session, row)
   }
-  for (const r of records) {
+  for (const r of [...records].sort((a, b) => a.at - b.at)) {
     const main = familyOf(r.mainModel ?? '')
     for (const run of r.main) add(r.session, r.at, main, run.steps)
     for (const a of r.agents) add(r.session, r.at, familyOf(a.model), a.steps)
@@ -46,6 +58,7 @@ export const sessionModels = (records: readonly TurnRecord[], probes: ReadonlyMa
         const steps = row.steps.get(family) ?? 0
         return steps > 0 ? [{ family, steps }] : []
       }),
+      sequence: row.sequence,
       probe: probes.get(session)?.probe === true,
       probeReason: probes.get(session)?.reason ?? null,
     }))

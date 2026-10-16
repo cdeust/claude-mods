@@ -49,16 +49,26 @@ test('every step lands in exactly one family, and a session balances: family ste
         { family: 'other', steps: 1 },
         { family: 'unknown', steps: 4 },
       ],
+      // In the order they ran: the first turn (main unknown, then its haiku agent), the second
+      // (main opus over both runs, then the sonnet and the other agent).
+      sequence: [
+        { family: 'unknown', steps: 4 },
+        { family: 'haiku', steps: 2 },
+        { family: 'opus', steps: 9 },
+        { family: 'sonnet', steps: 5 },
+        { family: 'other', steps: 1 },
+      ],
       probe: false,
       probeReason: null,
     },
-    { session: 'new', at: 30, steps: [{ family: 'fable', steps: 2 }], probe: false, probeReason: null },
+    { session: 'new', at: 30, steps: [{ family: 'fable', steps: 2 }], sequence: [{ family: 'fable', steps: 2 }], probe: false, probeReason: null },
   ])
   for (const s of out) {
     const mine = records.filter((r) => r.session === s.session)
     const mainSteps = mine.reduce((n, r) => n + r.main.reduce((m, x) => m + x.steps, 0), 0)
     const agentSteps = mine.reduce((n, r) => n + r.agents.reduce((m, a) => m + a.steps, 0), 0)
     expect(s.steps.reduce((n, f) => n + f.steps, 0)).toBe(mainSteps + agentSteps)
+    expect(s.sequence.reduce((n, f) => n + f.steps, 0)).toBe(mainSteps + agentSteps)
   }
 })
 
@@ -76,6 +86,19 @@ test('the sessions are the last MODEL_SESSIONS by their latest record, oldest fi
   expect(out.length).toBe(MODEL_SESSIONS)
   expect(out.map((s) => s.session)).toEqual([...Array.from({ length: MODEL_SESSIONS - 1 }, (_, i) => `s${i + 4}`), 's0'])
   expect(out.every((s, i) => i === 0 || out[i - 1]!.at < s.at)).toBe(true)
-  expect(out[0]).toEqual({ session: 's4', at: 8, steps: [{ family: 'opus', steps: 1 }], probe: false, probeReason: null })
-  expect(out[out.length - 1]).toEqual({ session: 's0', at: 1000, steps: [{ family: 'opus', steps: 2 }], probe: false, probeReason: null })
+  expect(out[0]).toEqual({ session: 's4', at: 8, steps: [{ family: 'opus', steps: 1 }], sequence: [{ family: 'opus', steps: 1 }], probe: false, probeReason: null })
+  expect(out[out.length - 1]).toEqual({ session: 's0', at: 1000, steps: [{ family: 'opus', steps: 2 }], sequence: [{ family: 'opus', steps: 2 }], probe: false, probeReason: null })
+})
+
+test('the sequence follows the turns by time whatever the input order, and merges consecutive steps of one family', () => {
+  const records = [
+    turn('s', 30, { mainModel: 'claude-opus-5-5', main: [run(2)] }),
+    turn('s', 10, { mainModel: 'claude-opus-5-5', main: [run(3)], agents: [agent('claude-haiku-5-5', 4)] }),
+    turn('s', 20, { mainModel: 'claude-haiku-5-5', main: [run(1)], agents: [agent('claude-opus-5-5', 0)] }),
+  ]
+  expect(sessionModels(records)[0]!.sequence).toEqual([
+    { family: 'opus', steps: 3 },
+    { family: 'haiku', steps: 5 },
+    { family: 'opus', steps: 2 },
+  ])
 })

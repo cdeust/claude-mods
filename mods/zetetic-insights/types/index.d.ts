@@ -164,7 +164,9 @@ export type ModelSteps = { family: ModelFamily; steps: number }
 // `probe` is the insights mod's own decision (hooks/probes.ts), with its reason; a consumer filters on it
 // instead of guessing from the step count. Probe rows are listed (flagged) beside the newest MODEL_SESSIONS
 // working sessions, only those newer than the oldest of them.
-export type SessionModels = { session: string; at: number; steps: ModelSteps[]; probe: boolean; probeReason: ProbeReason | null }
+// `sequence`: the same steps in the order they ran (turns by time; in a turn main's runs, then its
+// agents), consecutive steps of one family merged; sent from 0.10.0 on.
+export type SessionModels = { session: string; at: number; steps: ModelSteps[]; sequence: ModelSteps[]; probe: boolean; probeReason: ProbeReason | null }
 
 // Main's mechanical work on heavy models over the brief's sessions (hooks/brief.ts): main steps on
 // opus or fable whose every tool call was a file read (Read, Grep, Glob), against all of main's

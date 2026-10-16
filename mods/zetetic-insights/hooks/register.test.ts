@@ -153,7 +153,7 @@ test('the steps by model: the main run is counted under its model family, one se
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   // 40 main steps on claude-opus-5-5 (PHASES), no agents, clock 1000.
-  expect(state.models).toEqual([{ session: 'sess-1', at: 1000, steps: [{ family: 'opus', steps: 40 }], probe: false, probeReason: null }])
+  expect(state.models).toEqual([{ session: 'sess-1', at: 1000, steps: [{ family: 'opus', steps: 40 }], sequence: [{ family: 'opus', steps: 40 }], probe: false, probeReason: null }])
 })
 
 const record = (i: number, session = 'old') => ({
