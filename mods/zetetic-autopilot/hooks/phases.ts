@@ -147,20 +147,63 @@ export const toolPhase = (name: string, input: unknown): Phase | undefined => {
 // source: the orchestrator's own first turn (fetch, worktree add, hygiene register-worktree, mkdir)
 const PLUMBING_RUN = /^(git|gh|claude|mkdir|rmdir|sleep|python3? \S*disk_hygiene\S*)\b/
 
-const heads = (command: string): string[] =>
-  (command.split('\n')[0] ?? '')
+// git verbs that rewrite files of the working tree, which the plumbing above does not otherwise do.
+// source: git's own manuals for apply, am, restore, clean, mv, rm, cherry-pick, revert, reset --hard, stash pop/apply
+// and `checkout [<tree-ish>] -- <path>`; the review's probe P3 (2026-10-16) named apply, checkout -- and reset --hard
+const GIT_CHANGE = /^git(\s+-C\s+\S+)?\s+(apply|am|restore|clean|mv|rm|cherry-pick|revert|reset\s+--hard|stash\s+(pop|apply)|checkout\b.*\s--(\s|$))/
+// Runs that read or check and write nothing: the repository's own gates (`node --test`, `node <script> --check`),
+// jq (it has no in-place mode), and inline Python, unless its code writes (PY_WRITES, read on the quoted text).
+const READ_ONLY_RUN = /^(node\b.*\s--(test|check)\b|jq\b)/
+const PY_INLINE = /^python3? -c\b/
+const PY_WRITES = /\.write(_text|_bytes)?\(|\bopen\([^)]*,\s*['"][wax+]/
+// A redirection into a file (`> f`, `>> f`, `&> f`), not into a descriptor (`2>&1`); the target is captured.
+const REDIRECT = /(?:^|[^<>&0-9])[0-9]?(?:&>|>>?)\s*([^\s&|;<>]+)/g
+// source: own choice, the places a session keeps throwaway output (the null device, the system and session temp dirs)
+const SCRATCH = /^(\/dev\/|\/tmp\/|\/private\/tmp\/|\$\{?TMPDIR\b)/
+
+// The lines a command runs: every line, less a heredoc's body (data, up to its terminator).
+const runLines = (command: string): string[] => {
+  const lines: string[] = []
+  let end: string | undefined
+  for (const line of command.split('\n')) {
+    if (end !== undefined) {
+      if (line.trim() === end) end = undefined
+      continue
+    }
+    lines.push(line)
+    end = /<<-?\s*['"]?(\w+)['"]?/.exec(line)?.[1]
+  }
+  return lines
+}
+
+// Quoted text is an argument: never a separator, a redirection or a command.
+const unquoted = (line: string): string => line.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''")
+
+const segmentChanges = (segment: string, raw: string): boolean => {
+  if (GIT_CHANGE.test(segment)) return true
+  if (PY_INLINE.test(segment)) return PY_WRITES.test(raw)
+  if (PLUMBING_RUN.test(segment) || READ_ONLY_RUN.test(segment)) return false
+  return segmentPhase(segment) === 'implementation'
+}
+
+const lineChanges = (raw: string): boolean => {
+  const line = unquoted(raw)
+  if ([...line.matchAll(REDIRECT)].some((m) => !SCRATCH.test(m[1] ?? ''))) return true
+  return line
     .split(/&&|\|\||;|\|/)
     .map((s) => s.trim().replace(/^([A-Z_]+=\S+\s+)+/, ''))
-    .filter((s) => s !== '')
+    .some((s) => s !== '' && segmentChanges(s, raw))
+}
 
 // Work the owner's rule hands to a subagent ("aucune tâche ne tourne en session globale"): a file the main
 // loop writes (code or test; a document is design, the orchestrator's own), or a shell command that changes
-// things (the implementation phase of bashPhase, less the plumbing above; reads, checks, tests and delivery
-// are orchestration).
+// things, on any of its lines: a redirection into a file, a git verb that rewrites the working tree, or the
+// implementation phase of bashPhase less the plumbing and the read-only runs above. Reads, checks, tests and
+// delivery are orchestration.
 export const isMainImplementation = (name: string, input: unknown): boolean => {
   if (WRITING_TOOLS.has(name)) return toolPhase(name, input) !== 'design'
   if (name !== 'Bash') return false
-  return heads(field(input, 'command')).some((h) => segmentPhase(h) === 'implementation' && !PLUMBING_RUN.test(h))
+  return runLines(field(input, 'command')).some(lineChanges)
 }
 
 // A step's phase: the furthest along of its calls; a step that calls nothing and answers is the

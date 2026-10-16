@@ -189,3 +189,37 @@ test('orchestration is not implementation work: documents, reads, checks, tests,
   expect(isMainImplementation('Bash', { command: 'git commit -m x && git push' })).toBe(false)
   expect(isMainImplementation('Agent', { subagent_type: 'zetetic-team-subagents:engineer' })).toBe(false)
 })
+
+// Review of #25, m3: the nudge read only the first line and called every unknown head a change.
+test("the repository's own gates and plain reads are not implementation work", () => {
+  for (const command of [
+    'node --test codex/tests/a.test.mjs',
+    'node scripts/build-codex.mjs --check',
+    'jq . a.json',
+    'jq -r .version plugin.json > /dev/null',
+    'python3 -c "print(1)"',
+    `python3 -c "import json; print(json.load(open('a.json'))['version'])"`,
+    'claude plugin test 2>&1 | tail -3',
+    'git log > /tmp/log.txt',
+    // a heredoc's body is data, whatever it says
+    'cat <<EOF | gh pr comment 1 -F -\nrm -rf src\nEOF',
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, false])
+})
+
+test('commands that change the working tree are implementation work, on any line', () => {
+  for (const command of [
+    'git apply x.patch',
+    'git checkout -- src/a.ts',
+    'git checkout HEAD~1 -- src/a.ts',
+    'git reset --hard origin/main',
+    'git -C /r restore src/a.ts',
+    'echo x > src/a.ts',
+    'echo x >> src/a.ts',
+    'cat > src/a.ts <<EOF\nexport const a = 1\nEOF',
+    'true\nsed -i s/a/b/ src/a.ts',
+    'cd /r\nnode scripts/build-codex.mjs',
+    `python3 -c "open('src/a.ts', 'w').write('x')"`,
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, true])
+})
