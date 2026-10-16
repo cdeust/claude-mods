@@ -246,15 +246,20 @@ export const startTurn = (s: PhasesState, turnId: string, model: string, at: num
     updatedAt: at,
   })
 
-// The runs an agent made before its type was known, as one run of the type's phase. `reads` is the
-// sum when every run carries it; a run recorded before it was counted leaves the sum absent.
+// A count the runs carry since a version (`reads`, `escalated`): its sum when every run carries it; a
+// run recorded before it was counted leaves the sum absent.
+const summed = (runs: readonly PhaseRun[], key: 'reads' | 'escalated'): { reads?: number; escalated?: number } =>
+  runs.every((r) => r[key] !== undefined) ? { [key]: runs.reduce((n, r) => n + (r[key] ?? 0), 0) } : {}
+
+// The runs an agent made before its type was known, as one run of the type's phase.
 const merged = (runs: readonly PhaseRun[], phase: Phase, at: number): PhaseRun => ({
   phase,
   effort: runs[runs.length - 1]?.effort ?? null,
   steps: runs.reduce((n, r) => n + r.steps, 0),
   errors: runs.reduce((n, r) => n + r.errors, 0),
   since: runs[0]?.since ?? at,
-  ...(runs.every((r) => r.reads !== undefined) ? { reads: runs.reduce((n, r) => n + (r.reads ?? 0), 0) } : {}),
+  ...summed(runs, 'reads'),
+  ...summed(runs, 'escalated'),
 })
 
 // A started subagent's row. Its steps may come in before the spawn answers (the engine runs the
@@ -280,7 +285,7 @@ export const spawned = (
     model: a.model,
     effort: null,
     phase,
-    runs: phase === null ? [] : [{ phase, effort: null, steps: 0, errors: 0, since: a.at, reads: 0 }],
+    runs: phase === null ? [] : [{ phase, effort: null, steps: 0, errors: 0, since: a.at, reads: 0, escalated: 0 }],
     status: 'running',
     advisorCalls: 0,
     wrote: false,
@@ -308,9 +313,19 @@ export type Step = {
   effort: string | null
   phase: Phase | undefined
   fileRead: boolean // isFileReadStep of the step's tool calls
+  escalated: boolean // the stuck escalation set the effort the step was sent at (PhaseRun.escalated)
   advisorCalls: number
   at: number
 }
+
+// A step joins the last run: each count the run carries grows by what the step is; a count the run was
+// recorded without stays absent, since its earlier steps were never counted.
+const joined = (last: PhaseRun, st: Step): PhaseRun => ({
+  ...last,
+  steps: last.steps + 1,
+  ...(last.reads === undefined ? {} : { reads: last.reads + (st.fileRead ? 1 : 0) }),
+  ...(last.escalated === undefined ? {} : { escalated: last.escalated + (st.escalated ? 1 : 0) }),
+})
 
 // An agent whose type names a phase stays in it (a reviewer reading files is still reviewing);
 // main and an unplaced type move with what each step does.
@@ -323,8 +338,8 @@ export const stepped = (s: PhasesState, st: Step): PhasesState => {
     phase === null
       ? loop.runs
       : last !== undefined && last.phase === phase && last.effort === st.effort
-        ? [...loop.runs.slice(0, -1), { ...last, steps: last.steps + 1, ...(last.reads === undefined ? {} : { reads: last.reads + (st.fileRead ? 1 : 0) }) }]
-        : [...loop.runs, { phase, effort: st.effort, steps: 1, errors: 0, since: st.at, reads: st.fileRead ? 1 : 0 }]
+        ? [...loop.runs.slice(0, -1), joined(last, st)]
+        : [...loop.runs, { phase, effort: st.effort, steps: 1, errors: 0, since: st.at, reads: st.fileRead ? 1 : 0, escalated: st.escalated ? 1 : 0 }]
   const advisor = loop.type === 'main' && st.advisorCalls > 0 ? adviced(s.advisor, s.turnId, loop, st) : s.advisor
   return {
     ...withLoop(s, {

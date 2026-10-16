@@ -116,11 +116,13 @@ async function refreshContext($: EngineInterface): Promise<void> {
   await update($, context, () => after)
 }
 
-// The step as it went out and what came back: its phase and its advisor calls, on its loop's row.
+// The step as it went out and what came back: its phase and its advisor calls, on its loop's row, and
+// whether the stuck escalation set its effort (`escalated`, counted on the run the step lands in).
 async function* tracked(
   $: EngineInterface,
   sent: { turnId: string; index: number; model: string; effort?: string | number; agentId?: string },
   stream: AsyncGenerator<TurnStepChunk, TurnStepResult>,
+  escalated: boolean,
 ): AsyncGenerator<TurnStepChunk, TurnStepResult> {
   const r = yield* stream
   const at = await $.clock.now()
@@ -138,6 +140,7 @@ async function* tracked(
       effort: sent.effort === undefined ? defaultEffort(r.usage?.model ?? sent.model) : String(sent.effort),
       phase: stepPhase(r.toolUses, r.answer),
       fileRead: isFileReadStep(r.toolUses),
+      escalated,
       advisorCalls,
       at,
     }),
@@ -258,7 +261,10 @@ const onStep: Hook<'turn.step'> = async function* ($, e, next) {
     await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
   }
   const model = isMain ? mainModelFor(e.model, p.pressure) : undefined
-  if (target === have && model === undefined) return yield* tracked($, e, next(e))
+  // The escalation set this step's effort only when it is applied; that holds too when the raised effort
+  // is the one the step came with (it goes out unchanged, no row), since the ladder would have sent it lower.
+  const escalated = kind === 'stuck' && p.mode === 'enforce'
+  if (target === have && model === undefined) return yield* tracked($, e, next(e), escalated)
   const applied = p.mode === 'enforce'
   const at = await $.clock.now()
   const who = `${isMain ? 'main' : 'agent'} step ${e.index} (${e.model})`
@@ -270,9 +276,9 @@ const onStep: Hook<'turn.step'> = async function* ($, e, next) {
     await update($, policy, (s) =>
       decide(s, { at, kind: 'model', subject: 'main · quota pressure', from: e.model, to: model, applied }),
     )
-  if (!applied) return yield* tracked($, e, next(e))
+  if (!applied) return yield* tracked($, e, next(e), escalated)
   const out = { ...e, ...(target !== have ? { effort: target } : {}), ...(model !== undefined ? { model } : {}) }
-  return yield* tracked($, out, next(out))
+  return yield* tracked($, out, next(out), escalated)
 }
 
 // The cap's view of the mod: its rows go to the POLICY panel, an agent the engine says is gone closes its row.
