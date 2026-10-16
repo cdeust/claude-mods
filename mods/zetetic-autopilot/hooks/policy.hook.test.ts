@@ -299,7 +299,7 @@ test('an option that is not a positive whole number is named and the default sta
 })
 
 test(
-  'enforce: under quota pressure an opus subagent is spawned on sonnet; a routine Explore goes to haiku',
+  'enforce: a routine Explore goes to haiku, and quota pressure leaves a call for opus on opus',
   { options: { policy_mode: 'enforce', quota_pressure_percent: 50 } },
   async ($, on) => {
     stubs(on, [], { turnId: 't', taskClass: 'routine', effort: 'low' })
@@ -330,7 +330,7 @@ test(
       changed: ['rateLimits'],
     } as never)
     await $.agent.spawn(spawn('opus'))
-    expect(spawned).toBe('sonnet')
+    expect(spawned).toBe('opus')
   },
 )
 

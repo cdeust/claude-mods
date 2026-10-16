@@ -44,6 +44,10 @@ const stubs = (on: Parameters<TestBody>[1], seen: Seen, genius: 'absent' | 'thro
     if ((e as { key?: string }).key === 'policy') seen.policy = (e as unknown as { value: Seen['policy'] }).value
     return next(e)
   })
+  on('session.id', () => ({ value: 'sid-1' }))
+  on('store.keys', () => ({ value: [] as never }))
+  on('store.get', () => ({ value: undefined as never }))
+  on('store.set', () => ({ value: undefined as never }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('agent.spawn', ($, e) => {
     seen.spawned.push(e.model)
@@ -86,7 +90,7 @@ test(
 )
 
 test(
-  'enforce: under quota pressure a haiku memory-writer stays on haiku',
+  'enforce: under quota pressure a haiku memory-writer stays on haiku and a fable advisor stays on fable',
   { options: { policy_mode: 'enforce', quota_pressure_percent: 80 } },
   async ($, on) => {
     const seen: Seen = { spawned: [], efforts: [] }
@@ -95,7 +99,7 @@ test(
     await $.session.measure(QUOTA)
     await $.agent.spawn(spawn('zetetic-team-subagents:memory-writer'))
     await $.agent.spawn(spawn('zetetic-team-subagents:advisor'))
-    expect(seen.spawned).toEqual([undefined, 'sonnet'])
+    expect(seen.spawned).toEqual([undefined, undefined])
   },
 )
 
@@ -255,7 +259,8 @@ test(
     await $.agent.spawn(spawn('zetetic-team-subagents:advisor'))
     await $.agent.spawn(spawn('zetetic-team-subagents:advisor'))
     expect(d.reads.filter((p) => p === advisor)).toHaveLength(2)
-    expect(seen.spawned.slice(1)).toEqual(['sonnet', 'sonnet'])
+    // the definition's fable stands under quota pressure: nothing is rewritten
+    expect(seen.spawned.slice(1)).toEqual([undefined, undefined])
   },
 )
 

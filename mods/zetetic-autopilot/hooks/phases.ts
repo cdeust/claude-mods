@@ -3,6 +3,7 @@
 // implementation is added for the steps that write code, which none of the seven names.
 
 import type { AdvisorUse, LoopPhases, Phase, PhaseRun, PhasesState } from '../types'
+import { type ShellCommand, shellCommands } from './shell'
 
 export const PHASES: readonly Phase[] = [
   'planning',
@@ -140,6 +141,64 @@ export const toolPhase = (name: string, input: unknown): Phase | undefined => {
   if (name === 'Agent') return typePhase(field(input, 'subagent_type'))
   if (name === 'Skill') return SKILLS.find(([re]) => re.test(field(input, 'skill')))?.[1]
   return mcpPhase(name)
+}
+
+// Commands that run the repository, the host or the session's worktrees: orchestration, whatever bashPhase
+// calls an unrecognised head. A change to a source file is not made by these.
+// source: the orchestrator's own first turn (fetch, worktree add, hygiene register-worktree, mkdir)
+const PLUMBING_RUN = /^(git|gh|claude|mkdir|rmdir|sleep|python3? \S*disk_hygiene\S*)\b/
+
+// git verbs that rewrite files of the working tree, which the plumbing above does not otherwise do, behind
+// any of git's global options (`-C <dir>`, `-c <k=v>`, `--git-dir`, `--work-tree`).
+// source: git's own manuals for apply, am, restore, clean, mv, rm, cherry-pick, revert, merge, pull, rebase,
+// reset --hard, stash (bare, push, save, pop, apply, branch; not list or show) and `checkout [<tree-ish>] -- <path>`,
+// and git(1) for the global options; the review's probes P3 and N1 (2026-10-16) named the verbs and the options
+const GIT_OPTION = String.raw`\s+(?:-C\s+\S+|-c\s+\S+|--(?:git-dir|work-tree|namespace)(?:=|\s+)\S+|-P|--no-pager|--bare)`
+const GIT_VERB = String.raw`(?:(?:apply|am|restore|clean|mv|rm|cherry-pick|revert|merge|pull|rebase)(?=\s|$)|reset\s(?:.*\s)?--hard(?=\s|$)|stash(?:$|\s+-|\s+(?:push|save|pop|apply|branch)(?=\s|$))|checkout\b.*\s--(?=\s|$))`
+const GIT_CHANGE = new RegExp(String.raw`^git(?:${GIT_OPTION})*\s+${GIT_VERB}`)
+// Runs that read or check and write nothing: the repository's own gates (`node --test`, `node <script> --check`),
+// jq (it has no in-place mode), and inline Python, unless its code writes (PY_WRITES, read on the quoted text).
+const READ_ONLY_RUN = /^(node\b.*\s--(test|check)\b|jq\b)/
+const PY_INLINE = /^python3? -c\b/
+const PY_WRITES = /\.write(_text|_bytes)?\(|\bopen\([^)]*,\s*['"][wax+]/
+// source: own choice, the places a session keeps throwaway output (the null device, the system and session temp dirs)
+const SCRATCH = /^(\/dev\/|\/tmp\/|\/private\/tmp\/|\$\{?TMPDIR\b)/
+// What stands before a command's own head: an assignment (`CI=1 cmd`), and the shell's reserved words and grouping
+// (`if`, `then`, `do`, `{`, `!`...). A loop or case header (`for f in ...`) runs nothing itself.
+// source: XCU 2.4 Reserved Words, 2.9.1 Simple Commands (variable assignments before the command name)
+const ASSIGNMENT = /^[A-Za-z_]\w*=\S*(\s+|$)/
+const RESERVED = /^(!|\{|\}|if|then|else|elif|fi|do|done|while|until|esac|time)(\s+|$)/
+const HEADER = /^(for|select|case)\s/
+
+// A simple command's head and arguments, less what stands before the head.
+const headed = (bare: string): string => {
+  let s = bare
+  for (let prev = ''; prev !== s; ) {
+    prev = s
+    s = s.replace(ASSIGNMENT, '').replace(RESERVED, '')
+  }
+  return HEADER.test(s) ? '' : s
+}
+
+const commandChanges = (c: ShellCommand): boolean => {
+  if (c.targets.some((t) => !SCRATCH.test(t))) return true
+  const s = headed(c.bare)
+  if (s === '') return false
+  if (GIT_CHANGE.test(s)) return true
+  if (PY_INLINE.test(s)) return PY_WRITES.test(c.raw)
+  if (PLUMBING_RUN.test(s) || READ_ONLY_RUN.test(s)) return false
+  return segmentPhase(s) === 'implementation'
+}
+
+// Work the owner's rule hands to a subagent ("aucune tâche ne tourne en session globale"): a file the main
+// loop writes (code or test; a document is design, the orchestrator's own), or a shell command that changes
+// things in any of the commands the shell runs (shell.ts; a quoted span, a heredoc body or a comment is none):
+// a redirection into a file, a git verb that rewrites the working tree, or the implementation phase of
+// bashPhase less the plumbing and the read-only runs above. Reads, checks, tests and delivery are orchestration.
+export const isMainImplementation = (name: string, input: unknown): boolean => {
+  if (WRITING_TOOLS.has(name)) return toolPhase(name, input) !== 'design'
+  if (name !== 'Bash') return false
+  return shellCommands(field(input, 'command')).some(commandChanges)
 }
 
 // A step's phase: the furthest along of its calls; a step that calls nothing and answers is the
