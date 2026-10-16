@@ -1,14 +1,17 @@
-// The statistics the learning loop decides with. Pure. Every constant is either a quantile of a
-// named distribution or the one stated choice (HALF_WIDTH) the others are derived from.
+// The statistics the learning loop decides with. Pure. Every constant is a quantile of a named
+// distribution, a number derived from the two stated choices, or one of those two: the confidence level
+// (Z) and the precision (HALF_WIDTH). How they are combined into a decision is a third choice (rungs.ts,
+// docs/insights-outcome-model.md section 6).
 
 // source: the standard normal quantile Phi^-1(0.95) = 1.6449, a one-sided 95% bound: a proposal acts on
-// "the rate is above / below this" at 95% confidence, one direction at a time.
-export const Z = 1.645 // source: Phi^-1(0.95), the standard normal one-sided 95% quantile
+// "the rate is above / below this" at 95% confidence, one direction at a time. The 95% itself is a choice
+// (own choice, the usual level of a one-sided test), not derived from anything.
+export const Z = 1.645 // source: Phi^-1(0.95), the standard normal one-sided 95% quantile; the 95% is own choice
 
-// source: own choice, the only free parameter: the precision at which a rate must be resolved before
-// it can be acted on (the 90% interval's half-width, 10 points). Everything below is derived from it:
-// stepsFor(0.25) = 51 steps replaces the old unexplained MIN_STEPS = 40.
-export const HALF_WIDTH = 0.1 // source: own choice, stated above; the one free parameter
+// source: own choice, the second stated choice: the precision at which a rate must be resolved before
+// it can be acted on (the 90% interval's half-width, 10 points). The step counts below are derived from
+// it and from Z: stepsFor(0.25) = 51 steps replaces the old unexplained MIN_STEPS = 40.
+export const HALF_WIDTH = 0.1 // source: own choice, stated above
 
 export type Interval = { p: number; lo: number; hi: number; n: number }
 
