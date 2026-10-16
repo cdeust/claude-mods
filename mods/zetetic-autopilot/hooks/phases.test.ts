@@ -223,3 +223,133 @@ test('commands that change the working tree are implementation work, on any line
   ])
     expect([command, isMainImplementation('Bash', { command })]).toEqual([command, true])
 })
+
+// Review of #25 round 2, N1: a Bash command is one text in a language whose quotes, `$(...)`, backticks,
+// continuations and heredocs span lines. Read line by line, a heredoc's closing `)"` or a quoted body line
+// was taken for a command; read in one pass, the shell's own commands are judged and nothing else.
+const COMMIT = `git commit -m "$(cat <<'EOF'
+fix(zetetic-autopilot): the nudge reads the shell's own commands
+
+- a > b, and > a quoted line
+rm -rf src
+EOF
+)"`
+const PR_CREATE = `gh pr create --title t --body "$(cat <<'EOF'
+## Summary
+- echo x > src/a.ts is what the old nudge misread
+EOF
+)"`
+const VERDICT = `gh pr comment 25 --body "$(cat <<'EOF'
+ZETETIC-REVIEW: REQUEST-CHANGES
+sed -i s/a/b/ src/a.ts
+EOF
+)"`
+
+test('N1: delivery and plumbing written over several lines are not implementation work', () => {
+  for (const command of [
+    COMMIT,
+    PR_CREATE,
+    VERDICT,
+    // a quoted message that spans lines, one of them shaped like a redirection or a command
+    'git commit -m "line one\nline two > three\nsed -i s/a/b/ src/a.ts"',
+    "git commit -m 'line one\n> quoted\nrm -rf src'",
+    // the orchestrator's own contract, written with backslash continuations
+    'python3 /Users/cdeust/Developments/disk-hygiene/disk_hygiene.py \\\n  --host claude register-worktree \\\n  --repo /r --path /r/.claude/worktrees/x',
+    'git worktree add \\\n  -b fix/x \\\n  /r/.claude/worktrees/x origin/main',
+    // a heredoc in the dash form ends at its tab-indented terminator
+    'cat <<-EOF | gh pr comment 1 -F -\n\trm -rf src\n\tEOF',
+    // a quoted delimiter, and two heredocs on one line, each read up to its own terminator
+    'cat <<"END" > /dev/null\necho x > src/a.ts\nEND',
+    'cat <<A <<B > /dev/null\nrm -rf src\nA\nsed -i s/a/b/ f\nB',
+    // a comment is not a command
+    'git status # then: echo x > src/a.ts',
+    // an escaped operator is an argument
+    'echo a \\> b',
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, false])
+})
+
+test('N1: a change hidden from a line-by-line reading is implementation work', () => {
+  for (const command of [
+    // `<<` inside quotes, or a here-string, opens no heredoc: the next line is a command
+    'echo "<<EOF"\nsed -i s/a/b/ src/a.ts',
+    'cat <<< "EOF"\nsed -i s/a/b/ src/a.ts',
+    "grep x <<< 'a <<EOF'\nsed -i s/a/b/ src/a.ts",
+    // a command substitution runs its commands, in or out of double quotes
+    'echo $(sed -i s/a/b/ src/a.ts)',
+    'echo "$(sed -i s/a/b/ src/a.ts)"',
+    'echo `sed -i s/a/b/ src/a.ts`',
+    'echo "`echo x > src/a.ts`"',
+    // and so does an unquoted heredoc's body, which the shell expands
+    'cat <<EOF > /dev/null\n$(sed -i s/a/b/ src/a.ts)\nEOF',
+    // after a heredoc, the command goes on
+    'cat <<-EOF > /dev/null\n\tbody\n\tEOF\nsed -i s/a/b/ src/a.ts',
+    // `&` ends a command; `2>&1` and `&>` do not
+    'sleep 1 & sed -i s/a/b/ src/a.ts',
+    'git status 2>&1 && echo x &> src/a.ts',
+    // a subshell
+    '(cd /r && sed -i s/a/b/ src/a.ts)',
+    // a continuation joins one command
+    'echo x \\\n  > src/a.ts',
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, true])
+})
+
+test('N1: every git verb that rewrites the working tree is implementation work, behind any global option', () => {
+  for (const command of [
+    'git mv a.ts b.ts',
+    'git rm src/a.ts',
+    'git am 0001.patch',
+    'git clean -fd',
+    'git revert HEAD',
+    'git cherry-pick abc123',
+    'git stash',
+    'git stash -u',
+    'git stash push -m wip',
+    'git stash pop',
+    'git stash apply',
+    'git merge origin/main',
+    'git pull',
+    'git pull --rebase origin main',
+    'git rebase origin/main',
+    'git -c user.name=x apply x.patch',
+    "git -c 'user.name=a b' apply x.patch",
+    'git --git-dir=/r/.git apply x.patch',
+    'git --work-tree /r apply x.patch',
+    'git -C /r -c k=v reset --hard',
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, true])
+  for (const command of ['git merge-base a b', 'git stash list', 'git stash show -p', 'git -c k=v log', 'git rebase-helper'])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, false])
+})
+
+test("N1: the shell's reserved words stand before a head, and a loop header runs nothing", () => {
+  for (const command of ['for f in a b; do git log -1 $f; done', 'until git diff --quiet; do sleep 1; done < in.txt', '! git diff --quiet', 'time claude plugin test'])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, false])
+  for (const command of ['if true; then sed -i s/a/b/ src/a.ts; fi', 'for f in a b; do\n  rm $f\ndone', '{ echo x; } > src/a.ts'])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, true])
+})
+
+// Review of #25 round 2, m5: each alternative of the nudge's patterns, alone.
+test('m5: each separator, prefix, scratch place and plumbing head is read on its own', () => {
+  // a write after a pipe, with a read before it
+  expect(isMainImplementation('Bash', { command: 'git show HEAD:a.ts | sed -i s/a/b/ src/a.ts' })).toBe(true)
+  for (const command of [
+    // an environment prefix before a read or a gate
+    'GIT_PAGER=cat git log -1',
+    'CI=1 claude plugin test',
+    'a_b=1 X="two words" git status',
+    // the session's scratch directories
+    'git log > /private/tmp/claude-501/x/log.txt',
+    'git log > /tmp/log.txt',
+    'git log > "$TMPDIR/log.txt"',
+    'git log > ${TMPDIR}/log.txt',
+    // plumbing heads
+    'sleep 1',
+    'rmdir /r/.claude/worktrees/x',
+  ])
+    expect([command, isMainImplementation('Bash', { command })]).toEqual([command, false])
+  // inline Python that writes, by each pattern alone
+  expect(isMainImplementation('Bash', { command: `python3 -c "import pathlib; pathlib.Path('a.ts').write_text('x')"` })).toBe(true)
+  expect(isMainImplementation('Bash', { command: `python3 -c "f = open('a.ts', 'w'); print(1, file=f)"` })).toBe(true)
+})

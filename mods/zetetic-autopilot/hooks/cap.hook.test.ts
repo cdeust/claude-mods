@@ -124,6 +124,18 @@ test('main writing code is a POLICY row each time and a toast once a turn; the c
   expect(seen.toasts.filter((t) => t.includes('delegate'))).toHaveLength(1)
 })
 
+// Review of #25 round 2, m5 (G11): the turn main was warned in belongs to its session; a new session warns again.
+test('a session started again warns main again, in a turn of the same id', { options: ENFORCE }, async ($, on) => {
+  const seen = freshSeen()
+  stubs(on, seen)
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }) as never)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.tool.call(edit as never)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.tool.call(edit as never)
+  expect(seen.toasts.filter((t) => t.includes('delegate'))).toHaveLength(2)
+})
+
 test('reading, checking and delegating are not warned about, nor is a subagent writing code', { options: ENFORCE }, async ($, on) => {
   const seen = freshSeen()
   stubs(on, seen)
@@ -142,6 +154,27 @@ scenario('observe: a spawn let through over the cap is counted while in flight',
   await tryAgent($)
   await Promise.all([tryAgent($), tryAgent($)])
   expect(seen.decisions.filter((d) => d.kind === 'cap').map((d) => d.from)).toEqual(['1 running', '2 running'])
+})
+
+// Review of #25 round 2, m5 (Ga9): a spawn of the previous session still in flight holds no place in the new one.
+scenario('a new session starts with no place held: a spawn in flight across the start does not count', ENFORCE, async ($, seen) => {
+  await $.session.measure(QUOTA)
+  let entered = (): void => {}
+  let release = (): void => {}
+  const reached = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  seen.hold = { entered: () => entered(), release: new Promise<void>((resolve) => { release = resolve }) }
+  const first = tryAgent($)
+  await reached
+  seen.hold = undefined
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const second = await tryAgent($)
+  release()
+  await first
+  // the second answers first (ag-1): the first was held at the engine until after it
+  expect(second).toMatchObject({ agentId: 'ag-1' })
+  expect(seen.decisions.filter((d) => d.kind === 'cap')).toEqual([])
 })
 
 // m4: the engine refuses a max_parallel_agents that is not a number (userConfig type, the module does not load),

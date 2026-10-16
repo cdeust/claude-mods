@@ -15,6 +15,7 @@ export const KEEP_SESSIONS = 20 // source: own choice, three weeks of daily sess
 export const HARD_SESSIONS = 2 * KEEP_SESSIONS // source: own choice, room for as many again that are younger than the TTL
 // source: measured 2026-10-15 over the 32 session transcripts on this machine (~/.claude/projects, file birth to last write): longest 57.9 h, p95 25.1 h; seven days is three times the longest
 export const LIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+export const SPAWNS_CAP = 50 // source: bounds $.state size; the full record is in $.store, one key per agent
 export const ROUTES_PER_SESSION = 100 // source: own choice, above the 12 loops a pane lists (LOOPS_CAP) many times over and far above what one session starts; the oldest is dropped past it
 
 // Every string a record keeps is clipped, so the size of a record has a ceiling and the store a bound.

@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { ARCHITECT, CONTEXT, ENFORCE, ENGINEER, QUOTA, type Body, done, freshSeen, spawn, stubs } from './harness'
-import { ROUTES_PER_SESSION } from './spawns'
+import { ROUTES_PER_SESSION, SPAWNS_CAP } from './spawns'
 
 // The model a subagent runs on is the one the orchestrator designed: the Agent call's `model`, else
 // the definition's. No pressure changes it (the quota limits how many run at once: cap.hook.test.ts),
@@ -104,6 +104,25 @@ scenario('observe: nothing is rewritten and nothing is logged for a designed mod
   await $.agent.spawn(spawn(ENGINEER, 'opus'))
   expect(seen.sent).toEqual(['opus'])
   expect(seen.spawns?.[0]).toMatchObject({ requested: 'opus', decided: 'opus', ran: 'opus', applied: false })
+})
+
+// Review of #25 round 2, m5 (G16): observe logs the route of an inheriting type and sends the call as it came.
+scenario('observe: an inheriting type is routed in a row, not rewritten', { policy_mode: 'observe', quota_pressure_percent: 80 }, async ($, seen) => {
+  await $.agent.spawn(spawn('Explore'))
+  expect(seen.sent).toEqual([undefined])
+  expect(seen.decisions.find((d) => d.kind === 'model')).toMatchObject({ subject: 'Explore', to: 'sonnet', applied: false })
+  expect(seen.spawns?.[0]).toMatchObject({ decided: 'sonnet', ran: 'sonnet', reason: 'kind', applied: false })
+})
+
+// Review of #25 round 2, m5 (G19): the spawns row in $.state keeps the newest SPAWNS_CAP, the store keeps the rest.
+scenario('the spawns state boundary: SPAWNS_CAP rows are all kept, one more drops the oldest', { ...ENFORCE, max_parallel_agents: 500 }, async ($, seen) => {
+  await spawnMany($, SPAWNS_CAP)
+  expect(seen.spawns).toHaveLength(SPAWNS_CAP)
+  expect(seen.spawns?.[0]?.agentId).toBe('ag-1')
+  await spawnMany($, 1)
+  expect(seen.spawns).toHaveLength(SPAWNS_CAP)
+  expect(seen.spawns?.[0]?.agentId).toBe('ag-2')
+  expect(seen.spawns?.at(-1)?.agentId).toBe(`ag-${SPAWNS_CAP + 1}`)
 })
 
 const BARE = JSON.stringify({ pluginConfigs: { 'zetetic-autopilot': { options: { policy_mode: 'observe' } } } })

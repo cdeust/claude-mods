@@ -33,6 +33,8 @@ export type Seen = {
   toasts: string[]
   // The rate limits of the last measure, which session.usage answers.
   rateLimits: { kind: string; percentUsed: number }[]
+  // When set, a spawn that reaches the engine says so (`entered`) and answers only once `release` settles.
+  hold?: { entered: () => void; release: Promise<void> }
 }
 
 type On = Parameters<TestBody>[1]
@@ -100,6 +102,10 @@ const agentStubs = (on: On, seen: Seen) => {
   // The spawn answers after a tick, so two raised together are both in flight before either answers.
   on('agent.spawn', async ($, e) => {
     await Promise.resolve()
+    if (seen.hold !== undefined) {
+      seen.hold.entered()
+      await seen.hold.release
+    }
     seen.sent.push(e.model)
     const agentId = `ag-${seen.sent.length}`
     seen.listed.push({ id: agentId, status: 'running' })

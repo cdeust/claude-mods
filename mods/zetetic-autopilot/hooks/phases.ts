@@ -3,6 +3,7 @@
 // implementation is added for the steps that write code, which none of the seven names.
 
 import type { AdvisorUse, LoopPhases, Phase, PhaseRun, PhasesState } from '../types'
+import { type ShellCommand, shellCommands } from './shell'
 
 export const PHASES: readonly Phase[] = [
   'planning',
@@ -147,63 +148,57 @@ export const toolPhase = (name: string, input: unknown): Phase | undefined => {
 // source: the orchestrator's own first turn (fetch, worktree add, hygiene register-worktree, mkdir)
 const PLUMBING_RUN = /^(git|gh|claude|mkdir|rmdir|sleep|python3? \S*disk_hygiene\S*)\b/
 
-// git verbs that rewrite files of the working tree, which the plumbing above does not otherwise do.
-// source: git's own manuals for apply, am, restore, clean, mv, rm, cherry-pick, revert, reset --hard, stash pop/apply
-// and `checkout [<tree-ish>] -- <path>`; the review's probe P3 (2026-10-16) named apply, checkout -- and reset --hard
-const GIT_CHANGE = /^git(\s+-C\s+\S+)?\s+(apply|am|restore|clean|mv|rm|cherry-pick|revert|reset\s+--hard|stash\s+(pop|apply)|checkout\b.*\s--(\s|$))/
+// git verbs that rewrite files of the working tree, which the plumbing above does not otherwise do, behind
+// any of git's global options (`-C <dir>`, `-c <k=v>`, `--git-dir`, `--work-tree`).
+// source: git's own manuals for apply, am, restore, clean, mv, rm, cherry-pick, revert, merge, pull, rebase,
+// reset --hard, stash (bare, push, save, pop, apply, branch; not list or show) and `checkout [<tree-ish>] -- <path>`,
+// and git(1) for the global options; the review's probes P3 and N1 (2026-10-16) named the verbs and the options
+const GIT_OPTION = String.raw`\s+(?:-C\s+\S+|-c\s+\S+|--(?:git-dir|work-tree|namespace)(?:=|\s+)\S+|-P|--no-pager|--bare)`
+const GIT_VERB = String.raw`(?:(?:apply|am|restore|clean|mv|rm|cherry-pick|revert|merge|pull|rebase)(?=\s|$)|reset\s(?:.*\s)?--hard(?=\s|$)|stash(?:$|\s+-|\s+(?:push|save|pop|apply|branch)(?=\s|$))|checkout\b.*\s--(?=\s|$))`
+const GIT_CHANGE = new RegExp(String.raw`^git(?:${GIT_OPTION})*\s+${GIT_VERB}`)
 // Runs that read or check and write nothing: the repository's own gates (`node --test`, `node <script> --check`),
 // jq (it has no in-place mode), and inline Python, unless its code writes (PY_WRITES, read on the quoted text).
 const READ_ONLY_RUN = /^(node\b.*\s--(test|check)\b|jq\b)/
 const PY_INLINE = /^python3? -c\b/
 const PY_WRITES = /\.write(_text|_bytes)?\(|\bopen\([^)]*,\s*['"][wax+]/
-// A redirection into a file (`> f`, `>> f`, `&> f`), not into a descriptor (`2>&1`); the target is captured.
-const REDIRECT = /(?:^|[^<>&0-9])[0-9]?(?:&>|>>?)\s*([^\s&|;<>]+)/g
 // source: own choice, the places a session keeps throwaway output (the null device, the system and session temp dirs)
 const SCRATCH = /^(\/dev\/|\/tmp\/|\/private\/tmp\/|\$\{?TMPDIR\b)/
+// What stands before a command's own head: an assignment (`CI=1 cmd`), and the shell's reserved words and grouping
+// (`if`, `then`, `do`, `{`, `!`...). A loop or case header (`for f in ...`) runs nothing itself.
+// source: XCU 2.4 Reserved Words, 2.9.1 Simple Commands (variable assignments before the command name)
+const ASSIGNMENT = /^[A-Za-z_]\w*=\S*(\s+|$)/
+const RESERVED = /^(!|\{|\}|if|then|else|elif|fi|do|done|while|until|esac|time)(\s+|$)/
+const HEADER = /^(for|select|case)\s/
 
-// The lines a command runs: every line, less a heredoc's body (data, up to its terminator).
-const runLines = (command: string): string[] => {
-  const lines: string[] = []
-  let end: string | undefined
-  for (const line of command.split('\n')) {
-    if (end !== undefined) {
-      if (line.trim() === end) end = undefined
-      continue
-    }
-    lines.push(line)
-    end = /<<-?\s*['"]?(\w+)['"]?/.exec(line)?.[1]
+// A simple command's head and arguments, less what stands before the head.
+const headed = (bare: string): string => {
+  let s = bare
+  for (let prev = ''; prev !== s; ) {
+    prev = s
+    s = s.replace(ASSIGNMENT, '').replace(RESERVED, '')
   }
-  return lines
+  return HEADER.test(s) ? '' : s
 }
 
-// Quoted text is an argument: never a separator, a redirection or a command.
-const unquoted = (line: string): string => line.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''")
-
-const segmentChanges = (segment: string, raw: string): boolean => {
-  if (GIT_CHANGE.test(segment)) return true
-  if (PY_INLINE.test(segment)) return PY_WRITES.test(raw)
-  if (PLUMBING_RUN.test(segment) || READ_ONLY_RUN.test(segment)) return false
-  return segmentPhase(segment) === 'implementation'
-}
-
-const lineChanges = (raw: string): boolean => {
-  const line = unquoted(raw)
-  if ([...line.matchAll(REDIRECT)].some((m) => !SCRATCH.test(m[1] ?? ''))) return true
-  return line
-    .split(/&&|\|\||;|\|/)
-    .map((s) => s.trim().replace(/^([A-Z_]+=\S+\s+)+/, ''))
-    .some((s) => s !== '' && segmentChanges(s, raw))
+const commandChanges = (c: ShellCommand): boolean => {
+  if (c.targets.some((t) => !SCRATCH.test(t))) return true
+  const s = headed(c.bare)
+  if (s === '') return false
+  if (GIT_CHANGE.test(s)) return true
+  if (PY_INLINE.test(s)) return PY_WRITES.test(c.raw)
+  if (PLUMBING_RUN.test(s) || READ_ONLY_RUN.test(s)) return false
+  return segmentPhase(s) === 'implementation'
 }
 
 // Work the owner's rule hands to a subagent ("aucune tâche ne tourne en session globale"): a file the main
 // loop writes (code or test; a document is design, the orchestrator's own), or a shell command that changes
-// things, on any of its lines: a redirection into a file, a git verb that rewrites the working tree, or the
-// implementation phase of bashPhase less the plumbing and the read-only runs above. Reads, checks, tests and
-// delivery are orchestration.
+// things in any of the commands the shell runs (shell.ts; a quoted span, a heredoc body or a comment is none):
+// a redirection into a file, a git verb that rewrites the working tree, or the implementation phase of
+// bashPhase less the plumbing and the read-only runs above. Reads, checks, tests and delivery are orchestration.
 export const isMainImplementation = (name: string, input: unknown): boolean => {
   if (WRITING_TOOLS.has(name)) return toolPhase(name, input) !== 'design'
   if (name !== 'Bash') return false
-  return runLines(field(input, 'command')).some(lineChanges)
+  return shellCommands(field(input, 'command')).some(commandChanges)
 }
 
 // A step's phase: the furthest along of its calls; a step that calls nothing and answers is the

@@ -23,12 +23,11 @@ import {
 } from './policy'
 import { type Routed, type TaskClass, mainModelFor, routeAgentModel } from './route'
 import { SETTINGS_PATH, unboundKeys, unboundMessage } from './config'
-import { ROUTES_PER_SESSION, clipped, spawnsKey, staleSpawnKeys } from './spawns'
+import { ROUTES_PER_SESSION, SPAWNS_CAP, clipped, spawnsKey, staleSpawnKeys } from './spawns'
 import { inBudget, maxParallelOption } from './concurrency'
 import { type GateSink, admit, configureGate, ended, released, resetGate, started } from './gate'
 
 const DECISIONS_CAP = 50 // source: bounds $.state size; a viewer shows the last rows only
-const SPAWNS_CAP = 50 // source: bounds $.state size; the full record is in $.store, one key per agent
 
 const context = atom({ plugin: 'zetetic-autopilot', key: 'context' } as const, null as ContextHealth | null)
 const policy = atom({ plugin: 'zetetic-autopilot', key: 'policy' } as const, {
