@@ -131,7 +131,7 @@ const logOf = (n: number, from: number) => Array.from({ length: n }, (_, i) => (
 
 test('D a turn whose decisions the autopilot log may have dropped is recorded decisionsLost', async ($, on) => {
   const w: World = { files: {}, written: {}, store: {} }
-  stubs(on, w, { phases: turnWith(stuckTurn), policy: { mode: 'enforce', decisions: logOf(50, 6), pressure: 'none' } }) // full, all after the turn started
+  stubs(on, w, { phases: turnWith(stuckTurn), policy: { mode: 'enforce', decisions: logOf(50, 3), pressure: 'none' } }) // full, the oldest taken when the turn's first run started (3)
   expect((await recorded($, w)).decisionsLost).toBe(true)
 })
 
