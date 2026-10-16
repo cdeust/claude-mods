@@ -82,8 +82,11 @@ export async function admit(
       admitting += 1
       return { held: true }
     }
-    const message = refusalMessage(count, cap, used, p.quotaPercent, maxParallel)
     const applied = p.mode === 'enforce'
+    // Observe lets it go ahead: it is in flight like any admitted spawn and holds the place it gives back,
+    // taken in the same synchronous step as the count.
+    if (!applied) admitting += 1
+    const message = refusalMessage(count, cap, used, p.quotaPercent, maxParallel)
     await sink.decide({ at, kind: 'cap', subject: e.subagentType, from: `${count} running`, to: `cap ${cap}`, applied, reason: message })
     if (!applied) return { held: true }
     $.ui.toast(message)

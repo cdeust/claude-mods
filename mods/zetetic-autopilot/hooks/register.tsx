@@ -24,7 +24,7 @@ import {
 import { type Routed, type TaskClass, mainModelFor, routeAgentModel } from './route'
 import { SETTINGS_PATH, unboundKeys, unboundMessage } from './config'
 import { ROUTES_PER_SESSION, clipped, spawnsKey, staleSpawnKeys } from './spawns'
-import { MAX_PARALLEL_AGENTS, inBudget } from './concurrency'
+import { inBudget, maxParallelOption } from './concurrency'
 import { type GateSink, admit, configureGate, ended, released, resetGate, started } from './gate'
 
 const DECISIONS_CAP = 50 // source: bounds $.state size; a viewer shows the last rows only
@@ -412,7 +412,7 @@ const onComplete: Hook<'turn.complete'> = async ($, e, next) => {
 
 // What a session starts from: no definition, phase or route known, this session's store key, the options
 // checked, the configured fields set afresh (a hot reload keeps $.state from the previous load).
-async function begin($: EngineInterface, mode: PolicyState['mode'], configured: (p: PolicyState) => PolicyState): Promise<void> {
+async function begin($: EngineInterface, mode: PolicyState['mode'], configured: (p: PolicyState) => PolicyState, capProblem?: string): Promise<void> {
   definitions.clear()
   resetGate()
   warnedTurn = undefined
@@ -421,6 +421,7 @@ async function begin($: EngineInterface, mode: PolicyState['mode'], configured: 
   await openRoutes($)
   await checkConfig($, mode)
   await update($, policy, configured)
+  if (capProblem !== undefined) await note($, 'agent cap option', capProblem)
   await refreshContext($)
 }
 
@@ -428,7 +429,8 @@ export const register: Register = (on, options) => {
   const mode: PolicyState['mode'] = options.policy_mode === 'enforce' ? 'enforce' : 'observe'
   const quotaPercent = Number(options.quota_pressure_percent ?? 80)
   const offload = offloadOptions(options.offload_threshold_chars, options.offload_preview_chars)
-  configureGate(Number(options.max_parallel_agents ?? MAX_PARALLEL_AGENTS))
+  const cap = maxParallelOption(options.max_parallel_agents)
+  configureGate(cap.max)
   // A hot reload keeps $.state from the previous load: the configured fields are set afresh.
   const configured = (p: PolicyState): PolicyState => ({
     ...p,
@@ -439,14 +441,14 @@ export const register: Register = (on, options) => {
   })
 
   on('session.start', async ($, e, next) => {
-    await begin($, mode, configured)
+    await begin($, mode, configured, cap.problem)
 
     return next(e)
   })
 
   // /clear, /resume and /branch reset $.state and never fire session.start again.
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
-    await begin($, mode, configured)
+    await begin($, mode, configured, cap.problem)
 
     return next(e)
   })

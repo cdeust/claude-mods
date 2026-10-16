@@ -134,3 +134,22 @@ test('reading, checking and delegating are not warned about, nor is a subagent w
   await $.tool.call({ ...edit, agentId: 'ag-9' } as never)
   expect(seen.decisions.filter((d) => d.kind === 'work')).toEqual([])
 })
+
+// m4: observe lets a would-be-refused spawn go ahead, so it is in flight like any other and holds its place
+// until it answers; it must not give back a place it never took.
+scenario('observe: a spawn let through over the cap is counted while in flight', { policy_mode: 'observe', quota_pressure_percent: 80 }, async ($, seen) => {
+  await $.session.measure(QUOTA)
+  await tryAgent($)
+  await Promise.all([tryAgent($), tryAgent($)])
+  expect(seen.decisions.filter((d) => d.kind === 'cap').map((d) => d.from)).toEqual(['1 running', '2 running'])
+})
+
+// m4: the engine refuses a max_parallel_agents that is not a number (userConfig type, the module does not load),
+// but any number reaches the hook: 0 or a fraction is no count of agents. It falls back to the default, named.
+for (const bad of [0, 2.5])
+  scenario(`a max_parallel_agents of ${bad} is the default 5, named in a row`, { ...ENFORCE, max_parallel_agents: bad }, async ($, seen) => {
+    const out: boolean[] = []
+    for (let i = 0; i < 6; i++) out.push((await tryAgent($)).deny === undefined)
+    expect(out).toEqual([true, true, true, true, true, false])
+    expect(seen.decisions.find((d) => d.subject === 'agent cap option')?.to).toBe(`max_parallel_agents=${bad} is not a positive whole number; using 5`)
+  })

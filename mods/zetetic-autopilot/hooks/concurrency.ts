@@ -16,6 +16,15 @@ export const MAX_PARALLEL_AGENTS = 5
 // source: logic. A refusal says "wait for a running agent", which needs one running: with a cap of 1 the first spawn always passes, so the orchestrator is never locked out
 export const MIN_PARALLEL_AGENTS = 1
 
+// The max_parallel_agents option as set: a positive whole number, else the default and why. The engine refuses a
+// value that is not a number (userConfig type: the hooks module does not load), so what reaches here is a number,
+// and 0, a negative or a fraction is no count of agents.
+export const maxParallelOption = (value: unknown): { max: number; problem?: string } => {
+  if (value === undefined) return { max: MAX_PARALLEL_AGENTS }
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return { max: value }
+  return { max: MAX_PARALLEL_AGENTS, problem: `max_parallel_agents=${JSON.stringify(value)} is not a positive whole number; using ${MAX_PARALLEL_AGENTS}` }
+}
+
 // The cap for a five-hour window `usedPercent` full: `max` at an empty window, MIN at `quotaPercent` (the
 // quota_pressure_percent option, default 80) and past it, a straight line between, rounded up so a nearly
 // empty window still has the full cap:
