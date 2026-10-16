@@ -87,6 +87,33 @@ test('an agent whose type names a phase stays in it while it reads', () => {
   expect(a?.status).toBe('done')
 })
 
+test('an agent whose type names a phase is in the phase a step did when the step does more than read', () => {
+  let s = spawned(emptyPhases(), { id: 'e1', type: 'zetetic-team-subagents:engineer', description: 'fix', model: 'claude-sonnet-5-5', at: 1 })
+  s = stepped(s, step('e1', 'analysis'))
+  s = stepped(s, step('e1', 'test'))
+  s = stepped(s, step('e1', undefined))
+  // The spawn's own run (no step yet, no effort) comes first.
+  expect(s.loops.find((l) => l.id === 'e1')?.runs.map((r) => [r.phase, r.steps])).toEqual([['implementation', 0], ['implementation', 1], ['test', 1], ['implementation', 1]])
+})
+
+test('a test run is recognised whatever names its interpreter, and data never names a command', () => {
+  const phase = (command: string) => toolPhase('Bash', { command })
+  // source: misses replayed from the transcripts, docs/verification/phase-attribution-2026-10-16.md
+  expect(phase('.venv/bin/python -m pytest -q -p no:cacheprovider tests_py/hooks 2>&1 | tail -30')).toBe('test')
+  expect(phase('cd /r/Cortex && /usr/bin/time -p .venv/bin/python -m pytest -q > /tmp/l.log 2>&1')).toBe('test')
+  expect(phase('L=/tmp/x.log; nohup .venv/bin/python -m pytest -q > $L 2>&1 &')).toBe('test')
+  expect(phase('for d in a b; do r=$(.venv/bin/python -m pytest -q -x "$d"); done')).toBe('test')
+  expect(phase("bash -c 'cd mods/x && claude plugin test'")).toBe('test')
+  expect(phase('node --test codex/tests/*.test.mjs')).toBe('test')
+  expect(phase('uv run pytest -q')).toBe('test')
+  expect(phase('timeout 600 npx vitest run')).toBe('test')
+  expect(phase('grep -n "toolPhase\\|test" a.ts | head')).toBe('analysis')
+  expect(phase('ps -o pid,command -p 1 | cut -c1-80')).toBe('analysis')
+  expect(phase("sed -i '' 's/a/b/' src/a.py")).toBe('implementation')
+  expect(phase('grep -c x a.txt > counts.txt')).toBe('implementation')
+  expect(phase('ls 2>/dev/null')).toBe('analysis')
+})
+
 test('steps that come in before the spawn answers are kept on the row the spawn completes', () => {
   let s = stepped(emptyPhases(), step('a2', 'implementation'))
   s = stepped(s, step('a2', 'implementation'))

@@ -78,7 +78,7 @@ test('a spawned reviewer gets a row in review, with the model the engine resolve
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.agent.spawn({
     tool_use_id: 'u1',
-    prompt: 'p',
+    prompt: 'DESIGN\ntask: x\n\np',
     description: 'review the diff',
     subagentType: 'Explore',
     provider: { kind: 'model', model: 'claude-opus-5-5' },

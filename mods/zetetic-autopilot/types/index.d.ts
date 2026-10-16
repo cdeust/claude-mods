@@ -25,7 +25,7 @@ export type Pressure = 'none' | 'quota' | 'context'
 // source routing went on without (a dependency's state, an agent definition) and why.
 export type PolicyDecision = {
   at: number
-  kind: 'effort' | 'model' | 'offload' | 'stuck' | 'unread'
+  kind: 'effort' | 'model' | 'offload' | 'stuck' | 'unread' | 'design'
   subject: string
   from: string
   to: string

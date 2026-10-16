@@ -7,7 +7,8 @@ export type Effort = 'low' | 'medium' | 'high'
 
 // `reads` mirrors the autopilot's PhaseRun.reads: steps whose every call was Read, Grep or Glob.
 // Absent on records written before it was kept: such records are not measured.
-export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number }
+// `since`: when the run's first step ended (autopilot's PhaseRun.since); absent on records kept before zetetic-insights 0.11.0.
+export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number; since?: number }
 
 // The design contract a delegation was dispatched under, read from the DESIGN block of its prompt
 // (the dispatch-contract skill): the model and effort the orchestrator chose and the genius shape it
@@ -21,6 +22,8 @@ export type AgentRecord = {
   type: string
   phase: Phase | null
   model: string
+  // When the agent's first run began (autopilot's runs[0].since); absent on records kept before zetetic-insights 0.11.0.
+  since?: number
   // This turn's steps and failed calls only, never the agent's running total.
   steps: number
   errors: number

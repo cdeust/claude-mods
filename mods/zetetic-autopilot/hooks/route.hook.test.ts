@@ -59,7 +59,7 @@ const stubs = (on: Parameters<TestBody>[1], seen: Seen, genius: 'absent' | 'thro
 const spawn = (subagentType: string) =>
   ({
     tool_use_id: 'a1',
-    prompt: 'p',
+    prompt: 'DESIGN\ntask: x\n\np',
     description: 'd',
     subagentType,
     provider: { kind: 'model', model: FABLE },
@@ -273,3 +273,25 @@ test(
     expect(seen.policy?.decisions.filter((x) => x.kind === 'unread' && x.to.startsWith('no file at'))).toHaveLength(1)
   },
 )
+
+test('enforce: a delegation without a DESIGN block is refused and logged; a fork is not gated', { options: { policy_mode: 'enforce' } }, async ($, on) => {
+  const seen: Seen = { spawned: [], efforts: [] }
+  stubs(on, seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const bare = { ...(spawn('zetetic-team-subagents:engineer') as object), prompt: 'fix the bug' } as never
+  const refused = await $.agent.spawn(bare)
+  expect((refused as { deny?: string }).deny).toContain('no DESIGN block')
+  expect(seen.spawned).toEqual([])
+  expect(seen.policy?.decisions.at(-1)).toMatchObject({ kind: 'design', subject: 'zetetic-team-subagents:engineer', to: 'refused' })
+  await $.agent.spawn({ ...(bare as object), fork: true } as never)
+  expect(seen.spawned.length).toBe(1)
+})
+
+test('observe: a delegation without a DESIGN block starts, and the refusal it would get is logged', { options: { policy_mode: 'observe' } }, async ($, on) => {
+  const seen: Seen = { spawned: [], efforts: [] }
+  stubs(on, seen)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.agent.spawn({ ...(spawn('Explore') as object), prompt: 'look' } as never)
+  expect(seen.spawned.length).toBe(1)
+  expect(seen.policy?.decisions.some((d) => d.kind === 'design')).toBe(true)
+})

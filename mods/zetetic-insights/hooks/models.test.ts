@@ -102,3 +102,15 @@ test('the sequence follows the turns by time whatever the input order, and merge
     { family: 'opus', steps: 2 },
   ])
 })
+
+test('a turn that times its runs and agents lays them out by when each began', () => {
+  const timed = turn('s', 10, {
+    mainModel: 'claude-opus-5-5',
+    main: [{ ...run(2), since: 1 }, { ...run(3), since: 9 }],
+    agents: [{ ...agent('claude-haiku-5-5', 4), since: 5 }],
+  })
+  expect(sessionModels([timed])[0]?.sequence).toEqual([{ family: 'opus', steps: 2 }, { family: 'haiku', steps: 4 }, { family: 'opus', steps: 3 }])
+  // A record without times keeps main's runs, then its agents.
+  const untimed = turn('u', 10, { mainModel: 'claude-opus-5-5', main: [run(2), run(3)], agents: [agent('claude-haiku-5-5', 4)] })
+  expect(sessionModels([untimed])[0]?.sequence).toEqual([{ family: 'opus', steps: 5 }, { family: 'haiku', steps: 4 }])
+})

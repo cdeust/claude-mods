@@ -315,7 +315,7 @@ test(
     const spawn = (model: string | undefined) =>
       ({
         tool_use_id: 'a1',
-        prompt: 'look around',
+        prompt: 'DESIGN\ntask: x\n\nlook around',
         description: 'explore',
         subagentType: 'Explore',
         provider: { kind: 'model', model: 'claude-fable-5-1' },
@@ -398,7 +398,7 @@ test(
     await drain($.turn.step({ ...STEP, turnId: 'later', index: 0, effort: 'high' }))
     await $.agent.spawn({
       tool_use_id: 'a1',
-      prompt: 'look around',
+      prompt: 'DESIGN\ntask: x\n\nlook around',
       description: 'explore',
       subagentType: 'Explore',
       provider: { kind: 'model', model: 'claude-fable-5-1' },

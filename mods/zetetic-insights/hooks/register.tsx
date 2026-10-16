@@ -217,7 +217,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
     turnId: phases.turnId ?? '',
     at: await $.clock.now(),
     taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
-    main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
+    main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, since: r.since, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
     mainModel: main.model,
     agents: pending.agents,
     ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),
@@ -253,6 +253,7 @@ async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage
     type: loop.type,
     phase: loop.phase,
     model: loop.model,
+    ...(since === undefined ? {} : { since }),
     steps: Math.max(0, total.steps - before.steps),
     errors: Math.max(0, total.errors - before.errors),
     // Absent when the spawn was never seen (a reload); null when it carried no DESIGN block.

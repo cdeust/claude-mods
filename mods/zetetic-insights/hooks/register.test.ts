@@ -99,7 +99,7 @@ test('a run without reads is kept without them', async ($, on) => {
   stubs(on, w, bare)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
-  expect((w.store['turns:sess-1'] as { main: unknown[] }[])[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 4, errors: 0 }])
+  expect((w.store['turns:sess-1'] as { main: unknown[] }[])[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 4, errors: 0, since: 5 }])
 })
 
 test('observe: a main turn is kept in the ledger and its evidence proposed, not applied', async ($, on) => {
@@ -112,7 +112,7 @@ test('observe: a main turn is kept in the ledger and its evidence proposed, not 
   expect(ledger[0]?.session).toBe('sess-1')
   expect(ledger[0]?.taskClass).toBe('bugfix')
   expect(ledger[0]?.mainModel).toBe('claude-opus-5-5')
-  expect(ledger[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 40, errors: 12, reads: 25 }])
+  expect(ledger[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 40, errors: 12, since: 5, reads: 25 }])
   expect(w.written[CAL]).toBe(undefined)
   const shown = await $.command.run({ command: 'calibrate' } as never)
   expect(shown.text).toMatch(/^Ledger: 1 turns over 1 sessions, 0 judged by \/insights\./)
@@ -222,7 +222,7 @@ test("an agent finishing after main's turn completed joins that turn's record", 
   await $.turn.complete({ turnId: 'g1', reason: 'answer', agentId: 'a1' } as never)
   const ledger = w.store['turns:sess-1'] as { turnId: string; agents: { type: string; steps: number }[] }[]
   expect(ledger.length).toBe(1)
-  expect(ledger[0]?.agents).toEqual([{ agentId: 'a1', type: 'Explore', phase: 'analysis', model: 'claude-haiku-5-5', steps: 3, errors: 1 }])
+  expect(ledger[0]?.agents).toEqual([{ agentId: 'a1', type: 'Explore', phase: 'analysis', model: 'claude-haiku-5-5', since: 7, steps: 3, errors: 1 }])
 })
 
 const DESIGNED = 'DESIGN\ntask: look\ncheck: done\nmodel: opus · effort: high · why: hard\ngenius shape: operational-definition → einstein: measure it\n\nGo.'
@@ -251,6 +251,7 @@ test('a spawn is observed, not changed: its design and the finished agent\'s tok
       type: 'Explore',
       phase: 'analysis',
       model: 'claude-haiku-5-5',
+      since: 7,
       steps: 3,
       errors: 1,
       design: { model: 'opus', effort: 'high', shape: 'operational-definition → einstein: measure it' },

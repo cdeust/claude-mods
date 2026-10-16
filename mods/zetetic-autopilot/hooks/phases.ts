@@ -68,13 +68,24 @@ export const isFileReadStep = (uses: readonly { name: string }[]): boolean => us
 // Each pattern names a command by its head, the first words of a segment (`a && b`, `a; b`, `a | b`),
 // so a word inside an argument (`grep pytest`, `git commit -m "fix tsc"`) names nothing.
 // An inline check (`python3 -c '...; assert ...'`) carries its own `;`: read on the whole line.
-const ASSERT_RUN = /(^|&&\s*)python3? -c .*\bassert\b/
-const TEST_RUN = /^(python3? -m (pytest|unittest)|pytest|(npm|pnpm|yarn|bun) (run )?test|claude plugin test|go test|cargo test|(npx (-y )?)?(jest|vitest)|(sh|bash) \S*(mutation_check|reproduce)\S*)/
+const ASSERT_RUN = /(^|&&\s*)(\S*\/)?python3? -c .*\bassert\b/
+// An interpreter or runner may be named by its path (`.venv/bin/python`, `./node_modules/.bin/vitest`).
+// source: the misses replayed from 46 transcripts on 2026-10-16 (docs/verification/phase-attribution-2026-10-16.md):
+// every `.venv/bin/python -m pytest` and `node --test` run fell outside the earlier pattern.
+const TEST_RUN = /^((\S*\/)?python3?(\.\d+)? -m (pytest|unittest)|(\S*\/)?pytest|(uv|poetry|pdm|hatch) run (\S*\/)?(pytest|python3? -m pytest)|uvx pytest|tox|node (--\S+ )*--test|(npx (-y )?)?tsx --test|(npm|pnpm|yarn|bun) (run )?test|deno test|claude plugin test|go test|cargo test|swift test|xcodebuild (\S+ )*test|dotnet test|mvn (\S+ )*test|(\.\/)?gradlew? (\S+ )*test|make test|(npx (-y )?)?(\S*\/)?(jest|vitest)|(sh|bash) \S*(mutation_check|reproduce)\S*)/
 const CHECK_RUN = /^((uvx )?ruff\S*|(npx (-y )?(-p typescript )?)?tsc|mypy|pyright|(npx (-y )?)?eslint|claude plugin validate|python3? \S*check_craftsmanship|(sh|bash) \S*check-shared|python3? -m mcp_server\.doctor)\b/
 const REVIEW_RUN = /^gh pr (review|diff)\b|^gh pr comment\b.*ZETETIC-REVIEW/
 const DELIVER_RUN = /^(git (commit|push|tag)|gh pr (create|merge)|gh issue create)\b/
+// What changes files: a command that writes, or an inline script fed on stdin. A command none of
+// these patterns names says nothing about the phase (it was `implementation` before 0.6.0, which
+// put `ps`, `cut`, `awk` and every loop keyword there).
+const WRITE_RUN = /^(sed -i|perl -p?i|mv|cp|rm|rmdir|mkdir|touch|ln|chmod|tee|patch|truncate|git (add|apply|am|checkout|restore|reset|rm|mv|switch|cherry-pick|rebase|merge|worktree (add|remove))|(npm|pnpm|yarn|bun) (install|i|ci|add|remove)|(\S*\/)?pip3? install|uv (add|remove|sync|pip install)|(\S*\/)?(python3?|node|bash|sh|zsh) -( |$|s\b))/
 const READ_RUN = /^(ls|cat|head|tail|sed -n|grep|rg|find|wc|git (log|show|status|blame|diff)|gh (pr|issue) (view|list)|which|pwd|echo)\b/
 const NEUTRAL_RUN = /^(cd|export|set|source|true)\b/
+// What only wraps the command after it: shell keywords, timers, environment settings.
+const WRAPPER = /^((do|then|else|elif|if|while|until|time|nohup|exec|command|env|!)\s+|(\S*\/)?time -p\s+|timeout( -\S+)* \S+\s+|[A-Za-z_][A-Za-z0-9_]*=\S*(\s+|$))+/
+// A redirection into a file (not a descriptor, not /dev/null) writes it.
+const WRITES_FILE = /(^|[^0-9&])>>?\s*(?!&|\/dev\/null)\S/
 const DESIGN_FILE = /(^|\/)(docs\/adr\/|wiki\/|design\/)|ADR-\d|\.(md|tex)$/
 const TEST_FILE = /(^|\/)(tests?|tests_py|__tests__)\/|\.(test|spec)\.[a-z]+$|_test\.[a-z]+$/
 
@@ -102,16 +113,24 @@ const segmentPhase = (segment: string): Phase | undefined => {
   if (TEST_RUN.test(segment)) return 'test'
   if (CHECK_RUN.test(segment)) return 'verification'
   if (DELIVER_RUN.test(segment)) return 'report'
-  return READ_RUN.test(segment) ? 'analysis' : 'implementation'
+  if (WRITE_RUN.test(segment) || WRITES_FILE.test(segment)) return 'implementation'
+  return READ_RUN.test(segment) ? 'analysis' : undefined
 }
 
-// The first line only (a heredoc's body is data); the furthest phase of its segments.
+// A quoted string's text is data: blanked (its quotes kept) so a `|` or `;` inside it splits nothing
+// and a word inside it names no command.
+const unquoted = (line: string): string => line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (q) => `${q[0]}${q[0]}`)
+
+// The first line only (a heredoc's body is data); the furthest phase of its segments. A segment is
+// a command between `&&`, `||`, `;`, `|`, `&` and the bounds of `$( )`, `( )`, `{ }` and backticks;
+// the words that only wrap it are dropped first. A line no segment of which names a phase is analysis.
 const bashPhase = (command: string): Phase => {
-  const line = command.split('\n')[0] ?? ''
-  if (ASSERT_RUN.test(line)) return 'test'
+  // `sh -c '<script>'` runs its quoted script: that script is the command, not data.
+  const line = unquoted((command.split('\n')[0] ?? '').replace(/\b(ba|z)?sh -c (['"])(.*?)\2/g, '$3'))
+  if (ASSERT_RUN.test(command.split('\n')[0] ?? '')) return 'test'
   return line
-    .split(/&&|\|\||;|\|/)
-    .map((s) => segmentPhase(s.trim().replace(/^([A-Z_]+=\S+\s+)+/, '')))
+    .split(/&&|\|\||;|\||(?<![>&0-9])&(?!>)|\$\(|[(){}`]/)
+    .map((s) => segmentPhase(s.trim().replace(WRAPPER, '')))
     .filter((p): p is Phase => p !== undefined)
     .reduce<Phase>((best, p) => (RANK[p] > RANK[best] ? p : best), 'analysis')
 }
@@ -253,12 +272,13 @@ export type Step = {
   at: number
 }
 
-// An agent whose type names a phase stays in it (a reviewer reading files is still reviewing);
-// main and an unplaced type move with what each step does.
+// An agent whose type names a phase falls back to it on a step that only reads or says nothing (a
+// reviewer reading files is still reviewing); a step that does more is in the phase it did (an
+// engineer running pytest is testing). Main and an unplaced type move with what each step does.
 export const stepped = (s: PhasesState, st: Step): PhasesState => {
   const loop = s.loops.find((l) => l.id === st.loopId) ?? opened(st)
-  const fixed = loop.type !== 'main' && typePhase(loop.type) !== undefined
-  const phase = fixed ? loop.phase : (st.phase ?? loop.phase)
+  const own = loop.type === 'main' ? undefined : typePhase(loop.type)
+  const phase = own !== undefined && (st.phase === undefined || st.phase === 'analysis') ? own : (st.phase ?? loop.phase)
   const last = loop.runs[loop.runs.length - 1]
   const runs =
     phase === null

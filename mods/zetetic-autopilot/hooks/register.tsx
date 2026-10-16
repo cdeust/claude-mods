@@ -6,6 +6,7 @@ import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibratio
 import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, ancestors, definitionPaths, parseDefinition } from './agents'
 import { DEFAULT_PREVIEW_CHARS, DEFAULT_THRESHOLD_CHARS, offloadOptions } from './offload'
 import { type Sink, offloadBlocks } from './offloadrow'
+import { DENY, hasDesign, isGated } from './design'
 import { placePath } from './paths'
 import { emptyPhases, erred, finished, isFileReadStep, spawned, startTurn, stepPhase, stepped } from './phases'
 import { THRESHOLDS_PATH, band, crossed, matchThresholds, serversOf } from './context'
@@ -334,6 +335,12 @@ function registerRouting(on: On): void {
   // an inheriting type runs on the family its kind and the turn's class call for.
   on('agent.spawn', async ($, e, next) => {
     const p = await read($, policy)
+    if (isGated(e) && !hasDesign(e.prompt)) {
+      const applied = p.mode === 'enforce'
+      const d: PolicyDecision = { at: await $.clock.now(), kind: 'design', subject: e.subagentType, from: 'no DESIGN block', to: 'refused', applied }
+      await update($, policy, (s) => decide(s, d))
+      if (applied) return { deny: DENY }
+    }
     // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
     // command, a notification) routes without one, as turn.step does.
     const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined

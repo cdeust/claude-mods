@@ -34,8 +34,8 @@ const appendRun = (seq: ModelSteps[], family: ModelFamily, steps: number): void 
 // steps sum to its main steps plus its agent steps. A main turn with no mainModel (a record kept
 // before it was) is unknown. The sums are O(records); the sessions are sorted by their latest turn.
 // `sequence` holds the same steps in the order they ran: the turns by `at`, and inside a turn main's
-// runs then its agents, in the order kept (a record keeps no time per agent, so that is the finest
-// order the ledger knows). Its families sum to `steps`.
+// runs and its agents by when each began (`since`, kept from 0.11.0), or main's runs then its agents
+// in the order kept for a record without it. Its families sum to `steps`.
 export const sessionModels = (records: readonly TurnRecord[], probes: ReadonlyMap<string, ProbeInfo> = new Map()): SessionModels[] => {
   const by = new Map<string, { at: number; steps: Map<ModelFamily, number>; sequence: ModelSteps[] }>()
   const add = (session: string, at: number, family: ModelFamily, steps: number) => {
@@ -47,8 +47,11 @@ export const sessionModels = (records: readonly TurnRecord[], probes: ReadonlyMa
   }
   for (const r of [...records].sort((a, b) => a.at - b.at)) {
     const main = familyOf(r.mainModel ?? '')
-    for (const run of r.main) add(r.session, r.at, main, run.steps)
-    for (const a of r.agents) add(r.session, r.at, familyOf(a.model), a.steps)
+    const parts = [...r.main.map((run) => ({ since: run.since, family: main, steps: run.steps })), ...r.agents.map((a) => ({ since: a.since, family: familyOf(a.model), steps: a.steps }))]
+    // A record that times every part is laid out by time (an agent between main's steps before and
+    // after it); one that does not keeps main's runs then its agents. Sort is stable.
+    const timed = parts.every((p) => p.since !== undefined) ? [...parts].sort((a, b) => a.since! - b.since!) : parts
+    for (const p of timed) add(r.session, r.at, p.family, p.steps)
   }
   const rows: SessionModels[] = [...by.entries()]
     .map(([session, row]) => ({
