@@ -282,3 +282,11 @@ test('no brief says so in the FOR CLAUDE band', () => {
   const rows = paintCells(sceneOf(null, null, 5), 90).glyphRows().map((r) => r.trimEnd())
   expect(rows).toContain('no brief this session: the ledger had nothing to say when it started')
 })
+
+test('a run with no effort of its own draws at its loop\'s effort, and EFFORT lists every phase on any lane', () => {
+  const loops = PHASES.loops.map((l) => (l.id === 'a2' ? { ...l, effort: 'high', runs: l.runs.map((r) => ({ ...r, effort: null })) } : l))
+  const s = sceneOf({ ...PHASES, loops } as typeof PHASES, INSIGHTS, 100_000)
+  expect(s.lanes.find((l) => l.id === 'a2')!.segments[0]!.effort).toBe('high')
+  expect(s.gauges.map((g) => g.phase)).toEqual(['analysis', 'implementation', 'review', 'test'])
+  expect(s.gauges.find((g) => g.phase === 'review')!.ran).toBe('high')
+})

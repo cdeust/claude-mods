@@ -95,7 +95,8 @@ const segmentsOf = (loop: LoopPhases, now: number): Segment[] =>
   loop.runs.map((r, i) => ({
     model: loop.model,
     phase: r.phase,
-    effort: r.effort,
+    // A run the engine sent no effort for ran at its loop's: a bar at height 0 would hide it.
+    effort: r.effort ?? loop.effort ?? null,
     t0: r.since,
     t1: loop.runs[i + 1]?.since ?? (loop.status === 'running' ? now : Math.max(loop.updatedAt, r.since)),
     steps: r.steps,
@@ -187,13 +188,15 @@ export const curveScale = (curves: readonly Curve[]): number => {
 // What a curve's label says: the latest rate, the highest, and over how many points. Never first against last.
 export const curveSummary = (c: Curve): { last: number; peak: number; n: number } => ({ last: c.rates[c.rates.length - 1]!, peak: Math.max(...c.rates), n: c.rates.length })
 
-const gaugesOf = (main: LoopPhases | undefined, insights: InsightsState | null): Gauge[] => {
+// One gauge per phase calibrated or seen on any lane; `ran`: the effort of that phase's latest run, on any lane.
+const gaugesOf = (lanes: readonly Lane[], insights: InsightsState | null): Gauge[] => {
   const calibrated = insights?.calibration.phases ?? {}
-  const seen = new Set<Phase>([...(Object.keys(calibrated) as Phase[]), ...(main?.runs.map((r) => r.phase) ?? [])])
+  const runs = lanes.flatMap((l) => l.segments).sort((a, b) => a.t0 - b.t0)
+  const seen = new Set<Phase>([...(Object.keys(calibrated) as Phase[]), ...runs.map((r) => r.phase)])
   return [...seen].sort().map((phase) => ({
     phase,
     calibrated: calibrated[phase] ?? null,
-    ran: [...(main?.runs ?? [])].reverse().find((r) => r.phase === phase)?.effort ?? null,
+    ran: [...runs].reverse().find((r) => r.phase === phase)?.effort ?? null,
   }))
 }
 
@@ -223,7 +226,7 @@ export const sceneOf = (phases: PhasesState | null, insights: InsightsState | nu
     spans: spansOf(lanes),
     turnId: phases?.turnId ?? null,
     lanes,
-    gauges: gaugesOf(phases?.loops.find((l) => l.id === 'main'), insights),
+    gauges: gaugesOf(lanes, insights),
     curves: curvesOf(insights),
     models: modelsOf(window, insights),
     // An older insights (0.3.0 has no delegations, 0.4.0 no mechanical) sends neither: null, never a crash.
