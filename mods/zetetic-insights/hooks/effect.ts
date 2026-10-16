@@ -2,8 +2,8 @@
 // same phase, the same task classes and the same population before and after it: the steps its ceiling
 // decided (hooks/reach.ts: graded base at least the move's reach, not stuck-escalated, not under pressure),
 // the runs of the rung left, then of the rung moved to. The pre statistics are frozen into the move when it
-// is made, so trimming the ledger never discards them; the post statistics are frozen when a later move of
-// the same phase supersedes it. The difference carries its Newcombe interval (hooks/stats.ts).
+// is made, so trimming the ledger never discards them, and a phase's last move is never trimmed from the
+// file; the post statistics are frozen when a later move of the same phase supersedes it. The difference carries its Newcombe interval (hooks/stats.ts).
 
 import type { Calibration, Credit, DeltaInterval, Effect, Effort, Move, Phase, Proposal, Snapshot, Verdict } from '../types'
 import { governs } from './reach'
@@ -35,7 +35,20 @@ const emptySnapshot = (): Snapshot => ({ byClass: {}, sessions: {} })
 export const movesWith = (c: Calibration, ps: readonly Proposal[], at: number, cells: readonly Cell[], outcomes: ReadonlyMap<string, Verdict>): Move[] => {
   const moves = c.moves.map((m) => (m.post === null && ps.some((p) => p.phase === m.phase) ? { ...m, post: snapshotOf(cells.filter((x) => x.at > m.at), outcomes, m.phase, m.to, m.from, m.to) } : m))
   const added = ps.map((p) => ({ phase: p.phase, at, from: p.from, to: p.to, pre: snapshotOf(cells.filter((x) => x.at <= at), outcomes, p.phase, p.from, p.from, p.to), post: null }))
-  return [...moves, ...added].slice(-MOVES_CAP)
+  return trimmed([...moves, ...added])
+}
+
+// The newest MOVES_CAP moves, except that the last move of each phase is kept whatever its age: it is the
+// one the phase's undo is held to, and its `changes` entry stays in the file, so trimming it would make it
+// read as a 0.8.x move with no baseline (movesOf). Eight phases at most, so the cap is still a bound.
+const trimmed = (moves: readonly Move[]): Move[] => {
+  const last = new Set(Object.values(Object.fromEntries(moves.map((m, i) => [m.phase, i]))))
+  let excess = moves.length - MOVES_CAP
+  return moves.filter((_, i) => {
+    if (excess <= 0 || last.has(i)) return true
+    excess -= 1
+    return false
+  })
 }
 
 type Side = Effect['preSide']

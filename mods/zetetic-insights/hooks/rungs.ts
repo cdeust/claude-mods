@@ -11,8 +11,22 @@ import { HALF_WIDTH, type Interval, isResolved, newcombe, wilson } from './stats
 export const UNCLASSIFIED = 'unclassified' // a turn the genius grade did not class
 
 // One main run of one turn: the unit every statistic below pools.
-// `base`: the graded effort of its turn (null: not graded); `escalated`, `pressured`: why else it sat on its rung (hooks/reach.ts).
-export type Cell = { phase: Phase; effort: string; taskClass: string; session: string; at: number; steps: number; errors: number; base: string | null; escalated: boolean; pressured: boolean }
+// `base`: the graded effort of its turn (null: not graded); `escalated`, `pressured`: why else it sat on its rung;
+// `unenforced`, `decisionsLost`: the autopilot applied nothing in its turn, or its log may have lost the turn's decisions (hooks/reach.ts).
+export type Cell = {
+  phase: Phase
+  effort: string
+  taskClass: string
+  session: string
+  at: number
+  steps: number
+  errors: number
+  base: string | null
+  escalated: boolean
+  pressured: boolean
+  unenforced: boolean
+  decisionsLost: boolean
+}
 
 export const cellsOf = (records: readonly TurnRecord[]): Cell[] =>
   records.flatMap((r) =>
@@ -27,6 +41,8 @@ export const cellsOf = (records: readonly TurnRecord[]): Cell[] =>
       base: r.base ?? null,
       escalated: run.escalated === true,
       pressured: r.pressured === true,
+      unenforced: r.unenforced === true,
+      decisionsLost: r.decisionsLost === true,
     })),
   )
 
@@ -123,8 +139,11 @@ const unreachable = (cells: readonly Cell[], phase: Phase, now: Effort): Finding
     return [{ phase, effort: rung, kind: 'unreachable' as const, note: `${mine.errors}/${mine.steps} steps failed at ${rung} (${span(im)}) against ${span(ir)} elsewhere; the ceiling at ${now} cannot lift them, their effort is the grade's base` }]
   })
 
-// A move is undone when its measured effect is harm, or when it has no baseline to be measured against
-// (hooks/effect.ts movesOf): nothing can ever show it harmful, so holding it would hold it for good.
+// A move is undone when its measured effect is harm, or when it has no baseline to be measured against:
+// a 0.8.x move (hooks/effect.ts movesOf), or a move made when no step of the phase was governed (no turn
+// graded, e.g. zetetic-genius absent or not grading). Nothing can ever show such a move harmful, so holding
+// it would hold it for good; its undo is then decided by the rung evidence alone (the leave-one-out), the
+// harm gate does not apply to it.
 const mayUndo = (credit: Credit | undefined): boolean => credit === 'harm' || credit === 'no-baseline'
 
 // One proposal per phase at most, and what held the others back. `credits`: the measured effect of each phase's last move.

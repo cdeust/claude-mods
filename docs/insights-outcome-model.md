@@ -135,10 +135,12 @@ Not claimed: failed tool calls are not a quality measure; a lower rate is read a
 
 ## 7. What a move did (`hooks/effect.ts`, `hooks/reach.ts`)
 
-Every applied move is written into `calibration.json` (`moves`, at most 50) with the phase's runs at the
-rung it left, frozen at that moment by task class, with each session's outcome. The runs after it are
-taken live from the ledger at the rung moved to, and frozen when a later move of the same phase supersedes
-the move. The pre runs are never discarded.
+Every applied move is written into `calibration.json` (`moves`, the newest 50, and the last move of each
+phase whatever its age) with the phase's runs at the rung it left, frozen at that moment by task class,
+with each session's outcome. The runs after it are taken live from the ledger at the rung moved to, and
+frozen when a later move of the same phase supersedes the move. The pre runs of a phase's last move are
+never discarded: trimming it would leave its `changes` entry without its move, read as a 0.8.x move with
+no baseline whose undo is free.
 
 **Like with like.** A step sits on a rung for one of four reasons: the ceiling (`min(base, ceiling)`), the
 stuck escalation (the autopilot raises a step one notch after 3 failed calls in a row), pressure (quota or
@@ -146,8 +148,11 @@ context holds the loop at `low`), or, for a turn's first request, its base alone
 move's. So the comparison is restricted to the runs the ceiling decided: the turn was graded, its graded base
 is at least the higher of the two rungs of the move (a raise from medium to high reaches only turns graded
 high; a lowering from high to medium only those that ran at high), the run is not on a rung the escalation
-chose, and the turn was not under pressure. The ledger records the three causes with each turn (`base`,
-`pressured`, and `escalated` on a run). The conditioning is on causes recorded before the outcome; it is not
+chose, and the turn was not under pressure. None of this holds when the autopilot runs in its `observe`
+mode: it logs its decisions and sends every step unchanged, so no rung is the ceiling's; such a turn (and
+one with no readable autopilot policy) is recorded `unenforced` and left out of both sides. The ledger
+records the causes with each turn (`base`, `pressured`, `unenforced`, `decisionsLost`, and `escalated` on
+a run); a stuck decision counts only when it was applied. The conditioning is on causes recorded before the outcome; it is not
 a filter on failures, which would select the turns that went well. A turn the genius grade did not class has
 no known base (the autopilot gives it the model's default) and is left out of both sides.
 
@@ -165,7 +170,7 @@ when credited, as a line of the self-calibration brief.
 
 1. **Nothing was randomised.** Pre and post are two periods. Whatever else changed between them (the work, the model version, the prompts, the repository) is attributed to the move. The base and task-class restrictions control only for what is recorded.
 2. **The first request of a turn is not governed by the ceiling** and runs at the base. It lands in the row of the higher rung of the move (the `to` row of a raise, the `from` row of a lowering) and not in the other, one step per turn on one side. It cannot be separated from the run it joins.
-3. **The escalation and the pressure are inferred, not observed per step.** A run is read as escalated when its effort is the one a stuck decision of the turn raised to; a run that mixes an escalated step with others at that effort is dropped whole. Pressure is read once, at the end of the turn. A step escalated from an effort the autopilot reports no decision for is not seen.
-4. **Ungraded turns are excluded.** If most are, the move has no baseline or too few governed steps: the credit says so (`no-baseline`, `insufficient`) instead of guessing.
+3. **The escalation and the pressure are inferred, not observed per step.** The autopilot raises one step after a stuck decision; it records the decision's time (taken before the step is sent) and each run's `since` (stamped when its first step answers), not which run the step joined. So the run of the raised step is the run active at the decision when that run is at the raised effort (the step joined it), else the first run opened after it; when both are at that effort, both are left out. A run of another phase or time at that effort is not touched: the step's phase is the one it was classed in, not the phase the decision's subject names (the phase before the step). A run that mixes the raised step with others is dropped whole, which only costs steps. Not seen: a stuck escalation to the effort the step was already sent at (the autopilot logs no decision then), and a stuck decision at a turn's first step (taken before the turn's first run, outside the turn's window). The autopilot keeps its newest 50 decisions: when its log is full and its oldest decision is not older than the turn, a decision of the turn may have been dropped, and the turn is recorded `decisionsLost` and left out whole. Pressure is read once, at the end of the turn. A `PhaseRun` field counting the steps the escalation raised would make this observed.
+4. **Ungraded turns are excluded.** If most are, the move has no baseline or too few governed steps: the credit says so (`no-baseline`, `insufficient`) instead of guessing. Proposals are decided on every turn, graded or not (section 6), but measured on graded ones: on a ledger with no graded turn (zetetic-genius absent or not grading), every move is `no-baseline`, and its undo, like a 0.8.x move's, is decided by the rung evidence alone (the leave-one-out stability); the harm gate never applies. Holding such a move instead would hold it for good, since nothing can ever show it harmful.
 5. **Failed calls are not quality**, steps are not independent, and few sessions are judged: the interval is narrower than the truth.
 6. **Selection by the ledger**: the oldest turns are trimmed; the pre statistics are frozen when the move is made, the post statistics only when the next move supersedes it.

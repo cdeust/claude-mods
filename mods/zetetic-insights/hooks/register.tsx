@@ -216,6 +216,16 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   await schedulePush($, held.layout, ledgerError)
 }
 
+// source: zetetic-autopilot hooks/register.tsx DECISIONS_CAP, the decisions its policy keeps (the newest;
+// a mirror, a mod never imports across mods).
+const AUTOPILOT_DECISIONS_CAP = 50
+
+// Whether the autopilot's decision log may have dropped a decision taken since `since`: it keeps the
+// newest AUTOPILOT_DECISIONS_CAP in the order taken, so it lost one only when it is full, and one of the
+// turn only when its oldest kept decision is not older than the turn.
+const decisionsLost = (decisions: readonly { at: number }[], since: number): boolean =>
+  decisions.length >= AUTOPILOT_DECISIONS_CAP && (decisions[0]?.at ?? 0) >= since
+
 // One main turn, as the autopilot's phases and policy and the genius grade left it.
 async function recordTurn($: EngineInterface): Promise<void> {
   const phases = (await $.state.get(AUTOPILOT_PHASES)).value
@@ -225,7 +235,9 @@ async function recordTurn($: EngineInterface): Promise<void> {
   const grade = (await $.state.get(GENIUS_STATE)).value?.classified
   const policy = (await $.state.get(AUTOPILOT_POLICY)).value
   const uses = phases.advisor.uses.filter((u) => u.turnId === phases.turnId)
-  const stuck = policy?.decisions.filter((d) => d.kind === 'stuck' && d.at >= since) ?? []
+  // Under the autopilot's observe mode nothing it logs is applied: no rung is the ceiling's, the pressure's or the escalation's.
+  const enforced = policy?.mode === 'enforce'
+  const stuck = enforced ? policy.decisions.filter((d) => d.kind === 'stuck' && d.applied && d.at >= since) : []
   const graded = grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade : null
   const sid = await $.session.id()
   if (!(await loaded($, sid))) return
@@ -236,10 +248,12 @@ async function recordTurn($: EngineInterface): Promise<void> {
     at: await $.clock.now(),
     taskClass: graded?.taskClass ?? null,
     ...(typeof graded?.effort === 'string' ? { base: graded.effort } : {}),
-    ...(policy?.pressure === 'quota' || policy?.pressure === 'context' ? { pressured: true as const } : {}),
+    ...(enforced && (policy.pressure === 'quota' || policy.pressure === 'context') ? { pressured: true as const } : {}),
+    ...(enforced ? {} : { unenforced: true as const }),
+    ...(enforced && decisionsLost(policy.decisions, since) ? { decisionsLost: true as const } : {}),
     main: withEscalation(
-      main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
-      stuck.map((d) => d.to),
+      main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, since: r.since, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
+      stuck,
     ),
     mainModel: main.model,
     agents: pending.agents,
