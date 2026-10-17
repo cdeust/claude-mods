@@ -44,6 +44,10 @@ test('B4: the value of an assignment in the command is read as a value: a variab
     "GW='git worktree'; $GW add /tmp/o/gw",
     "GW='git worktree'; A=add; $GW $A /tmp/o/gw",
     "export GW='git worktree'; sh -c '$GW add /tmp/o/gw'",
+    'W=worktree; GW="git $W"; $GW add /tmp/o/gw',
+    '${GW:-x} add /tmp/o/gw; GW="git worktree"',
+    "GW='git worktree'; ${GW:-x} add /tmp/o/gw",
+    "GW='git worktree'; sh -c '$GW \"$@\"' _ add /tmp/o/gw",
   ])
     expect([command, refused(command)]).toEqual([command, true])
   expect(reason('G=git; WA="worktree add"; $G $WA /tmp/o/x')).toContain('worktree add')
@@ -53,6 +57,9 @@ test('B4: the value of an assignment in the command is read as a value: a variab
     'A="a b"; B=c; echo $A $B',
     "GW='git worktree'; $GW list",
     'GIT=git; $GIT add -A',
+    'LIST="git worktree list"; $LIST $FLAGS',
+    'PR="git worktree prune"; $PR "$OPTS"',
+    'make test GW="git worktree"; $GW "$X"',
   ])
     expect([command, refused(command)]).toEqual([command, false])
 })
@@ -84,6 +91,19 @@ test('B5: the same expansions in text a shell runs, or that reaches one, are sti
     "bash <<'EOF'\n$G $W $A /tmp/o/p\nEOF",
     "sudo bash -c '$G $W $A /tmp/o/p'",
     "/bin/sh -c '$G $W $A /tmp/o/p'",
+    "$SHELL -c '$G $W $A /tmp/o/p'",
+    "su -c '$G $W $A /tmp/o/p'",
+    // Review of 5fb3a3c: a shell reached under another spelling, or through a program that runs a string.
+    "W=worktree $SHELL -c 'git $W add /tmp/o/x'",
+    "S=sh; $S -c 'git $W add /tmp/o/x'",
+    "exec $SHELL -c 'git $W add /tmp/o/x'",
+    "${SHELL:-sh} -c 'git $W add /tmp/o/x'",
+    "bash.exe -c 'git $W add /tmp/o/x'",
+    "pwsh -c 'git $W add /tmp/o/x'",
+    "env -S 'git $W add /tmp/o/x'",
+    "runuser -l me -c 'git $W add /tmp/o/x'",
+    "flock f -c 'git $W add /tmp/o/x'",
+    "tmux new-session -d 'git $W add /tmp/o/x'",
     // A phrase that spells the add outright is refused wherever it is, ssh included.
     "ssh h 'git worktree add /tmp/o/p'",
   ])
@@ -105,7 +125,13 @@ test('eval reads its arguments joined, so a quote left in one of them is a quote
 test('git config: the value of an alias key is what decides, not another word that is expanded', () => {
   for (const command of ['git config --file=$CFG alias.co checkout', 'git config --global alias.co checkout'])
     expect([command, refused(command)]).toEqual([command, false])
-  for (const command of ['git config --file=$CFG alias.wt worktree', 'git config alias.wt "$V"', "git config --global alias.wt '!git worktree'"])
+  for (const command of [
+    'git config --file=$CFG alias.wt worktree',
+    'git config alias.wt "$V"',
+    "git config --global alias.wt '!git worktree'",
+    'git config alias.wt -- worktree',
+    'git config alias.wt --type=string worktree',
+  ])
     expect([command, refused(command)]).toEqual([command, true])
   expect(reason('git config --file=$CFG alias.wt worktree')).toContain('alias.wt worktree')
   expect(reason('git config --file=$CFG alias.wt worktree')).not.toContain('--file')

@@ -385,10 +385,11 @@ const CONFIG_ENV = /^GIT_CONFIG_(VALUE_\d+|PARAMETERS)=(.*)$/is
 const mayBeWorktree = (value: string): boolean => /worktree/i.test(value.replace(/['"\\]/g, '')) || EXPANDS.test(value)
 
 // The alias `git config` sets in its arguments (after the subcommand) whose value may be worktree: the word after an
-// `alias.<name>` key is its value; the other words (`--file=$CFG`, `--global`) are not.
+// `alias.<name>` key, past any option (`--type=string`, `--`), is its value; the words before the key
+// (`--file=$CFG`, `--global`) are not.
 const configAlias = (args: string[]): string | undefined => {
   for (const [k, key] of args.entries()) {
-    const value = args[k + 1]
+    const value = args.slice(k + 1).find((arg) => !arg.startsWith('-'))
     if (/^alias\./i.test(key) && value !== undefined && mayBeWorktree(value)) return `${key} ${value}`
   }
   return undefined
@@ -425,15 +426,29 @@ const addPair = (words: string[], named = false): string | undefined => {
   return undefined
 }
 
-// The variables the steps assign a value that word-splits into several words, one of them `worktree`
-// (`GW='git worktree'`): used as a command name they spell git's verb. A value of one word (`W=worktree`) is read
-// where the variable is used (`$G $W add`); `WA='worktree add'` is read as the value it is (textParts).
+// The assignments a step makes: the words before its command (`G=git cmd`), and the arguments of `export`,
+// `declare`, `local`, `readonly`, `typeset` and `env`.
+const assignmentsOf = (step: Step): string[] => {
+  const run = commandOf(step.words).words
+  const before = step.words.slice(0, step.words.length - run.length)
+  const declared = /^(export|declare|local|readonly|typeset|env)$/.test(nameOf(run[0])) ? run.slice(1) : []
+  return [...before, ...declared].filter((word) => ASSIGNMENT.test(word))
+}
+
+// The variables the steps assign a value that word-splits into several words, one of them `worktree` and then
+// nothing, `add` or an expansion, or `git` and an expansion (`GW='git worktree'`, `GW="git $W"`): used as a command
+// name they spell git's verb. A value of one word (`W=worktree`) is read where the variable is used (`$G $W add`);
+// `WA='worktree add'` is read as the value it is (textParts). `git worktree list` can add nothing and is no doubt.
+// Where in the command the assignment is, and in which subshell, is not looked at: more is a doubt.
 const splitVars = (steps: Step[]): Set<string> =>
   new Set(
-    steps.flatMap((step) => step.words).flatMap((word) => {
-      const m = /^([A-Za-z_]\w*)=(.*)$/s.exec(word)
-      const values = (m?.[2] ?? '').trim().split(/\s+/)
-      return m !== null && values.length > 1 && values.some((value) => nameOf(value) === 'worktree') ? [m[1] ?? ''] : []
+    steps.flatMap(assignmentsOf).flatMap((word) => {
+      const [name = '', value = ''] = [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)]
+      const values = value.trim().split(/\s+/)
+      const verb = values.findIndex((part) => nameOf(part) === 'worktree')
+      const next = values[verb + 1]
+      const spells = verb !== -1 && (next === undefined || nameOf(next) === 'add' || EXPANDS.test(next))
+      return values.length > 1 && (spells || (values.some((part) => nameOf(part) === 'git') && values.some((part) => /[$`]/.test(part)))) ? [name] : []
     }),
   )
 
@@ -461,7 +476,7 @@ const commandDoubt = (step: Step, splits: Set<string>): string | undefined => {
       ?? (nameOf(first) === 'config' ? configAlias(rest) : undefined)
     if (alias !== undefined) return `the command defines a git alias that may be worktree (${alias})`
   } else if (/[$`]/.test(head)) {
-    const used = /^\$\{?(\w+)\}?$/.exec(head)?.[1] ?? ''
+    const used = /^\$\{?([A-Za-z_]\w*)/.exec(head)?.[1] ?? ''
     const next = run.words[1] ?? ''
     if (splits.has(used) && (nameOf(next) === 'add' || EXPANDS.test(next)))
       return `the command's name ${run.words[0] ?? ''} is set in the command to words that include worktree, so it may be git worktree ${next}`
@@ -475,18 +490,25 @@ const commandDoubt = (step: Step, splits: Set<string>): string | undefined => {
 const DEPTH = 4
 
 // source: bash(1) INVOCATION, sh(1), zsh(1): a shell reads a command string (`-c`), its standard input or a file.
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'fish', 'csh', 'tcsh'])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'fish', 'csh', 'tcsh', 'pwsh', 'powershell', 'cmd'])
 // The name of the program a word runs, without its directory (`/bin/sh` is sh).
-const baseOf = (word: string | undefined): string => nameOf(word).replace(/^.*\//, '')
+const baseOf = (word: string | undefined): string => nameOf(word).replace(/^.*\//, '').replace(/\.exe$/i, '')
 
 // Whether a step runs the text of its words as shell commands: its command is a shell or `eval` (bash(1) SHELL
-// BUILTIN COMMANDS: eval joins its arguments and reads them), or a program that is not a quiet one is given a shell
-// or eval (`sudo bash -c`, `xargs sh -c`). Closed and over-inclusive: all the words of such a step are commands.
+// BUILTIN COMMANDS: eval joins its arguments and reads them), or it is given one (`sudo bash -c`, `xargs sh -c`), or
+// it hands a string to a shell without naming one (`su -c`, `watch`, `tmux`, `env -S`), or it has a `-c` or `-e`
+// option, as a shell, `flock` or a command named by a variable does (`$SHELL -c '...'`). Closed and over-inclusive:
+// all the words of such a step are commands. Code given to an interpreter (`python3 -c`) is not shell: a phrase that
+// spells the add outright in it is refused, an add spelled through the expansions of the code's own shell words is not.
+const SHELL_RUNNERS = new Set(['su', 'runuser', 'watch', 'parallel', 'script', 'tmux', 'screen', 'at', 'batch', 'nsenter', 'chroot'])
 const runsText = (words: string[]): boolean => {
   const run = commandOf(words).words
   const head = baseOf(run[0])
-  if (SHELLS.has(head) || head === 'eval') return true
-  return !QUIET.has(head) && run.slice(1).some((word) => SHELLS.has(baseOf(word)) || baseOf(word) === 'eval')
+  if (SHELLS.has(head) || head === 'eval' || SHELL_RUNNERS.has(head)) return true
+  if (head === 'env' && run.some((word) => /^(-S|--split-string)/.test(word))) return true
+  if (QUIET.has(head)) return false
+  if (head !== 'git' && run.slice(1).some((word) => /^-[A-Za-z]*[ce]$/.test(word))) return true
+  return run.slice(1).some((word) => SHELLS.has(baseOf(word)) || baseOf(word) === 'eval')
 }
 
 // Whether a step may read text another step carries: it runs text, or it is `source` / `.` (bash(1) SHELL BUILTIN
@@ -505,8 +527,8 @@ const readsText = (words: string[]): boolean => runsText(words) || /^(source|\.)
 const addIn = (text: string, depth: number, full: boolean, outer: Set<string>): string | undefined => {
   const plain = text.replace(/\\\n|['"\\]/g, '')
   // Nothing in it can read like an add: commandDoubt and addPair need `worktree`, `add`, `git`, an alias or
-  // GIT_CONFIG, or two expansions in a row (`$G $W $A`).
-  if (!/worktree|\badd\b|\bgit\b|alias|GIT_CONFIG/i.test(plain) && !/[$`]\S*\s+[$`]/.test(text)) return undefined
+  // GIT_CONFIG, or two expansions in a row (`$G $W $A`), or an expansion where the command assigned a variable words.
+  if (!/worktree|\badd\b|\bgit\b|alias|GIT_CONFIG/i.test(plain) && !/[$`]\S*\s+[$`]/.test(text) && !(outer.size > 0 && text.includes('$'))) return undefined
   if (depth > DEPTH) return PHRASE.exec(plain)?.[0]
   const { steps, open } = shellSteps(text)
   const scope: Scope = { consumer: full && steps.some((step) => readsText(step.words)), splits: new Set([...outer, ...splitVars(steps)]) }
@@ -530,7 +552,7 @@ const SHELL_TEXT = /[\s'"\\]/
 const textParts = (step: Step): string[] => {
   const run = commandOf(step.words).words
   const joined = baseOf(run[0]) === 'eval' ? [run.slice(1).join(' ')] : []
-  const values = step.words.map((word) => word.replace(/^[^\s=]+=/, '')).filter((value, k) => value !== step.words[k])
+  const values = step.words.filter((word) => /\s/.test(word)).map((word) => word.replace(/^[^\s=]+=/, '')).filter((value) => !step.words.includes(value))
 
   return [...step.words, ...values, ...joined, step.body]
 }
