@@ -155,13 +155,14 @@ export const register: Register = (on, options) => {
       verdict = judgePath(await realPathOf($, input.file_path))
     if (verdict.allow) {
       const ran = await next(e)
-      const added = tool === 'Bash' && !ran.isError ? worktreeAddPath(input.command ?? '') : undefined
+      // A call another plugin refused ran nothing: no worktree exists, so none is registered or reported.
+      if (ran.deny !== undefined || ran.isError) return ran
+      const added = tool === 'Bash' ? worktreeAddPath(input.command ?? '') : undefined
       if (added === undefined) return ran
       // Awaited: the result of this call is where Claude can be told the worktree is not covered.
       // A registration that throws must not turn a call that ran into a refusal: it is a reason, like any other.
       const reason = await registerWorktree($, added).catch((error: unknown) => `registration failed: ${why(error)}`)
-      // A call another plugin refused has no context to carry it.
-      return reason === undefined || ran.deny !== undefined ? ran : { ...ran, context: [...(ran.context ?? []), unregistered(added, reason)] }
+      return reason === undefined ? ran : { ...ran, context: [...(ran.context ?? []), unregistered(added, reason)] }
     }
     const target = input.file_path ?? input.notebook_path ?? (input.command ?? '').slice(0, 60)
     const at = await $.clock.now()

@@ -256,6 +256,20 @@ test('an add another plugin refused carries no registration context', async ($, 
   expect(ran.context).toBeUndefined()
 })
 
+// The same refusal with a script that would register: nothing is run and the user is not told "registered".
+test('an add another plugin refused is not registered', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { call: { deny: 'another plugin: no' } })
+  let runs = 0
+  on('process.run', () => {
+    runs += 1
+    return { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+  })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.deny).toBe('another plugin: no')
+  expect(runs).toBe(0)
+  expect(seen.toasts).toEqual([])
+})
+
 // The add itself failed (git exited non-zero): no worktree exists, so nothing is registered or toasted.
 test('an add that failed is neither registered nor told to Claude', async ($, on) => {
   const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { result: 'fatal: already exists', isError: true } })
