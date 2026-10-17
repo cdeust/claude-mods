@@ -303,7 +303,7 @@ export const lessonsLine = (l: Lessons): string =>
 
 // Sent as the plugin's message (not `asUser`): Claude reads "The harness-fleet plugin sent a message: ...", so the
 // text is the plugin's voice and names the owner in the third person, never as "me" or "I".
-export const draftIssuePrompt =(repos: readonly string[], l: Lessons): string =>
+export const draftIssuePrompt = (repos: readonly string[], l: Lessons): string =>
   [
     'From this session\'s harness signals, draft one GitHub issue on the plugin repository the signal belongs to:',
     `${lessonsLine(l).replace(/ · /g, ', ')}.`,
