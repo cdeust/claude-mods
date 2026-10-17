@@ -4,12 +4,12 @@
 // the tests share it.
 
 import type { AgentRecord, Design, DelegationFlag, DelegationRow, DelegationStats, OutcomeEvent, TurnRecord } from '../types'
-import { RAISE_RATE } from './learn'
 import { familyOf } from './models'
 import { eventsBySession, judge } from './outcome'
 
 export const DESIGN_FIELD_CAP = 80 // source: own choice, characters kept of each design field; the block states a reason, not an essay
 export const OVERKILL_STEPS = 5 // source: own choice, an opus or fable agent that took at most this many steps did a small job
+export const UNDERPOWERED_RATE = 0.25 // source: own choice, a flag on one small delegation, not a decision: one failed call in four (the old phase threshold; phases are now read with intervals, hooks/rungs.ts)
 export const UNDERPOWERED_MIN_STEPS = 4 // source: own choice, fewer steps than this is too small a sample for a failure rate
 export const RECENT_FLAGGED = 8 // source: own choice, the flagged delegations the panel can list
 
@@ -57,7 +57,7 @@ const REAL = new Set(['haiku', 'sonnet', 'opus', 'fable'])
 //                  and the two families differ (the autopilot may lower a model under quota pressure).
 //  - overkill:     the model that ran is opus or fable and the agent took at most OVERKILL_STEPS steps.
 //  - underpowered: the model that ran is haiku, it took at least UNDERPOWERED_MIN_STEPS steps and
-//                  errors / steps >= RAISE_RATE (the rate learn.ts raises a phase's effort at).
+//                  errors / steps >= UNDERPOWERED_RATE.
 export const flagsOf = (r: AgentRecord): DelegationFlag[] => {
   const flags: DelegationFlag[] = []
   const ran = familyOf(r.model)
@@ -65,7 +65,7 @@ export const flagsOf = (r: AgentRecord): DelegationFlag[] => {
   const wanted = r.design?.model == null ? null : familyOf(r.design.model)
   if (wanted !== null && REAL.has(wanted) && REAL.has(ran) && wanted !== ran) flags.push('rerouted')
   if ((ran === 'opus' || ran === 'fable') && r.steps <= OVERKILL_STEPS) flags.push('overkill')
-  if (ran === 'haiku' && r.steps >= UNDERPOWERED_MIN_STEPS && r.errors / r.steps >= RAISE_RATE) flags.push('underpowered')
+  if (ran === 'haiku' && r.steps >= UNDERPOWERED_MIN_STEPS && r.errors / r.steps >= UNDERPOWERED_RATE) flags.push('underpowered')
   return flags
 }
 

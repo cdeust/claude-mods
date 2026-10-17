@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
-import type { AgentRecord, Calibration, Design, InsightsState, ProbeCount, ProbeReason, TurnRecord } from '../types'
+import type { AgentRecord, Calibration, Design, Finding, InsightsState, ProbeCount, ProbeReason, TurnRecord, Verdict } from '../types'
 import { briefOf, mechanicalShare } from './brief'
 import { delegationStats, parseDesign } from './delegations'
+import { effectLine, effectsOf, movesOf, movesWith } from './effect'
 import { recurringIn, schedulePush, setServer } from './handover'
 import {
   CALIBRATION_PATH,
@@ -16,11 +17,8 @@ import {
   applied,
   emptyCalibration,
   goalStatus,
-  offRung,
   outcomeOf,
   parseCalibration,
-  phaseStats,
-  proposals,
   withAgent,
 } from './learn'
 import { frictionsBySession } from './ledger'
@@ -28,6 +26,8 @@ import { sessionModels } from './models'
 import { originStamp, observeCall, setOrigin, takeObserved } from './observe'
 import { combineOutcomes } from './outcome'
 import { type ProbeInfo, probesOf, withoutProbes } from './probes'
+import { withEscalation } from './reach'
+import { type Cell, cellsOf, decisions, phaseStats } from './rungs'
 import { cut, expandHome, INITIAL } from './shared'
 import { held, ledger, loadLedger, loaded, markEnded, markTranscript, note, saved } from './store-io'
 import { trends } from './trend'
@@ -47,6 +47,9 @@ let outcomes = new Map<string, Outcome>()
 let pending: { agents: AgentRecord[]; dropped: number } = { agents: [], dropped: 0 }
 // Every session's probe decision, over the ledger as last computed (recompute).
 let probes = new Map<string, ProbeInfo>()
+// The outcome of each learning session and the runs of the learning sessions, as recompute last joined them (/calibrate apply freezes the moves from them).
+let verdicts = new Map<string, Verdict>()
+let runs: Cell[] = []
 
 // The design each spawned agent was dispatched under, by agentId, kept for the agent's lifetime (a
 // resumed agent completes more than one turn). Bounded: the oldest entry is dropped past the cap.
@@ -123,6 +126,14 @@ async function writeCalibration($: EngineInterface, c: Calibration): Promise<voi
   await $.fs.write(await expandHome($, CALIBRATION_PATH), `${JSON.stringify(c, null, 2)}\n`)
 }
 
+// What the learning sessions' runs say under a calibration: the rows, the proposals, what held the others
+// back, and the measured effect of each applied move (the last move's credit gates undoing it).
+function evidenceOf(calibration: Calibration) {
+  const { effects, credits } = effectsOf(movesOf(calibration), runs, verdicts)
+  const { proposals, findings } = decisions(runs, verdicts, calibration, credits)
+  return { phases: phaseStats(runs, verdicts), proposals, findings, effects }
+}
+
 // Everything the panel shows, from the ledger and what was read beside it; enforced, a proposal
 // the evidence supports is written at once.
 async function recompute($: EngineInterface, extra: Partial<InsightsState> = {}): Promise<void> {
@@ -133,14 +144,14 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
   probes = probesOf(every, held.layout?.transcripts)
   const all = withoutProbes(every, probes)
   const joined = combineOutcomes(all, outcomes)
+  verdicts = joined.outcomes
+  runs = cellsOf(all)
   let calibration = s.calibration
-  let phases = phaseStats(all, joined.outcomes, calibration.changes)
-  let ps = proposals(phases, calibration)
-  if (s.mode === 'enforce' && ps.length > 0) {
-    calibration = applied(calibration, ps, at)
+  let ev = evidenceOf(calibration)
+  if (s.mode === 'enforce' && ev.proposals.length > 0) {
+    calibration = applied(calibration, ev.proposals, at, movesWith(calibration, ev.proposals, at, runs, verdicts))
     await writeCalibration($, calibration)
-    phases = phaseStats(all, joined.outcomes, calibration.changes)
-    ps = []
+    ev = { ...evidenceOf(calibration), proposals: [] }
   }
   await update($, insights, () => ({
     ...s,
@@ -149,7 +160,9 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
     judgedSessions: [...joined.outcomes.values()].filter((o) => o !== 'unclear').length,
     probes: probeCount(every, probes),
     outcomeSources: joined.sources,
-    phases,
+    phases: ev.phases,
+    findings: ev.findings,
+    effects: ev.effects,
     agents: agentStats(all),
     advisor: advisorStats(all),
     trends: trends(all, calibration.changes),
@@ -157,7 +170,7 @@ async function recompute($: EngineInterface, extra: Partial<InsightsState> = {})
     delegations: delegationStats(all),
     mechanical: mechanicalShare(all),
     calibration,
-    proposals: ps,
+    proposals: ev.proposals,
     updatedAt: at,
   }))
 }
@@ -185,7 +198,10 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   // within a start. /resume and fork call start() again: the resumed session gets fresh evidence, at
   // the cost of one cache miss.
   const frictions = held.layout === null ? undefined : new Map([...frictionsBySession(held.layout)].filter(([s]) => s !== held.ownSid))
-  const brief = briefOf(ledger(), frictions, probesOf(ledger(), held.layout?.transcripts))
+  const decided = probesOf(ledger(), held.layout?.transcripts)
+  const learning = withoutProbes(ledger(), decided)
+  const effects = effectsOf(movesOf(c.calibration), cellsOf(learning), combineOutcomes(learning, outcomes).outcomes).effects
+  const brief = briefOf(ledger(), frictions, decided, effects)
   await recompute($, {
     mode,
     ledgerError,
@@ -200,6 +216,16 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   await schedulePush($, held.layout, ledgerError)
 }
 
+// source: zetetic-autopilot hooks/register.tsx DECISIONS_CAP, the decisions its policy keeps (the newest;
+// a mirror, a mod never imports across mods).
+const AUTOPILOT_DECISIONS_CAP = 50
+
+// Whether the autopilot's decision log may have dropped a decision taken since `since`: it keeps the
+// newest AUTOPILOT_DECISIONS_CAP in the order taken, so it lost one only when it is full, and one of the
+// turn only when its oldest kept decision is not older than the turn.
+const decisionsLost = (decisions: readonly { at: number }[], since: number): boolean =>
+  decisions.length >= AUTOPILOT_DECISIONS_CAP && (decisions[0]?.at ?? 0) >= since
+
 // One main turn, as the autopilot's phases and policy and the genius grade left it.
 async function recordTurn($: EngineInterface): Promise<void> {
   const phases = (await $.state.get(AUTOPILOT_PHASES)).value
@@ -209,6 +235,10 @@ async function recordTurn($: EngineInterface): Promise<void> {
   const grade = (await $.state.get(GENIUS_STATE)).value?.classified
   const policy = (await $.state.get(AUTOPILOT_POLICY)).value
   const uses = phases.advisor.uses.filter((u) => u.turnId === phases.turnId)
+  // Under the autopilot's observe mode nothing it logs is applied: no rung is the ceiling's, the pressure's or the escalation's.
+  const enforced = policy?.mode === 'enforce'
+  const stuck = enforced ? policy.decisions.filter((d) => d.kind === 'stuck' && d.applied && d.at >= since) : []
+  const graded = grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade : null
   const sid = await $.session.id()
   if (!(await loaded($, sid))) return
   const seen = takeObserved()
@@ -216,8 +246,15 @@ async function recordTurn($: EngineInterface): Promise<void> {
     session: sid,
     turnId: phases.turnId ?? '',
     at: await $.clock.now(),
-    taskClass: grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade.taskClass : null,
-    main: main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
+    taskClass: graded?.taskClass ?? null,
+    ...(typeof graded?.effort === 'string' ? { base: graded.effort } : {}),
+    ...(enforced && (policy.pressure === 'quota' || policy.pressure === 'context') ? { pressured: true as const } : {}),
+    ...(enforced ? {} : { unenforced: true as const }),
+    ...(enforced && decisionsLost(policy.decisions, since) ? { decisionsLost: true as const } : {}),
+    main: withEscalation(
+      main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, since: r.since, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
+      stuck,
+    ),
     mainModel: main.model,
     agents: pending.agents,
     ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),
@@ -226,7 +263,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
       beforeWrite: uses.filter((u) => u.when === 'before-write').reduce((n, u) => n + u.calls, 0),
       atCompletion: uses.filter((u) => u.when === 'at-completion').reduce((n, u) => n + u.calls, 0),
     },
-    stuck: policy?.decisions.filter((d) => d.kind === 'stuck' && d.at >= since).length ?? 0,
+    stuck: stuck.length,
     ...originStamp(),
     ...(seen.events.length > 0 ? { events: seen.events } : {}),
     ...(seen.eventsDropped > 0 ? { eventsDropped: seen.eventsDropped } : {}),
@@ -285,17 +322,20 @@ async function calibrate($: EngineInterface, args: string): Promise<string> {
   }
   if (args === 'apply') {
     if (s.proposals.length === 0) return 'No proposal: the evidence supports no change yet.'
-    const c = applied(s.calibration, s.proposals, at)
+    const c = applied(s.calibration, s.proposals, at, movesWith(s.calibration, s.proposals, at, runs, verdicts))
     await writeCalibration($, c)
     await recompute($, { calibration: c, calibrationError: null })
     return `Applied: ${s.proposals.map((p) => `${p.phase} ${p.from} → ${p.to}`).join(', ')}.`
   }
   const now = Object.entries(s.calibration.phases).map(([p, e]) => `${p} ${e}`)
-  const off = offRung(s.phases, s.calibration).map((o) => `${o.phase} ran ${o.ran.join(', ')} steps, none enough at ${o.now}`)
-  return `Ledger: ${s.turns} turns over ${s.sessions} sessions, ${s.judgedSessions} judged by /insights. Calibration: ${now.length === 0 ? 'none (medium everywhere)' : now.join(', ')}. Proposals: ${
+  return `Ledger: ${s.turns} turns over ${s.sessions} sessions (${s.probes.sessions} probe sessions kept out), ${s.judgedSessions} judged (${outcomeSourcesText(s)}). Calibration: ${now.length === 0 ? 'none (medium everywhere)' : now.join(', ')}. Proposals: ${
     s.proposals.length === 0 ? 'none' : s.proposals.map((p) => `${p.phase} ${p.from} → ${p.to} (${p.evidence})`).join('; ')
-  }.${off.length === 0 ? '' : ` No proposal can come from: ${off.join('; ')}.`} /calibrate apply or /calibrate reset.`
+  }.${findingsText(s.findings)}${effectsText(s.effects)} /calibrate apply or /calibrate reset.`
 }
+
+const outcomeSourcesText = (s: InsightsState): string => `${s.outcomeSources.events} by events, ${s.outcomeSources.facets} by /insights, ${s.outcomeSources.disagree} disagreeing`
+const findingsText = (fs: readonly Finding[]): string => (fs.length === 0 ? '' : ` No move: ${fs.map((f) => `${f.phase} at ${f.effort} (${f.kind}: ${f.note})`).join('; ')}.`)
+const effectsText = (es: InsightsState['effects']): string => (es.length === 0 ? '' : ` Applied moves, measured: ${es.map(effectLine).join('; ')}.`)
 
 type On = Parameters<Register>[0]
 

@@ -104,3 +104,73 @@ that fill slots; the chart's `SessionModels` rows carry `probe` and `probeReason
 - `non-interactive-1-step`: a `-p` run or the SDK with at most one main step.
 - `one-step-unknown`: the origin was never recorded (older records), one main step, no agent. Steps,
   not turns: a one-turn session of three steps is work.
+
+## 6. When a phase's effort moves (`hooks/rungs.ts`, `hooks/stats.ts`)
+
+The rung is a ceiling: a turn's tool loop runs at `min(its graded base, the phase's ceiling)`
+(zetetic-autopilot `effortFor`). So the rows that matter are the ones for the effort each run had:
+raising the ceiling reaches only the turns that ran capped at it, lowering it only those that ran at it.
+A phase that ran only at `low` (a routine base) is untouched by a `medium` ceiling; the finding
+`unreachable` says so instead of proposing a move that changes nothing. A phase with no step at its own
+ceiling gives the finding `unmeasured`: the rows it has say nothing of that rung, and silence would read
+as "the evidence supports it".
+
+Choices, all stated (none is derived from data, none is hidden in a constant):
+
+- **Confidence level**: 95%, one-sided (z = 1.645, Phi^-1(0.95)). Own choice, the usual level of a one-sided test. A proposal acts on one direction at a time.
+- **Precision asked for**: `HALF_WIDTH` = 10 points. Own choice. A rate is **resolved** when its interval is that narrow; the steps this takes follow from it and from z: `n = z^2 p (1 - p) / h^2`, 51 at a quarter, 13 at 5%, at most 68 (Cochran 1977, eq. 4.2). This replaces the unexplained `MIN_STEPS = 40`, `RAISE_RATE = 0.25`, `LOWER_RATE = 0.05`, `MIN_JUDGED_SESSIONS = 5`, `ACHIEVED_SHARE = 0.8` and `REVERSAL_STEPS`.
+- **The decision rule**: a phase is acted on when the intervals of its rate and of the reference do not overlap (its lower bound above the reference's upper bound to raise; its upper bound below the reference's lower bound to lower). This is a choice, and it is **stricter than a 95% test on the difference**: for two intervals of equal half-width `h` it asks the rates to differ by more than `2h`, where a one-sided 95% test on the difference (the Newcombe interval used by the neighbour guard and by section 7) asks for about `1.41h`. It was kept because the reference is the pool of other phases, whose mix of tasks is not the phase's, and an unnecessary move costs more than a late one. The level of the rule is therefore not 95%; it is lower on false moves, higher on missed ones, and has not been calibrated against any outcome.
+- **The outcome gate for lowering**: the Wilson lower bound of the share of the phase's judged sessions that were achieved must be above one half (the sign-test null). A lower rate of failed calls alone never lowers a phase.
+
+Statistics:
+
+- Interval: Wilson score interval (Wilson 1927; Brown, Cai and DasGupta 2001) of failed calls over steps, one-sided 95% bounds.
+- Reference: the same rung's rate over the other phases of the ledger (probe sessions excluded), measured, not fixed.
+- Raise one notch, or lower one notch, by the rule above.
+- The rung moved to must not be confidently worse than the rung left, for the same phase and in the task classes both ran (Newcombe 1998 method 10 on the difference, rung moved to minus rung left, lower bound above zero blocks the move).
+- The verdict must hold when any one session is left out (steps of one session are not independent trials; one session is an anecdote, which the leave-one-out removes without a minimum-sessions constant).
+- Undoing a phase's last move needs that move's measured effect (section 7) to be `harm`, or to have no baseline (a move made under 0.8.x kept none, see section 7): nothing could ever show it harmful, so holding it would hold it for good. `/calibrate reset` clears every phase to the ladder default; it is the way out of a move that stays `insufficient`.
+
+Not claimed: failed tool calls are not a quality measure; a lower rate is read as "this phase needs less effort" only together with the sessions' outcomes. The interval treats steps as trials; the leave-one-session-out stability is the guard, not a correction. The leave-one-out and the Wilson interval do not make the steps independent.
+
+## 7. What a move did (`hooks/effect.ts`, `hooks/reach.ts`)
+
+Every applied move is written into `calibration.json` (`moves`, the newest 50, and the last move of each
+phase whatever its age) with the phase's runs at the rung it left, frozen at that moment by task class,
+with each session's outcome. The runs after it are taken live from the ledger at the rung moved to, and
+frozen when a later move of the same phase supersedes the move. The pre runs of a phase's last move are
+never discarded: trimming it would leave its `changes` entry without its move, read as a 0.8.x move with
+no baseline whose undo is free.
+
+**Like with like.** A step sits on a rung for one of four reasons: the ceiling (`min(base, ceiling)`), the
+stuck escalation (the autopilot raises a step one notch after 3 failed calls in a row), pressure (quota or
+context holds the loop at `low`), or, for a turn's first request, its base alone. Only the first is the
+move's. So the comparison is restricted to the runs the ceiling decided: the turn was graded, its graded base
+is at least the higher of the two rungs of the move (a raise from medium to high reaches only turns graded
+high; a lowering from high to medium only those that ran at high), the run is not on a rung the escalation
+chose, and the turn was not under pressure. None of this holds when the autopilot runs in its `observe`
+mode: it logs its decisions and sends every step unchanged, so no rung is the ceiling's; such a turn (and
+one with no readable autopilot policy) is recorded `unenforced` and left out of both sides. The ledger
+records the causes with each turn (`base`, `pressured`, `unenforced`, `decisionsLost`, and `escalated` on
+a run); a stuck decision counts only when it was applied. The conditioning is on causes recorded before the outcome; it is not
+a filter on failures, which would select the turns that went well. A turn the genius grade did not class has
+no known base (the autopilot gives it the model's default) and is left out of both sides.
+
+The effect is `post - pre` with its Newcombe interval, for (a) the failed-call rate, on the task classes
+both sides have (same phase, same classes), and (b) the share of judged sessions achieved (sessions with
+runs on both sides of the move belong to neither side). Credit: `harm` if either interval lies on the bad
+side of zero, else `benefit` if either lies on the good side, else `inconclusive`; `insufficient` when the
+rung moved to has no governed step yet; `no-baseline` when no governed step was frozen before the move. A
+calibration written under 0.8.x has `changes` but no `moves`: each such phase is read as a move with no
+baseline (`movesOf`), so its undo is decided by the rung evidence like any proposal. It is reported in the
+`/calibrate` text, in `InsightsState.effects` (for the cockpit and the mission-control pane to draw), and,
+when credited, as a line of the self-calibration brief.
+
+**What could make "measured" wrong** (hardest first):
+
+1. **Nothing was randomised.** Pre and post are two periods. Whatever else changed between them (the work, the model version, the prompts, the repository) is attributed to the move. The base and task-class restrictions control only for what is recorded.
+2. **The first request of a turn is not governed by the ceiling** and runs at the base. It lands in the row of the higher rung of the move (the `to` row of a raise, the `from` row of a lowering) and not in the other, one step per turn on one side. It cannot be separated from the run it joins.
+3. **The escalation and the pressure are inferred, not observed per step.** The autopilot raises one step after a stuck decision; it records the decision's time (taken before the step is sent) and each run's `since` (stamped when its first step answers), not which run the step joined. So the run of the raised step is the run active at the decision when that run is at the raised effort (the step joined it), else the first run opened after it; when both are at that effort, both are left out. A run of another phase or time at that effort is not touched: the step's phase is the one it was classed in, not the phase the decision's subject names (the phase before the step). A run that mixes the raised step with others is dropped whole, which only costs steps. Not seen: a stuck escalation to the effort the step was already sent at (the autopilot logs no decision then), and a stuck decision at a turn's first step (taken before the turn's first run, outside the turn's window). The autopilot keeps its newest 50 decisions: when its log is full and its oldest decision is not older than the turn, a decision of the turn may have been dropped, and the turn is recorded `decisionsLost` and left out whole. Pressure is read once, at the end of the turn. A `PhaseRun` field counting the steps the escalation raised would make this observed.
+4. **Ungraded turns are excluded.** If most are, the move has no baseline or too few governed steps: the credit says so (`no-baseline`, `insufficient`) instead of guessing. Proposals are decided on every turn, graded or not (section 6), but measured on graded ones: on a ledger with no graded turn (zetetic-genius absent or not grading), every move is `no-baseline`, and its undo, like a 0.8.x move's, is decided by the rung evidence alone (the leave-one-out stability); the harm gate never applies. Holding such a move instead would hold it for good, since nothing can ever show it harmful.
+5. **Failed calls are not quality**, steps are not independent, and few sessions are judged: the interval is narrower than the truth.
+6. **Selection by the ledger**: the oldest turns are trimmed; the pre statistics are frozen when the move is made, the post statistics only when the next move supersedes it.

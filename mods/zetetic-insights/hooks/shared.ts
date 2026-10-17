@@ -34,6 +34,8 @@ export const INITIAL: InsightsState = {
   calibration: emptyCalibration(),
   calibrationError: null,
   proposals: [],
+  findings: [],
+  effects: [],
   updatedAt: null,
 }
 
