@@ -52,6 +52,12 @@ test('an add the refusal judged is the add the shell runs: every add, glued or n
     'g"i"t worktree add /tmp/evil',
     'exec git worktree add /tmp/evil',
     'FOO=1 git worktree add /tmp/evil',
+    // The subcommand or the verb spelled by the shell: no phrase in the text, an add when it runs.
+    'W=worktree; git $W add /tmp/evil',
+    'git ${W} add /tmp/evil',
+    'A=add; git worktree $A /tmp/evil',
+    'G=git; W=worktree; $G $W add /tmp/evil',
+    'git {worktree,} add /tmp/evil',
   ])
     expect([command, refused(command)]).toEqual([command, true])
 })
@@ -93,6 +99,9 @@ test('text that names the phrase and that no shell runs is still allowed', () =>
     `git log --grep 'worktree add' --oneline`,
     `cat > notes.md <<'EOF'\ngit worktree add ${W}\nEOF`,
     `echo hi # git worktree add /tmp/evil`,
+    // A command named by a variable whose next words cannot spell an add.
+    '"$PY" -m pytest -q',
+    'git log --oneline -3',
   ])
     expect([command, refused(command)]).toEqual([command, false])
 })

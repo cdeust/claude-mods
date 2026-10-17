@@ -201,6 +201,8 @@ test('each add of a command has its own place, and a substitution keeps its add'
   expect(worktreeAddPath('echo "$( git worktree add /r/.claude/worktrees/s)"')).toBe('/r/.claude/worktrees/s')
   expect(worktreeAddPath('echo `git worktree add /r/.claude/worktrees/s`')).toBe('/r/.claude/worktrees/s')
   expect(unresolved(`echo "$(git worktree add ${W})"`)).toBe(true)
+  // A substitution in the add's own words runs inside that step: the && chain from the cd to git is unbroken.
+  expect(place(`cd /r && git worktree add -b x ${W} "$(git rev-parse HEAD)"`)).toEqual({ path: '/r/.claude/worktrees/f' })
 })
 
 test('shellSteps splits at separators outside quotes and keeps a here-document with its command', () => {
