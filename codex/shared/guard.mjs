@@ -122,12 +122,45 @@ const landsInWorktreeRoot = (path        )          => {
 // source: bash(1) REDIRECTION: `[n]>` `>>` `>|` `<` `<>` `>&` `<&`, and `&>` `&>>` (both outputs).
 const REDIRECT = /^(?:&>>|&>|>>|>&|>\||<>|<&|>|<)/
 
+// source: bash(1) QUOTING, ANSI-C quoting: in `$'...'` these backslash escapes are decoded (zsh(1) does the same).
+const ANSI_ESCAPES                         = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+const ANSI_NUMERIC = /^(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3}))/
+
+// The text of a `$'...'` word part that opens at `from` (just after the quote), decoded, and the index of its
+// closing quote (`s.length` when it never closes).
+const ansiC = (s        , from        )                                => {
+  let text = ''
+  let j = from
+  while (j < s.length && s[j] !== "'") {
+    if (s[j] !== '\\' || j + 1 >= s.length) {
+      text += s[j++]
+      continue
+    }
+    const m = ANSI_NUMERIC.exec(s.slice(j + 1))
+    if (m !== null) {
+      const [hex, u4, u8, oct] = [m[1], m[2], m[3], m[4]]
+      const code = hex ?? u4 ?? u8 ? parseInt(hex ?? u4 ?? u8 ?? '', 16) : parseInt(oct ?? '', 8)
+      text += code <= 0x10ffff ? String.fromCodePoint(code) : ''
+      j += 1 + m[0].length
+    } else if (s[j + 1] === 'c' && j + 2 < s.length) {
+      text += String.fromCharCode(s.charCodeAt(j + 2) & 31)
+      j += 3
+    } else {
+      const e = s[j + 1] ?? ''
+      text += ANSI_ESCAPES[e] ?? `\\${e}`
+      j += 2
+    }
+  }
+  return { text, end: j }
+}
+
 // The command's simple commands, split at the shell's separators outside quotes (bash(1) SHELL GRAMMAR), not on
 // whitespace: `true;git` is two commands. `$(`, a backtick and `<(`/`>(` open a substitution, outside quotes and
 // inside double quotes alike, whose commands are steps of their own. A here-document's body is attached to the
-// command that opened it, wherever that command is on its line. A comment is dropped. A backslash outside quotes
-// is literal (a Windows path separator here) except before a newline (a line continuation); inside double quotes it
-// escapes `$` `` ` `` `"` `\` and a newline. `open` says a quote or a substitution never closed: nothing read after
+// command that opened it, wherever that command is on its line. A comment is dropped. `$'...'` is decoded. A
+// backslash outside quotes escapes a quote, `$`, a backtick, a blank, a separator or a glob, and joins lines before a
+// newline; before a letter it is kept (a Windows path separator here); inside double quotes it escapes `$` `` ` ``
+// `"` `\` and a newline. `open` says a quote or a substitution never closed: nothing read after
 // it is sure.
 export const shellSteps = (command        )                                   => {
   const steps         = []
@@ -141,6 +174,8 @@ export const shellSteps = (command        )                                   =>
   let quote                    
   // The next word is a redirection's target, not a word of the command.
   let target = false
+  // A `$'...'` that never closed.
+  let unclosed = false
   const endWord = ()       => {
     if (word === undefined) return
     if (target) target = false
@@ -183,7 +218,16 @@ export const shellSteps = (command        )                                   =>
     } else if (c === "'" || c === '"') {
       quote = c
       word ??= ''
+    } else if (c === '$' && next === "'") {
+      const { text, end } = ansiC(command, i + 2)
+      word = (word ?? '') + text
+      if (end >= n) unclosed = true
+      i = end
     } else if (c === '\\' && next === '\n') i++
+    // bash(1) QUOTING: a backslash outside quotes makes the next character literal; before a quote, `$`, a backtick,
+    // a blank, a separator or a glob that changes the reading (`'\''` is a quote inside a quoted word). Before
+    // another character it is kept, as a Windows path separator.
+    else if (c === '\\' && /[\s'"$`;&|()<>\\*?[\]{}#~!]/.test(next) && next !== '') word = (word ?? '') + command[++i]
     else if (c === '#' && word === undefined) {
       while (i + 1 < n && command[i + 1] !== '\n') i++
     } else if (c === '<' && next === '<' && command[i + 2] !== '<') {
@@ -250,7 +294,7 @@ export const shellSteps = (command        )                                   =>
   }
   endStep('')
 
-  return { steps, open: quote !== undefined || frames.some((frame) => frame.kind !== '(') }
+  return { steps, open: unclosed || quote !== undefined || frames.some((frame) => frame.kind !== '(') }
 }
 
 // source: bash(1) RESERVED WORDS: they open or close a command without being it (`{ cd x; }`, `if cd x; then`).
@@ -326,6 +370,132 @@ const PHRASE = /\bworktree\s+add\b/
 // (bash(1) EXPANSION). In git's subcommand or verb place it may spell `worktree` or `add` (`git $W add`).
 const EXPANDS = /[$`*?[{]/
 
+// source: git-config(1) VARIABLES. The keys `git -c` may set without git running a program (a pager, an editor, an
+// alias, a hook path, a helper, and signing, which runs gpg.program, do run one); config keys are case-insensitive.
+// Closed on purpose.
+const QUIET_CONFIG = /^((user|author|committer)\.(name|email)|core\.quotepath|init\.defaultbranch|(color|advice)\.[a-z.]+)$/i
+// A word that is one expansion and nothing else (`$W`, `${W}`, `$1`, `$(cmd)`): it may become any one word, such as
+// a subcommand.
+const BARE = /^(\$([A-Za-z_]\w*|\{[^}]*\}|[@*#?$!\d])|\$\(.*\)|`.*`)$/s
+// source: git-config(1) ENVIRONMENT: GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> and
+// GIT_CONFIG_PARAMETERS set config for one run, where a key alias.<name> defines a git subcommand.
+const CONFIG_ENV = /^GIT_CONFIG_(VALUE_\d+|PARAMETERS)=(.*)$/is
+
+// Whether an alias's value may be worktree: it names it, or the shell spells it (`alias.wt=$W`). An alias to
+// another command (`alias.co=checkout`) is not a doubt.
+const mayBeWorktree = (value        )          => /worktree/i.test(value.replace(/['"\\]/g, '')) || EXPANDS.test(value)
+
+// The key of a `<key>=<value>` setting.
+const keyOf = (setting        )         => setting.split('=')[0] ?? ''
+
+// The `<key>=<value>` settings git's global options (the words between `git` and its subcommand) make. For
+// --config-env the value is held by a variable, so it is given as `$<variable>`: spelled by the shell.
+const configSettings = (global          )           =>
+  global.flatMap((option, i) => {
+    const prev = global[i - 1]
+    const fromEnv = prev === '--config-env' ? option : option.startsWith('--config-env=') ? option.slice('--config-env='.length) : undefined
+    if (fromEnv !== undefined) return [`${keyOf(fromEnv)}=$${fromEnv.slice(keyOf(fromEnv).length + 1)}`]
+    const setting = prev === '-c' ? option : option.startsWith('-c') && option.length > 2 ? option.slice(2) : undefined
+    return setting === undefined ? [] : [setting]
+  })
+
+// The word pair that reads like a worktree add in `words`: `worktree add`, or git's `worktree` verb before a word
+// the shell expands (`git worktree "$1"`; prose such as `worktree $P` is not git's verb); with `named`, also an
+// expanded word after the command's name and before `add` (`$G $W add`), or two bare expansions in git's subcommand
+// and verb places (`$G $W $A`); `named` says the command's name (the first word) is spelled by the shell and may be
+// git. `worktree` and `add` are read as a command name is (`\add`); an expansion is tested on the word as the split
+// left it (an escaped `\$` outside quotes is left as `$`, and counts as one: in doubt).
+const addPair = (words          , named = false)                     => {
+  const verbs = new Set(words.flatMap((word, j) => (nameOf(word) === 'git' || (named && j === 0) ? [gitSubcommandIndex(words, j)] : [])))
+  for (let i = 0; i + 1 < words.length; i++) {
+    const [a, b] = [words[i] ?? '', words[i + 1] ?? '']
+    const add = nameOf(b) === 'add'
+    if ((nameOf(a) === 'worktree' && (add || (verbs.has(i) && EXPANDS.test(b)))) || (named && i > 0 && add && EXPANDS.test(a))) return `${a} ${b}`
+    if (named && verbs.has(i) && BARE.test(a) && BARE.test(b)) return `${a} ${b}`
+  }
+  return undefined
+}
+
+// Why one step's own command may run a worktree add its words do not spell, or undefined: git's subcommand or
+// worktree verb spelled by the shell, a git alias the command defines whose value may be worktree (`git -c
+// alias.wt=worktree`, `git config alias.wt worktree`, GIT_CONFIG_VALUE_<n>=worktree), or a command name the shell
+// spells whose words read like an add. The same check for a step of the command and for a step of text a shell runs
+// (`sh -c '...'`). An alias already in a config file is not in the command, and is not seen.
+const commandDoubt = (step      )                     => {
+  const run = commandOf(step.words)
+  const head = nameOf(run.words[0])
+  const env = step.words.find((word) => {
+    const m = CONFIG_ENV.exec(word)
+    return m !== null && mayBeWorktree(m[2] ?? '') && (/^value/i.test(m[1] ?? '') || /alias\./i.test(m[2] ?? ''))
+  })
+  if (env !== undefined) return `the command sets git config that may define a worktree alias (${env})`
+  if (head === 'git') {
+    const sub = gitSubcommandIndex(run.words, 0)
+    const [first, second] = [run.words[sub] ?? '', run.words[sub + 1] ?? '']
+    if (EXPANDS.test(first) || (nameOf(first) === 'worktree' && EXPANDS.test(second)))
+      return `git's subcommand is spelled by the shell (${['git', first, second].join(' ').trim()}), so it may be worktree add`
+    const rest = run.words.slice(sub + 1)
+    const alias = configSettings(run.words.slice(1, sub)).find((s) => /^alias\./i.test(keyOf(s)) && mayBeWorktree(s.slice(keyOf(s).length + 1)))
+      ?? (nameOf(first) === 'config' && rest.some((word) => /^alias\./i.test(word)) ? rest.find(mayBeWorktree) : undefined)
+    if (alias !== undefined) return `the command defines a git alias that may be worktree (${alias})`
+  } else if (/[$`]/.test(head)) {
+    const pair = addPair(run.words, true)
+    if (pair !== undefined) return `the command's name is spelled by the shell (${run.words[0] ?? ''}) and its words read like a worktree add (${pair}), so it may be git`
+  }
+  return undefined
+}
+
+// How deep text inside text is read (`sh -c "bash -c '...'"` is two); deeper, the quote-free text is matched.
+const DEPTH = 4
+
+// The pair that reads like a worktree add in `text` read as a shell reads it: split into steps, quotes resolved, and
+// every word or here-document body that is itself shell text read the same way (a string `sh -c` runs, a message
+// `eval` runs). `wor''ktree "add"` is `worktree add`. Text whose quotes do not close, or nested past DEPTH, is matched
+// with PHRASE once its quotes and backslashes are taken out: a floor, used only where the split is not sure.
+const addIn = (text        , depth        )                     => {
+  const plain = text.replace(/\\\n|['"\\]/g, '')
+  // Nothing in it can read like an add: commandDoubt and addPair need `worktree`, `add`, `git`, an alias or
+  // GIT_CONFIG, or two expansions in a row (`$G $W $A`).
+  if (!/worktree|\badd\b|\bgit\b|alias|GIT_CONFIG/i.test(plain) && !/[$`]\S*\s+[$`]/.test(text)) return undefined
+  if (depth > DEPTH) return PHRASE.exec(plain)?.[0]
+  const { steps, open } = shellSteps(text)
+  for (const step of steps) {
+    const found = stepAdd(step, depth)
+    if (found !== undefined) return found
+  }
+  return open ? PHRASE.exec(plain)?.[0] : undefined
+}
+
+// A word or body that may hold more than one word of shell text.
+const SHELL_TEXT = /[\s'"\\]/
+
+// What reads like a worktree add in one step: its own command (commandDoubt), its words, or the shell text inside
+// one of them or inside its here-document body, read the same way. The first found is returned.
+const stepAdd = (step      , depth = 0)                     => {
+  const own = commandDoubt(step) ?? addPair(step.words)
+  if (own !== undefined) return own
+  for (const part of [...step.words, step.body]) {
+    const found = SHELL_TEXT.test(part) ? addIn(part, depth + 1) : undefined
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+// The text with its quotes, backslashes and line continuations taken out, split at whitespace: the floor's words.
+const plainWords = (text        )           => text.replace(/\\\n|['"\\]/g, '').split(/\s+/)
+
+// Every word list of a step read as a shell reads it: its words, and those of the shell text inside them. Text
+// whose quotes do not close, or nested past DEPTH, also gives its plain words (the floor addIn matches too), so a
+// path the floor sees is judged.
+const wordLists = (step      , depth = 0)             => [
+  step.words,
+  ...[...step.words, step.body].filter((part) => SHELL_TEXT.test(part)).flatMap((part) => {
+    if (depth >= DEPTH) return [plainWords(part)]
+    const { steps, open } = shellSteps(part)
+    return [...steps.flatMap((inner) => wordLists(inner, depth + 1)), ...(open ? [plainWords(part)] : [])]
+  }),
+]
+
 // One `git worktree add` a shell runs: the path it names (undefined: none), the step it is (`at`), and whether the
 // directory git runs in is set by `git -C` or `env -C`.
                                                                                         
@@ -336,21 +506,16 @@ const EXPANDS = /[$`*?[{]/
                                                                                                 
 
 // The paths a mention names after `git ... worktree add`, every one of them: in the words of the step (`echo git
-// worktree add p`), or inside one word or the body, read as prose (a message: `-m "git worktree add p"`). A quoted
-// phrase is one word, so the word after it is not its path (`grep 'git worktree add' docs` names none).
-const mentionedPaths = (step      )           => {
-  const paths           = []
-  const scan = (t          )       =>
-    t.forEach((word, i) => {
-      if (word !== 'git') return
+// worktree add p`), or inside one word or the body, split as a shell splits it (a message: `-m "git worktree add
+// p"`). A quoted phrase is one word, so the word after it is not its path (`grep 'git worktree add' docs` names none).
+const mentionedPaths = (step      )           =>
+  wordLists(step).flatMap((t) =>
+    t.flatMap((word, i) => {
+      if (nameOf(word) !== 'git') return []
       const sub = gitSubcommandIndex(t, i)
-      const path = t[sub] === 'worktree' && t[sub + 1] === 'add' ? pathAfterAdd(t, sub) : undefined
-      if (path !== undefined) paths.push(path)
-    })
-  scan(step.words)
-  for (const text of [...step.words, step.body]) if (PHRASE.test(text)) scan(tokensOf(text))
-  return paths
-}
+      const path = nameOf(t[sub]) === 'worktree' && nameOf(t[sub + 1]) === 'add' ? pathAfterAdd(t, sub) : undefined
+      return path === undefined ? [] : [path]
+    }))
 
 export const worktreeAdds = (command        )       => {
   const { steps, open } = shellSteps(command)
@@ -368,20 +533,17 @@ export const worktreeAdds = (command        )       => {
       adds.push({ path: pathAfterAdd(run.words, sub), at, gitC: run.words.slice(1, sub).includes('-C'), envC: run.chdir !== undefined })
       return
     }
-    // A command name the shell expands may be git; git's subcommand or its worktree verb expanded may be an add.
-    if (head === 'git' || /[$`]/.test(head)) {
-      const named = gitSubcommandIndex(run.words, 0)
-      const [first, second] = [run.words[named] ?? '', run.words[named + 1] ?? '']
-      if (EXPANDS.test(first) || (nameOf(first) === 'worktree' && EXPANDS.test(second)))
-        doubt ??= `git's subcommand is spelled by the shell (${[run.words[0], first, second].join(' ')}), so it may be a worktree add`
-    }
-    const global = run.words.slice(1, Math.max(sub, 1))
-    const quiet = head === '' || QUIET.has(head) || (head === 'git' && QUIET_GIT.has(verb) && !global.includes('-c') && !global.includes('--config-env'))
+    // A command that may be an add its words do not spell (`git $W add`, `git -c alias.wt=worktree wt add`,
+    // `$G $W add`); a variable command whose words do not read like an add is not (`"$PY" "$S"`).
+    const own = commandDoubt(step)
+    if (own !== undefined) doubt ??= own
+    const keys = head === 'git' ? configSettings(run.words.slice(1, sub)).map(keyOf) : []
+    const quiet = head === '' || QUIET.has(head) || (head === 'git' && QUIET_GIT.has(verb) && keys.every((key) => QUIET_CONFIG.test(key)))
     if (!quiet) runner ??= head
-    const text = [...step.words, step.body].join(' ')
-    if (!PHRASE.test(text)) return
+    const pair = stepAdd(step)
+    if (pair === undefined) return
     if (!TEXT_CARRIERS.has(head) && !(head === 'git' && TEXT_GIT.has(verb))) {
-      doubt ??= `the words of ${head || 'a variable assignment'} name a git worktree add, which it may run`
+      doubt ??= `the words of ${head || 'a variable assignment'} read like a worktree add (${pair}), which it may run`
       return
     }
     if (step.expands && /\$\(|`/.test(step.body)) doubt ??= 'an unquoted here-document runs the $( ) and backticks in its body'
@@ -466,7 +628,7 @@ const refuseWorktree = (what        )          => ({
 export const judgeShellWorktree = (command        )          => {
   const { adds, mentions, doubt } = worktreeAdds(command)
   if (doubt !== undefined)
-    return refuseWorktree(`a git worktree add whose path cannot be read from the command (${doubt}); run the add as a command of its own`)
+    return refuseWorktree(`the command may run a git worktree add whose path cannot be read from it (${doubt}); spell the add out, as a command of its own`)
   for (const path of [...adds.map((add) => add.path), ...mentions])
     if (path !== undefined && !landsInWorktreeRoot(path)) return refuseWorktree(`git worktree add ${path}`)
   return ALLOW
