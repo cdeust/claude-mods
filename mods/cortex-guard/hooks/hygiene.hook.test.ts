@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { worktreeAddPath } from './guard'
+
 // The registration of a worktree through the hygiene script, on a machine that is not the
 // owner's: the script's place is computed from HOME, a missing file is said once, a refusal from
 // the machine is shown. Registration runs after the call; each test waits on
@@ -15,9 +17,19 @@ const later = (globalThis as unknown as { setTimeout: (run: () => void, ms: numb
 
 type Seen = { toasts: string[]; argvs: string[][]; stats: string[]; nextToast: () => Promise<string> }
 
+// The disk the mod looks at: a worktree is a directory whose `.git` is a file naming
+// `<repo>/.git/worktrees/<name>` (git-worktree(1), DETAILS). `before` are worktrees already on disk; `makes`
+// are those the call leaves on disk, by default the absolute path the add names (the add ran and created
+// it); `[]` is a call that created nothing. `cwd` is the session's directory. `gitfile` is what the `.git` file of
+// each of them says (a linked worktree's by default).
+type How = { call?: unknown; before?: string[]; makes?: string[]; cwd?: string; gitfile?: string }
+
+const nameOf = (dir: string): string => dir.slice(dir.lastIndexOf('/') + 1)
+
 // `home` answers HOME alone; the other variables the mod asks for are unset.
-const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown, how: { call?: unknown } = {}): Seen => {
+const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown, how: How = {}): Seen => {
   const seen: Seen = { toasts: [], argvs: [], stats: [], nextToast: () => Promise.resolve('') }
+  const worktrees = new Set(how.before ?? [])
   let waiting: ((text: string) => void) | undefined
   seen.nextToast = () => new Promise((resolve) => (waiting = resolve))
   mock.clock(on, { now: 1_000_000 })
@@ -25,16 +37,29 @@ const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: s
     typeof home === 'object' ? home : { value: ((e as { name?: string }).name === 'HOME' ? home : undefined) as never },
   )
   on('session.id', () => ({ value: 'test-session' }))
+  on('session.cwd', () => ({ value: how.cwd ?? '/r' }))
   on('fs.stat', ($, e) => {
     seen.stats.push(e.path)
-    return e.path === SCRIPT ? (scriptStat as never) : ({ value: { kind: 'file', size: 1, mtimeMs: 0, realPath: e.path } as never })
+    if (e.path.endsWith('.py')) return scriptStat as never
+    if (worktrees.has(e.path)) return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: e.path } as never }
+    return { deny: `ENOENT: no such file or directory, stat '${e.path}'` }
+  })
+  on('fs.read', ($, e) => {
+    const dir = e.path.replace(/\/\.git$/, '')
+    return e.path.endsWith('/.git') && worktrees.has(dir)
+      ? { value: (how.gitfile ?? `gitdir: /r/.git/worktrees/${nameOf(dir)}\n`) as never }
+      : { deny: `ENOENT: no such file or directory, open '${e.path}'` }
   })
   on('ui.toast', ($, e) => {
     seen.toasts.push(e.text)
     waiting?.(e.text)
     return { value: undefined }
   })
-  on('tool.call', () => (how.call ?? { result: 'ran' }) as never)
+  on('tool.call', ($, e) => {
+    const named = worktreeAddPath(String((e as { command?: string }).command ?? ''))
+    for (const dir of how.makes ?? (named?.startsWith('/') ? [named] : [])) worktrees.add(dir)
+    return (how.call ?? { result: 'ran' }) as never
+  })
   return seen
 }
 
@@ -247,18 +272,9 @@ test('registration switched off by the option tells Claude nothing: no cleanup w
   expect((await $.tool.call({ ...ADD })).context).toBeUndefined()
 })
 
-// Another plugin refused the add: no worktree exists, so there is nothing to tell Claude about, whatever the
-// registration says (here the script is missing, which would otherwise be context).
-test('an add another plugin refused carries no registration context', async ($, on) => {
-  stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { deny: 'another plugin: no' } })
-  const ran = await $.tool.call({ ...ADD })
-  expect(ran.deny).toBe('another plugin: no')
-  expect(ran.context).toBeUndefined()
-})
-
-// The same refusal with a script that would register: nothing is run and the user is not told "registered".
+// Another plugin refused the add before it ran: no worktree exists, so nothing is run, toasted or told to Claude.
 test('an add another plugin refused is not registered', async ($, on) => {
-  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { call: { deny: 'another plugin: no' } })
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { call: { deny: 'another plugin: no' }, makes: [] })
   let runs = 0
   on('process.run', () => {
     runs += 1
@@ -266,13 +282,14 @@ test('an add another plugin refused is not registered', async ($, on) => {
   })
   const ran = await $.tool.call({ ...ADD })
   expect(ran.deny).toBe('another plugin: no')
+  expect(ran.context).toBeUndefined()
   expect(runs).toBe(0)
   expect(seen.toasts).toEqual([])
 })
 
 // The add itself failed (git exited non-zero): no worktree exists, so nothing is registered or toasted.
 test('an add that failed is neither registered nor told to Claude', async ($, on) => {
-  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { result: 'fatal: already exists', isError: true } })
+  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { result: 'fatal: invalid reference: main', isError: true }, makes: [] })
   const ran = await $.tool.call({ ...ADD })
   expect(ran.isError).toBe(true)
   expect(ran.context).toBeUndefined()
@@ -295,4 +312,213 @@ test('both runs carry an explicit timeout, and a rejection on timeout is reporte
   expect(inits.map((init) => init?.timeoutMs)).toEqual([5_000, 10_000])
   expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(python3 could not run the script: .*timed out after 10000ms.*\)/)
   expect(ran.context?.[0]).toContain('timed out after 10000ms')
+})
+
+// What decides a registration is the worktree on disk after the call, not the call's outcome: a later step of
+// the command can fail, and another plugin can turn a call that ran into a deny (the engine's declarations: a
+// deny returned after `next(e)` "undoes nothing: a tool that ran has run").
+const okRuns = (on: Parameters<TestBody>[1], seen: Seen): void => {
+  on('process.run', ($$, e) => {
+    seen.argvs.push((e as { argv: string[] }).argv)
+    return { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+  })
+}
+const CHAINED = { tool: 'Bash', command: 'git worktree add -b f /r/.claude/worktrees/f main && npm ci' } as const
+const NPM_FAILED = { result: 'npm ERR! code ERESOLVE', isError: true }
+const pathOfRun = (seen: Seen): string | undefined => {
+  const argv = scriptRuns(seen)[0] ?? []
+  return argv[argv.indexOf('--path') + 1]
+}
+
+test('an add whose later step failed leaves a worktree, and it is registered', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { call: NPM_FAILED })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ ...CHAINED })
+  expect(ran.isError).toBe(true)
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(pathOfRun(seen)).toBe('/r/.claude/worktrees/f')
+  expect(ran.context).toBeUndefined()
+})
+
+test('an add whose later step failed and whose registration failed is told to the user and to Claude', async ($, on) => {
+  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: NPM_FAILED })
+  const ran = await $.tool.call({ ...CHAINED })
+  expect(ran.isError).toBe(true)
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toMatch(/^hygiene script not found/)
+  expect(ran.context?.[0]).toContain(NEW)
+  expect(ran.context?.[0]).toContain('NOT registered')
+})
+
+test('an add that ran and that another plugin then denied leaves a worktree, and it is registered', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { call: { deny: 'another plugin: rewritten after the run' } })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.deny).toBe('another plugin: rewritten after the run')
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(pathOfRun(seen)).toBe('/r/.claude/worktrees/f')
+})
+
+test("a worktree that was there before the call is not this call's, and it is not registered", async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, {
+    call: { result: "fatal: '/r/.claude/worktrees/f' already exists", isError: true },
+    before: [NEW],
+    makes: [],
+  })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ ...ADD })
+  expect(scriptRuns(seen)).toEqual([])
+  expect(seen.toasts).toEqual([])
+  expect(ran.context).toBeUndefined()
+})
+
+// A relative path is the shell's, and the shell starts where the session is (`$.session.cwd()`, read before
+// the call); a leading `cd <dir> &&` moves it before git runs.
+test('a relative add after a leading cd is registered where the cd took the shell', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { cwd: '/elsewhere', makes: [NEW] })
+  okRuns(on, seen)
+  await $.tool.call({ tool: 'Bash', command: 'cd /r && git worktree add -b f ./.claude/worktrees/f main' })
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(pathOfRun(seen)).toBe('/r/.claude/worktrees/f')
+})
+
+test('a relative add with no directory change is registered under the session directory', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { cwd: '/r', makes: [NEW] })
+  okRuns(on, seen)
+  await $.tool.call({ tool: 'Bash', command: 'git worktree add -b f ./.claude/worktrees/f main' })
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(pathOfRun(seen)).toBe('/r/.claude/worktrees/f')
+})
+
+test('a relative add whose directory cannot be known registers nothing and says so to the user and to Claude', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { cwd: '/elsewhere', makes: [NEW] })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ tool: 'Bash', command: 'pushd /r && git worktree add -b f ./.claude/worktrees/f main' })
+  expect(scriptRuns(seen)).toEqual([])
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(the path \.\/\.claude\/worktrees\/f could not be resolved: .*pushd/)
+  expect(ran.context?.[0]).toContain('.claude/worktrees/f')
+  expect(ran.context?.[0]).toContain('could not be resolved')
+})
+
+// A command sent to the background has not finished when the call returns: the worktree may not be there yet.
+test('an add sent to the background is not looked for too early: the user and Claude are told it was not checked', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, {
+    call: { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } },
+    makes: [],
+  })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ ...ADD })
+  expect(scriptRuns(seen)).toEqual([])
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(.*background/)
+  expect(ran.context?.[0]).toContain(NEW)
+  expect(ran.context?.[0]).toContain('background')
+})
+
+// Round 1 of PR 30. A place computed wrong must never fall silent: the three shapes measured on real git (each
+// created a worktree and said nothing), a shell that was not where the session says, a `.git` file that is not a
+// linked worktree's, the option off, and text that only mentions the phrase.
+const FULL = { value: { kind: 'file', size: 1, mtimeMs: 0 } }
+const told = (ran: { context?: readonly string[] }, path: string): void => {
+  expect(ran.context).toHaveLength(1)
+  expect(ran.context?.[0]).toContain(path)
+  expect(ran.context?.[0]).toContain('NOT registered')
+}
+
+for (const [name, command, made] of [
+  ['a cd glued to a `;`', 'true;cd sub && git worktree add ../.claude/worktrees/w7 -b b7', '/r/.claude/worktrees/w7'],
+  ['a cd glued to a `&&`', 'echo x &&cd sub && git worktree add ../.claude/worktrees/w11 -b b11', '/r/.claude/worktrees/w11'],
+  ['a quoted path with a space', 'git worktree add "./.claude/worktrees/w 5" -b b5', '/r/.claude/worktrees/w 5'],
+] as const) {
+  test(`${name} made a worktree: the user and Claude are told it was not registered`, async ($, on) => {
+    const seen = stubs(on, '/home/t', FULL, { cwd: '/r', makes: [made] })
+    okRuns(on, seen)
+    const ran = await $.tool.call({ tool: 'Bash', command })
+    expect(scriptRuns(seen)).toEqual([])
+    expect(seen.toasts).toHaveLength(1)
+    expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(the path .* could not be resolved: /)
+    told(ran, command.includes('"') ? './.claude/worktrees/w' : '.claude/worktrees/w')
+  })
+}
+
+test('a shell that was not where the session says leaves nothing at the place computed: the user and Claude are told', async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/r', makes: ['/elsewhere/.claude/worktrees/f'] })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ tool: 'Bash', command: 'git worktree add -b f ./.claude/worktrees/f main' })
+  expect(scriptRuns(seen)).toEqual([])
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(no worktree was found at \/r\/\.claude\/worktrees\/f after the call, which reported no error, so the worktree may be elsewhere\)$/)
+  told(ran, NEW)
+  expect(ran.context?.[0]).toContain('may be elsewhere')
+})
+
+// A `.git` file that names `.git/modules/<name>` is a submodule's, not a linked worktree's (git-worktree(1) DETAILS).
+test("a .git file that is not a linked worktree's is not registered, and the missing worktree is reported", async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { makes: [NEW], gitfile: 'gitdir: /r/.git/modules/x\n' })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ ...ADD })
+  expect(scriptRuns(seen)).toEqual([])
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(no worktree was found at /)
+  told(ran, NEW)
+})
+
+test('with the option off an add whose place cannot be known or found tells nobody: no cleanup was promised', { options: { hygiene_script: '' } }, async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/r', makes: [] })
+  okRuns(on, seen)
+  const unknown = await $.tool.call({ tool: 'Bash', command: 'pushd /r && git worktree add -b f ./.claude/worktrees/f main' })
+  const missing = await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g ./.claude/worktrees/g main' })
+  expect(seen.toasts).toEqual([])
+  expect(unknown.context).toBeUndefined()
+  expect(missing.context).toBeUndefined()
+})
+
+// A deny carries no `context`: the user's toast is the only channel then.
+test('an unresolvable add that another plugin denied is toasted to the user and adds nothing to a deny', async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/r', call: { deny: 'another plugin: no' }, makes: [] })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ tool: 'Bash', command: 'pushd /r && git worktree add -b f ./.claude/worktrees/f main' })
+  expect(ran.deny).toBe('another plugin: no')
+  expect(ran.context).toBeUndefined()
+  expect(seen.toasts).toHaveLength(1)
+})
+
+test('a leading cd followed by commands that move nothing is registered where the cd took the shell', async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/elsewhere', makes: [NEW] })
+  okRuns(on, seen)
+  const ran = await $.tool.call({ tool: 'Bash', command: 'cd /r && git fetch && git worktree add -b f ./.claude/worktrees/f origin/main' })
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(pathOfRun(seen)).toBe(NEW)
+  expect(ran.context).toBeUndefined()
+})
+
+test('text that only mentions the phrase after a cd is neither registered nor reported', async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/r', makes: [] })
+  okRuns(on, seen)
+  const commit = await $.tool.call({ tool: 'Bash', command: 'cd /r && git commit -m "docs: git worktree add ./.claude/worktrees/x is now registered"' })
+  const body = await $.tool.call({ tool: 'Bash', command: "cd /r && gh pr create --body \"$(cat <<'EOF'\nrun git worktree add ../r/.claude/worktrees/x main\nEOF\n)\"" })
+  expect(seen.toasts).toEqual([])
+  expect(scriptRuns(seen)).toEqual([])
+  expect(commit.context).toBeUndefined()
+  expect(body.context).toBeUndefined()
+})
+
+// The event of a subagent's loop carries `agentId`; the d.ts does not say which directory `$.session.cwd()` is for it.
+// The engine's input type for a call does not declare it (the loop sets it), hence the cast.
+const inSubagent = (input: object): never => ({ ...input, agentId: 'a1' }) as never
+test('a relative add inside a subagent is reported as unresolved; an absolute one is registered', async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/r', makes: [NEW] })
+  okRuns(on, seen)
+  const ran = await $.tool.call(inSubagent({ tool: 'Bash', command: 'git worktree add -b f ./.claude/worktrees/f main' }))
+  expect(scriptRuns(seen)).toEqual([])
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(the path \.\/\.claude\/worktrees\/f could not be resolved: a subagent/)
+  told(ran, './.claude/worktrees/f')
+})
+
+test('an absolute add inside a subagent does not depend on its directory and is registered', async ($, on) => {
+  const seen = stubs(on, '/home/t', FULL, { cwd: '/r' })
+  okRuns(on, seen)
+  await $.tool.call(inSubagent(ADD))
+  expect(pathOfRun(seen)).toBe(NEW)
 })
