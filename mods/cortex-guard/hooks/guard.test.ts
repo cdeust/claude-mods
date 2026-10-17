@@ -67,15 +67,20 @@ test('a shell command that writes a Windows-spelled protected path is refused', 
   expect(judgeCall('Bash', { command: 'type docs\\adr\\ADR-1060-x.md' }).allow).toBe(true)
 })
 
-test('a worktree inside <repo>\\.claude\\worktrees\\ is allowed, one outside is refused with the path as typed', () => {
+// bash and zsh drop an unquoted backslash (`C:\x` is `C:x`, measured with printf), so a Windows path reaches git with its
+// backslashes only when it is quoted.
+test('a quoted worktree path inside <repo>\\.claude\\worktrees\\ is allowed, one outside is refused with the path as typed', () => {
   const inside = 'C:\\Users\\t\\repo\\.claude\\worktrees\\x'
-  expect(worktreeAddPath(`git worktree add ${inside}`)).toBe(inside)
-  expect(judgeCall('Bash', { command: `git worktree add -b f ${inside} main` }).allow).toBe(true)
-  expect(judgeCall('Bash', { command: 'git worktree add -b f C:\\Users\\t\\repo\\.Codex\\worktrees\\x' }).allow).toBe(true)
-  const outside = judgeCall('Bash', { command: 'git worktree add -b f C:\\temp\\wt main' })
+  expect(worktreeAddPath(`git worktree add "${inside}"`)).toBe(inside)
+  expect(judgeCall('Bash', { command: `git worktree add -b f '${inside}' main` }).allow).toBe(true)
+  expect(judgeCall('Bash', { command: 'git worktree add -b f "C:\\Users\\t\\repo\\.Codex\\worktrees\\x"' }).allow).toBe(true)
+  const outside = judgeCall('Bash', { command: "git worktree add -b f 'C:\\temp\\wt' main" })
   expect(outside.allow).toBe(false)
   expect(!outside.allow && outside.rule).toBe('worktree-inside-repo')
   expect(!outside.allow && outside.reason).toContain('C:\\temp\\wt')
+  // Unquoted, the shell hands git `C:Userstrepo.claudeworktreesx`: a relative name, not the worktree root.
+  expect(worktreeAddPath(`git worktree add ${inside}`)).toBe('C:Userstrepo.claudeworktreesx')
+  expect(judgeCall('Bash', { command: `git worktree add ${inside}` }).allow).toBe(false)
 })
 
 // The command text sent to the shell and the directory the shell starts in: where its first add lands (undefined:
@@ -88,7 +93,7 @@ const W = './.claude/worktrees/f'
 
 test('a worktree path lands where the shell is when git runs, or the reason that is not known', () => {
   expect(place('git worktree add /r/.claude/worktrees/f')).toEqual({ path: '/r/.claude/worktrees/f' })
-  expect(place('cd /x && git worktree add C:\\r\\.claude\\worktrees\\f')).toEqual({ path: 'C:\\r\\.claude\\worktrees\\f' })
+  expect(place('cd /x && git worktree add "C:\\r\\.claude\\worktrees\\f"')).toEqual({ path: 'C:\\r\\.claude\\worktrees\\f' })
   expect(place(`git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
   expect(place(`cd /r && git worktree add -b f ${W} main`)).toEqual({ path: '/r/.claude/worktrees/f' })
   expect(place(`cd sub && git worktree add ${W}`)).toEqual({ path: '/s/sub/.claude/worktrees/f' })
