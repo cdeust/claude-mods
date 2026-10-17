@@ -2,7 +2,7 @@ import { atom, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Refusal } from '../types'
-import { type AddPlace, type CallInput, judgeCall, judgePath, placeWorktreeAdd, worktreeAddPath } from './guard'
+import { type AddPlace, type Adds, type CallInput, judgeCall, judgePath, placeWorktreeAdds, worktreeAdds } from './guard'
 import { placePath } from './paths'
 import { PYTHON_CANDIDATES } from './rules'
 
@@ -141,11 +141,12 @@ async function isWorktree($: EngineInterface, dir: string): Promise<boolean> {
   }
 }
 
-// Where the add's worktree lands, or why that is not known. Never throws: it runs before the call, where a
-// throw would refuse the add.
-async function placeOf($: EngineInterface, command: string, added: string, agentId: string | undefined): Promise<AddPlace> {
+// Where each add's worktree lands, or why that is not known, one per add the refusal judged (the same reading of the
+// command), a place named twice counted once. Never throws: it runs before the call, where a throw would refuse it.
+async function placesOf($: EngineInterface, adds: Adds, agentId: string | undefined): Promise<{ place: AddPlace; named: string }[]> {
   const cwd = await $.session.cwd().catch(() => undefined)
-  return placeWorktreeAdd(command, added, cwd, agentId)
+  const places = placeWorktreeAdds(adds, cwd, agentId).map((place, k) => ({ place, named: 'path' in place ? place.path : (adds.adds[k]?.path ?? '') }))
+  return places.filter(({ place }, k) => !('path' in place) || places.findIndex((other) => 'path' in other.place && other.place.path === place.path) === k)
 }
 
 // A command sent to the background (run_in_background, or a timeout that backgrounded it) has not finished
@@ -162,7 +163,6 @@ const isBackgrounded = (ran: ToolCallResult): boolean => {
 // is reported too: the place may be wrong (the shell was not where the text says), and a worktree that is
 // elsewhere is not registered. The cost is a report for an add whose failure the command masked (`|| true`).
 async function settleAdd($: EngineInterface, place: AddPlace, existed: boolean, ran: ToolCallResult): Promise<string | undefined> {
-  if ('mention' in place) return undefined
   if ('reason' in place) {
     $.ui.toast(`worktree NOT registered (${place.reason})`)
     return place.reason
@@ -204,19 +204,24 @@ export const register: Register = (on, options) => {
     if (verdict.allow && input.file_path !== undefined)
       verdict = judgePath(await realPathOf($, input.file_path))
     if (verdict.allow) {
-      const added = tool === 'Bash' && script !== '' ? worktreeAddPath(input.command ?? '') : undefined
-      if (added === undefined) return next(e)
+      // The adds the refusal just judged: judgeCall read the command with worktreeAdds too, and found no doubt.
+      const adds = tool === 'Bash' && script !== '' ? worktreeAdds(input.command ?? '') : undefined
+      if (adds === undefined || adds.adds.length === 0) return next(e)
       // Looked at before the call: a worktree already there is not this call's to register.
-      const place = await placeOf($, input.command ?? '', added, e.agentId)
-      const existed = 'path' in place && (await isWorktree($, place.path))
+      const places = await placesOf($, adds, e.agentId)
+      const existed: boolean[] = []
+      for (const { place } of places) existed.push('path' in place && (await isWorktree($, place.path)))
       const ran = await next(e)
-      // Awaited: the result of this call is where Claude can be told the worktree is not covered.
+      // Awaited: the result of this call is where Claude can be told a worktree is not covered.
       // A registration that throws must not turn a call that ran into a refusal: it is a reason, like any other.
-      const reason = await settleAdd($, place, existed, ran).catch((error: unknown) => `registration failed: ${why(error)}`)
+      const told: string[] = []
+      for (const [k, { place, named }] of places.entries()) {
+        const reason = await settleAdd($, place, existed[k] === true, ran).catch((error: unknown) => `registration failed: ${why(error)}`)
+        if (reason !== undefined) told.push(unregistered(named, reason))
+      }
       // A deny carries no `context` (the engine's ToolCallResult): the user's toast is the only channel then.
-      if (reason === undefined || ran.deny !== undefined) return ran
-      const named = 'path' in place ? place.path : added
-      return { ...ran, context: [...(ran.context ?? []), unregistered(named, reason)] }
+      if (told.length === 0 || ran.deny !== undefined) return ran
+      return { ...ran, context: [...(ran.context ?? []), ...told] }
     }
     const target = input.file_path ?? input.notebook_path ?? (input.command ?? '').slice(0, 60)
     const at = await $.clock.now()
