@@ -1,8 +1,8 @@
 import { atom, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Refusal } from '../types'
-import { type CallInput, judgeCall, judgePath, worktreeAddPath } from './guard'
+import { type AddPlace, type CallInput, judgeCall, judgePath, placeWorktreeAdd, worktreeAddPath } from './guard'
 import { placePath } from './paths'
 import { PYTHON_CANDIDATES } from './rules'
 
@@ -128,6 +128,49 @@ async function registerWorktree($: EngineInterface, path: string): Promise<strin
   }
 }
 
+// source: git-worktree(1) DETAILS: a linked worktree's `.git` is a file whose `gitdir:` names
+// `<repo>/.git/worktrees/<id>` (a submodule's names `.git/modules/`, a main checkout's `.git` is a directory).
+const WORKTREE_GITDIR = /^gitdir: .*[\\/]worktrees[\\/][^\\/]+\s*$/
+
+// Whether `dir` is a linked worktree on disk now: the state a registration is decided on, not the call's outcome.
+async function isWorktree($: EngineInterface, dir: string): Promise<boolean> {
+  try {
+    return WORKTREE_GITDIR.test(await $.fs.read(`${dir}/.git`))
+  } catch {
+    return false
+  }
+}
+
+// Where the add's worktree lands, or why that is not known. Never throws: it runs before the call, where a
+// throw would refuse the add.
+async function placeOf($: EngineInterface, command: string, added: string): Promise<AddPlace> {
+  const cwd = await $.session.cwd().catch(() => undefined)
+  return placeWorktreeAdd(command, added, cwd)
+}
+
+// A command sent to the background (run_in_background, or a timeout that backgrounded it) has not finished
+// when the call returns (the Bash result's `backgroundTaskId`).
+const isBackgrounded = (ran: ToolCallResult): boolean => {
+  const result: unknown = ran.result
+  return typeof result === 'object' && result !== null && (result as { backgroundTaskId?: unknown }).backgroundTaskId !== undefined
+}
+
+// After the call: a worktree that is on disk now and was not before is this call's, and it is registered,
+// whatever the call's outcome (a later `&&` step can fail; another plugin can deny a call that ran). Undefined:
+// registered, or nothing to register; else the reason it was not, already toasted to the user.
+async function settleAdd($: EngineInterface, place: AddPlace, existed: boolean, ran: ToolCallResult): Promise<string | undefined> {
+  if ('reason' in place) {
+    $.ui.toast(`worktree NOT registered (${place.reason})`)
+    return place.reason
+  }
+  if (existed) return undefined
+  if (await isWorktree($, place.path)) return registerWorktree($, place.path)
+  if (!isBackgrounded(ran)) return undefined
+  const reason = `the command runs in the background, so whether ${place.path} exists was not checked`
+  $.ui.toast(`worktree NOT registered (${reason})`)
+  return reason
+}
+
 // What Claude reads on the result of the `git worktree add` it ran, when the worktree was not registered: the
 // user was toasted (a toast is the user's alone), and Claude, which made the worktree, is the one who can
 // register it by hand. Cleanup of an unregistered worktree is not done by the hooks.
@@ -154,15 +197,19 @@ export const register: Register = (on, options) => {
     if (verdict.allow && input.file_path !== undefined)
       verdict = judgePath(await realPathOf($, input.file_path))
     if (verdict.allow) {
+      const added = tool === 'Bash' && script !== '' ? worktreeAddPath(input.command ?? '') : undefined
+      if (added === undefined) return next(e)
+      // Looked at before the call: a worktree already there is not this call's to register.
+      const place = await placeOf($, input.command ?? '', added)
+      const existed = 'path' in place && (await isWorktree($, place.path))
       const ran = await next(e)
-      // A call another plugin refused ran nothing: no worktree exists, so none is registered or reported.
-      if (ran.deny !== undefined || ran.isError) return ran
-      const added = tool === 'Bash' ? worktreeAddPath(input.command ?? '') : undefined
-      if (added === undefined) return ran
       // Awaited: the result of this call is where Claude can be told the worktree is not covered.
       // A registration that throws must not turn a call that ran into a refusal: it is a reason, like any other.
-      const reason = await registerWorktree($, added).catch((error: unknown) => `registration failed: ${why(error)}`)
-      return reason === undefined ? ran : { ...ran, context: [...(ran.context ?? []), unregistered(added, reason)] }
+      const reason = await settleAdd($, place, existed, ran).catch((error: unknown) => `registration failed: ${why(error)}`)
+      // A deny carries no `context` (the engine's ToolCallResult): the user's toast is the only channel then.
+      if (reason === undefined || ran.deny !== undefined) return ran
+      const named = 'path' in place ? place.path : added
+      return { ...ran, context: [...(ran.context ?? []), unregistered(named, reason)] }
     }
     const target = input.file_path ?? input.notebook_path ?? (input.command ?? '').slice(0, 60)
     const at = await $.clock.now()

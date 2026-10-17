@@ -59,17 +59,22 @@ const gitSubcommandIndex = (t: string[], at: number): number => {
   return i
 }
 
+// Where the `git ... worktree add` is in the tokens: the index of `git` and of `worktree`.
+const worktreeAddAt = (t: string[]): { git: number; sub: number } | undefined => {
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] !== 'git') continue
+    const sub = gitSubcommandIndex(t, i)
+    if (t[sub] === 'worktree' && t[sub + 1] === 'add') return { git: i, sub }
+  }
+  return undefined
+}
+
 // `git [global options] worktree add [options] <path> [<commit-ish>]`: the path is the
 // first token after `add` that is not an option and not an option's value (-b/-B/--orphan).
 export const worktreeAddPath = (command: string): string | undefined => {
   const t = tokensOf(command)
-  let at = -1
-  for (let i = 0; i < t.length && at < 0; i++) {
-    if (t[i] !== 'git') continue
-    const sub = gitSubcommandIndex(t, i)
-    if (t[sub] === 'worktree' && t[sub + 1] === 'add') at = sub
-  }
-  if (at < 0) return undefined
+  const at = worktreeAddAt(t)?.sub
+  if (at === undefined) return undefined
   const args = t.slice(at + 2)
   for (let i = 0; i < args.length; i++) {
     const a = args[i] ?? ''
@@ -81,6 +86,48 @@ export const worktreeAddPath = (command: string): string | undefined => {
     return a
   }
   return undefined
+}
+
+// source: POSIX absolute (`/`), Windows drive (`C:\`, `C:/`) and UNC (`\\host`) spellings.
+const isAbsolute = (path: string): boolean => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(path)
+
+// The builtins that move a shell's directory (bash(1) SHELL BUILTIN COMMANDS: cd, pushd, popd; chdir in
+// some shells), as a token or opening a subshell, a substitution or a group.
+const DIR_CHANGE = /^[$({]*(cd|pushd|popd|chdir)$/
+
+// `base` and `rel` joined, `.` segments dropped; `..` is left for the file system to fold (a link before it
+// lands elsewhere than a lexical fold says).
+const joinPath = (base: string, rel: string): string =>
+  `${base.replace(/[\\/]+$/, '')}/${rel}`.split('/').filter((segment) => segment !== '.').join('/')
+
+export type AddPlace = { path: string } | { reason: string }
+
+// Where the worktree a `git worktree add` names lands, from the command text and the directory the shell
+// starts in (`cwd`, the session's; undefined when it could not be read). A relative path is the shell's
+// when git runs: the start directory, or the one a leading `cd <dir> &&` took it to (`&&`: git runs only
+// once the cd succeeded). Any other directory change before git, a `git -C`, a `~` or a variable leaves
+// it unknown, and the answer is the reason, never a guess.
+export const placeWorktreeAdd = (command: string, added: string, cwd: string | undefined): AddPlace => {
+  if (isAbsolute(added)) return { path: added }
+  const unknown = (why: string): AddPlace => ({ reason: `the path ${added} could not be resolved: ${why}` })
+  if (/^[~$]/.test(added)) return unknown('the shell expands it')
+  const t = tokensOf(command)
+  const at = worktreeAddAt(t)
+  if (at === undefined) return unknown('no git worktree add was found in the command')
+  if (t.slice(at.git + 1, at.sub).includes('-C')) return unknown('git -C changes the directory it is relative to')
+  const before = t.slice(0, at.git)
+  let start = cwd
+  if (before.length === 3 && before[0] === 'cd' && before[2] === '&&') {
+    const dir = before[1] ?? ''
+    if (dir === '' || dir === '-' || /^[~$]/.test(dir)) return unknown(`the shell's directory is changed to ${dir || 'its home'} before git runs`)
+    start = isAbsolute(dir) ? dir : cwd === undefined ? undefined : joinPath(cwd, dir)
+  } else {
+    const change = before.find((token) => DIR_CHANGE.test(token))
+    if (change !== undefined) return unknown(`the shell's directory is changed before git runs (${change})`)
+  }
+  if (start === undefined) return unknown("the session's directory could not be read")
+
+  return { path: joinPath(start, added) }
 }
 
 export const judgeShellWorktree = (command: string): Verdict => {

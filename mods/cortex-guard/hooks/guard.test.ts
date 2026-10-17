@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { judgeCall, judgePath, worktreeAddPath } from './guard'
+import { judgeCall, judgePath, placeWorktreeAdd, worktreeAddPath } from './guard'
 
 test('refuses the generated ADR mirror and canonical wiki pages', () => {
   expect(judgePath('/r/docs/adr/ADR-1060-refuse-a-decision.md').allow).toBe(false)
@@ -76,4 +76,34 @@ test('a worktree inside <repo>\\.claude\\worktrees\\ is allowed, one outside is 
   expect(outside.allow).toBe(false)
   expect(!outside.allow && outside.rule).toBe('worktree-inside-repo')
   expect(!outside.allow && outside.reason).toContain('C:\\temp\\wt')
+})
+
+// The command text sent to the shell, the path it names, and the directory the shell starts in.
+const place = (command: string, cwd = '/s'): ReturnType<typeof placeWorktreeAdd> =>
+  placeWorktreeAdd(command, worktreeAddPath(command) ?? '', cwd)
+const W = './.claude/worktrees/f'
+
+test('a worktree path lands where the shell is when git runs, or the reason that is not known', () => {
+  expect(place('git worktree add /r/.claude/worktrees/f')).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place('cd /x && git worktree add C:\\r\\.claude\\worktrees\\f')).toEqual({ path: 'C:\\r\\.claude\\worktrees\\f' })
+  expect(place(`git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
+  expect(place(`cd /r && git worktree add -b f ${W} main`)).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`cd sub && git worktree add ${W}`)).toEqual({ path: '/s/sub/.claude/worktrees/f' })
+  expect(place(`cd /r && git worktree add ../r/.claude/worktrees/f`)).toEqual({ path: '/r/../r/.claude/worktrees/f' })
+  // `;` runs git even when the cd failed; a subshell, pushd, a later cd, git -C, ~ and an unreadable session
+  // directory each leave the start unknown.
+  for (const unknown of [
+    `cd /r; git worktree add ${W}`,
+    `(cd /r && git worktree add ${W})`,
+    `echo $(cd /r && git worktree add ${W} main)`,
+    `pushd /r && git worktree add ${W}`,
+    `true && cd /r && git worktree add ${W}`,
+    `cd ~ && git worktree add ${W}`,
+    `git -C /r worktree add ${W}`,
+    'git worktree add ~/r/.claude/worktrees/f',
+  ])
+    expect('reason' in place(unknown)).toBe(true)
+  expect(placeWorktreeAdd(`git worktree add ${W}`, W, undefined)).toEqual({
+    reason: `the path ${W} could not be resolved: the session's directory could not be read`,
+  })
 })
