@@ -321,6 +321,9 @@ const QUIET_GIT = new Set([...TEXT_GIT, 'add', 'status', 'diff', 'push', 'fetch'
 const DIR_CHANGE = /^(cd|pushd|popd|chdir)$/
 
 const PHRASE = /\bworktree\s+add\b/
+// A word the shell turns into other words before git reads it: a parameter, a substitution, a glob or a brace
+// (bash(1) EXPANSION). In git's subcommand or verb place it may spell `worktree` or `add` (`git $W add`).
+const EXPANDS = /[$`*?[{]/
 
 // One `git worktree add` a shell runs: the path it names (undefined: none), the step it is (`at`), and whether the
 // directory git runs in is set by `git -C` or `env -C`.
@@ -363,6 +366,13 @@ export const worktreeAdds = (command: string): Adds => {
     if (verb === 'worktree' && nameOf(run.words[sub + 1]) === 'add') {
       adds.push({ path: pathAfterAdd(run.words, sub), at, gitC: run.words.slice(1, sub).includes('-C'), envC: run.chdir !== undefined })
       return
+    }
+    // A command name the shell expands may be git; git's subcommand or its worktree verb expanded may be an add.
+    if (head === 'git' || /[$`]/.test(head)) {
+      const named = gitSubcommandIndex(run.words, 0)
+      const [first, second] = [run.words[named] ?? '', run.words[named + 1] ?? '']
+      if (EXPANDS.test(first) || (nameOf(first) === 'worktree' && EXPANDS.test(second)))
+        doubt ??= `git's subcommand is spelled by the shell (${[run.words[0], first, second].join(' ')}), so it may be a worktree add`
     }
     const global = run.words.slice(1, Math.max(sub, 1))
     const quiet = head === '' || QUIET.has(head) || (head === 'git' && QUIET_GIT.has(verb) && !global.includes('-c') && !global.includes('--config-env'))
@@ -420,7 +430,8 @@ const placeAdd = (steps: Step[], add: Add, cwd: string | undefined, agentId: str
   let fromCwd = true
   const lead = before[0]
   if (moved.length > 0) {
-    const chained = steps.slice(1, add.at + 1).every((s) => s.sep === '&&')
+    // The commands of a substitution run inside the step that holds it, not between the cd and git.
+    const chained = steps.slice(1, add.at + 1).every((s) => s.owner !== undefined || s.sep === '&&')
     const run = commandOf(lead?.words ?? [])
     const cd = run.words
     if (moved.length !== 1 || lead?.sep !== '' || !chained || cd.length !== 2 || nameOf(cd[0]) !== 'cd')
