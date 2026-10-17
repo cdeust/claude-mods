@@ -143,9 +143,9 @@ async function isWorktree($: EngineInterface, dir: string): Promise<boolean> {
 
 // Where the add's worktree lands, or why that is not known. Never throws: it runs before the call, where a
 // throw would refuse the add.
-async function placeOf($: EngineInterface, command: string, added: string): Promise<AddPlace> {
+async function placeOf($: EngineInterface, command: string, added: string, agentId: string | undefined): Promise<AddPlace> {
   const cwd = await $.session.cwd().catch(() => undefined)
-  return placeWorktreeAdd(command, added, cwd)
+  return placeWorktreeAdd(command, added, cwd, agentId)
 }
 
 // A command sent to the background (run_in_background, or a timeout that backgrounded it) has not finished
@@ -157,16 +157,23 @@ const isBackgrounded = (ran: ToolCallResult): boolean => {
 
 // After the call: a worktree that is on disk now and was not before is this call's, and it is registered,
 // whatever the call's outcome (a later `&&` step can fail; another plugin can deny a call that ran). Undefined:
-// registered, or nothing to register; else the reason it was not, already toasted to the user.
+// registered, or nothing to register; else the reason it was not, already toasted to the user. A call that
+// reported no error, was not denied and was not sent to the background, yet left nothing at the place computed,
+// is reported too: the place may be wrong (the shell was not where the text says), and a worktree that is
+// elsewhere is not registered. The cost is a report for an add whose failure the command masked (`|| true`).
 async function settleAdd($: EngineInterface, place: AddPlace, existed: boolean, ran: ToolCallResult): Promise<string | undefined> {
+  if ('mention' in place) return undefined
   if ('reason' in place) {
     $.ui.toast(`worktree NOT registered (${place.reason})`)
     return place.reason
   }
   if (existed) return undefined
   if (await isWorktree($, place.path)) return registerWorktree($, place.path)
-  if (!isBackgrounded(ran)) return undefined
-  const reason = `the command runs in the background, so whether ${place.path} exists was not checked`
+  const backgrounded = isBackgrounded(ran)
+  if (!backgrounded && (ran.isError === true || ran.deny !== undefined)) return undefined
+  const reason = backgrounded
+    ? `the command runs in the background, so whether ${place.path} exists was not checked`
+    : `no worktree was found at ${place.path} after the call, which reported no error, so the worktree may be elsewhere`
   $.ui.toast(`worktree NOT registered (${reason})`)
   return reason
 }
@@ -200,7 +207,7 @@ export const register: Register = (on, options) => {
       const added = tool === 'Bash' && script !== '' ? worktreeAddPath(input.command ?? '') : undefined
       if (added === undefined) return next(e)
       // Looked at before the call: a worktree already there is not this call's to register.
-      const place = await placeOf($, input.command ?? '', added)
+      const place = await placeOf($, input.command ?? '', added, e.agentId)
       const existed = 'path' in place && (await isWorktree($, place.path))
       const ran = await next(e)
       // Awaited: the result of this call is where Claude can be told the worktree is not covered.
