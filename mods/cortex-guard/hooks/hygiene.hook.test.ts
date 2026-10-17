@@ -16,7 +16,7 @@ const later = (globalThis as unknown as { setTimeout: (run: () => void, ms: numb
 type Seen = { toasts: string[]; argvs: string[][]; stats: string[]; nextToast: () => Promise<string> }
 
 // `home` answers HOME alone; the other variables the mod asks for are unset.
-const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown): Seen => {
+const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown, how: { call?: unknown } = {}): Seen => {
   const seen: Seen = { toasts: [], argvs: [], stats: [], nextToast: () => Promise.resolve('') }
   let waiting: ((text: string) => void) | undefined
   seen.nextToast = () => new Promise((resolve) => (waiting = resolve))
@@ -34,7 +34,7 @@ const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: s
     waiting?.(e.text)
     return { value: undefined }
   })
-  on('tool.call', () => ({ result: 'ran' }))
+  on('tool.call', () => (how.call ?? { result: 'ran' }) as never)
   return seen
 }
 
@@ -245,4 +245,40 @@ test('a worktree that is registered tells Claude nothing', async ($, on) => {
 test('registration switched off by the option tells Claude nothing: no cleanup was promised', { options: { hygiene_script: '' } }, async ($, on) => {
   stubs(on, '/home/t', { deny: 'would be missing' })
   expect((await $.tool.call({ ...ADD })).context).toBeUndefined()
+})
+
+// Another plugin refused the add: no worktree exists, so there is nothing to tell Claude about, whatever the
+// registration says (here the script is missing, which would otherwise be context).
+test('an add another plugin refused carries no registration context', async ($, on) => {
+  stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { deny: 'another plugin: no' } })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.deny).toBe('another plugin: no')
+  expect(ran.context).toBeUndefined()
+})
+
+// The add itself failed (git exited non-zero): no worktree exists, so nothing is registered or toasted.
+test('an add that failed is neither registered nor told to Claude', async ($, on) => {
+  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { result: 'fatal: already exists', isError: true } })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.isError).toBe(true)
+  expect(ran.context).toBeUndefined()
+  expect(seen.toasts).toEqual([])
+})
+
+// A run that hangs is killed by the engine at its timeout and rejects; the mod bounds both runs itself.
+test('both runs carry an explicit timeout, and a rejection on timeout is reported without blocking the add', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  const inits: ({ timeoutMs?: number } | undefined)[] = []
+  on('process.run', ($$, e) => {
+    const call = e as { argv: string[]; init?: { timeoutMs?: number } }
+    inits.push(call.init)
+    return call.argv[1] === '--version'
+      ? { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+      : { deny: 'timed out after 10000ms' }
+  })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.result).toBe('ran')
+  expect(inits.map((init) => init?.timeoutMs)).toEqual([5_000, 10_000])
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(python3 could not run the script: .*timed out after 10000ms.*\)/)
+  expect(ran.context?.[0]).toContain('timed out after 10000ms')
 })

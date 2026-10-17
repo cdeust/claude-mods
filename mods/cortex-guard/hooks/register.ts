@@ -8,6 +8,11 @@ import { PYTHON_CANDIDATES } from './rules'
 
 const REFUSALS_CAP = 200 // source: bounds $.state size; a viewer shows the last rows only
 const REASON_CAP = 80 // source: own choice, a toast shows a cause in a line
+// `git worktree add` waits for both runs below (the result carries the news to Claude), so a hung child
+// delays it by its whole timeout; the engine default is 30 s each (`ProcessRunInit.timeoutMs`). A rejection on
+// timeout takes the same catch path as a child that cannot start: reported, never blocking the add.
+const PROBE_TIMEOUT_MS = 5_000 // source: own choice, `python --version` prints and exits at once; 5 s is generous
+const REGISTER_TIMEOUT_MS = 10_000 // source: own choice, the script writes one registry entry; 10 s covers a cold disk
 
 const refusals = atom({ plugin: 'cortex-guard', key: 'refusals' } as const, [] as Refusal[])
 
@@ -57,7 +62,7 @@ async function pythonOf($: EngineInterface): Promise<{ argv0: string } | { reaso
   const tried: string[] = []
   for (const candidate of PYTHON_CANDIDATES) {
     try {
-      const ran = await $.process.run([candidate, '--version'])
+      const ran = await $.process.run([candidate, '--version'], { timeoutMs: PROBE_TIMEOUT_MS })
       if (ran.exitCode === 0) return (python = { argv0: candidate })
       tried.push(`${candidate}: exit ${ran.exitCode}`)
     } catch (error) {
@@ -105,19 +110,10 @@ async function registerWorktree($: EngineInterface, path: string): Promise<strin
   }
   const real = await realPathOf($, path)
   try {
-    const ran = await $.process.run([
-      py.argv0,
-      placed.path,
-      '--host',
-      'claude',
-      '--session',
-      await $.session.id(),
-      'register-worktree',
-      '--repo',
-      repo,
-      '--path',
-      real,
-    ])
+    const ran = await $.process.run(
+      [py.argv0, placed.path, '--host', 'claude', '--session', await $.session.id(), 'register-worktree', '--repo', repo, '--path', real],
+      { timeoutMs: REGISTER_TIMEOUT_MS },
+    )
     if (ran.exitCode === 0) {
       $.ui.toast(`worktree registered: ${real}`)
       return undefined
