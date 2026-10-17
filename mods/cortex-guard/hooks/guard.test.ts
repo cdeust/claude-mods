@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { judgeCall, judgePath, placeWorktreeAdd, shellSteps, worktreeAddPath } from './guard'
+import { judgeCall, judgePath, placeWorktreeAdds, shellSteps, worktreeAddPath, worktreeAdds } from './guard'
 
 test('refuses the generated ADR mirror and canonical wiki pages', () => {
   expect(judgePath('/r/docs/adr/ADR-1060-refuse-a-decision.md').allow).toBe(false)
@@ -78,10 +78,12 @@ test('a worktree inside <repo>\\.claude\\worktrees\\ is allowed, one outside is 
   expect(!outside.allow && outside.reason).toContain('C:\\temp\\wt')
 })
 
-// The command text sent to the shell, the path it names, and the directory the shell starts in.
-const place = (command: string, cwd = '/s', agentId?: string): ReturnType<typeof placeWorktreeAdd> =>
-  placeWorktreeAdd(command, worktreeAddPath(command) ?? '', cwd, agentId)
-const unresolved = (command: string, cwd = '/s', agentId?: string): boolean => 'reason' in place(command, cwd, agentId)
+// The command text sent to the shell and the directory the shell starts in: where its first add lands (undefined:
+// no add a shell runs).
+const place = (command: string, cwd = '/s', agentId?: string): ReturnType<typeof placeWorktreeAdds>[number] | undefined =>
+  placeWorktreeAdds(worktreeAdds(command), cwd, agentId)[0]
+const unresolved = (command: string, cwd = '/s', agentId?: string): boolean => 'reason' in (place(command, cwd, agentId) ?? {})
+const refused = (command: string): boolean => !judgeCall('Bash', { command }).allow
 const W = './.claude/worktrees/f'
 
 test('a worktree path lands where the shell is when git runs, or the reason that is not known', () => {
@@ -103,8 +105,8 @@ test('a worktree path lands where the shell is when git runs, or the reason that
     `git -C /r worktree add ${W}`,
     'git worktree add ~/r/.claude/worktrees/f',
   ])
-    expect('reason' in place(unknown)).toBe(true)
-  expect(placeWorktreeAdd(`git worktree add ${W}`, W, undefined)).toEqual({
+    expect([unknown, unresolved(unknown)]).toEqual([unknown, true])
+  expect(placeWorktreeAdds(worktreeAdds(`git worktree add ${W}`), undefined)[0]).toEqual({
     reason: `the path ${W} could not be resolved: the session's directory could not be read`,
   })
 })
@@ -150,10 +152,11 @@ test('a leading cd keeps its place only when git runs once every command after i
 test('a quoted path is resolved only when it has no space and its quote closes', () => {
   expect(unresolved('git worktree add "./.claude/worktrees/w 5" -b b5')).toBe(true)
   expect(unresolved("git worktree add '/r/.claude/worktrees/w 5'")).toBe(true)
-  expect(unresolved('git worktree add "./.claude/worktrees/w5 -b b5')).toBe(true)
   expect(place('git worktree add "./.claude/worktrees/w5" -b b5')).toEqual({ path: '/s/.claude/worktrees/w5' })
-  // The path itself is fine; a quote later in the command never closes, so the split cannot be trusted.
-  expect(unresolved('git worktree add ./.claude/worktrees/w5 main "oops')).toBe(true)
+  // A quote that never closes: the split cannot be trusted, so the add is refused (in doubt), path fine or not.
+  expect(refused('git worktree add "./.claude/worktrees/w5 -b b5')).toBe(true)
+  expect(refused('git worktree add ./.claude/worktrees/w5 main "oops')).toBe(true)
+  expect(refused('echo "$(git worktree add ./.claude/worktrees/w5')).toBe(true)
   // A quoted branch with a space no longer makes the next word the path.
   expect(place('git worktree add -b "a b" ./.claude/worktrees/w5')).toEqual({ path: '/s/.claude/worktrees/w5' })
 })
@@ -168,29 +171,47 @@ test('inside a subagent a path that depends on the session directory is not know
   expect(place(`git worktree add ${W}`, '/s', undefined)).toEqual({ path: '/s/.claude/worktrees/f' })
 })
 
-test('text that only mentions the phrase is not an add; a command that may run its text is not text', () => {
-  const mention = { mention: true }
-  expect(place(`cd /r && git commit -m "docs: git worktree add ${W} is now registered"`)).toEqual(mention)
-  expect(place(`git commit -m "git worktree add ${W}"`)).toEqual(mention)
-  expect(place(`echo "git worktree add ${W}"`)).toEqual(mention)
-  expect(place(`cd /r && grep -rn 'git worktree add' docs`)).toEqual(mention)
-  expect(place(`cd /r && gh pr create --title t --body "$(cat <<'EOF'\nrun git worktree add ../r/.claude/worktrees/x main\nEOF\n)"`)).toEqual(mention)
-  expect(place(`cd /r && cat > notes.md <<'EOF'\ngit worktree add ${W}\nEOF`)).toEqual(mention)
-  // Not text: the shell runs it.
-  expect(unresolved(`sh -c "git worktree add ${W}"`)).toBe(true)
-  expect(unresolved(`bash <<'EOF'\ngit worktree add ${W}\nEOF`)).toBe(true)
-  expect(unresolved(`echo hi; eval "git worktree add ${W}"`)).toBe(true)
+test('text that only mentions the phrase is not an add; a command that may run its text is refused', () => {
+  const text = (command: string): void => {
+    expect([command, worktreeAdds(command).adds, worktreeAdds(command).doubt]).toEqual([command, [], undefined])
+    expect([command, refused(command)]).toEqual([command, false])
+  }
+  text(`cd /r && git commit -m "docs: git worktree add ${W} is now registered"`)
+  text(`git commit -m "git worktree add ${W}"`)
+  text(`echo "git worktree add ${W}"`)
+  text(`cd /r && grep -rn 'git worktree add' docs`)
+  text(`cd /r && gh pr create --title t --body "$(cat <<'EOF'\nrun git worktree add ../r/.claude/worktrees/x main\nEOF\n)"`)
+  text(`cd /r && cat > notes.md <<'EOF'\ngit worktree add ${W}\nEOF`)
+  // A comment is not a command, and not text either.
+  text(`echo hi # git worktree add ${W}`)
+  // Not text: the shell runs it, where the command does not say, so the call is refused (round 3, N1).
+  for (const run of [`sh -c "git worktree add ${W}"`, `bash <<'EOF'\ngit worktree add ${W}\nEOF`, `echo hi; eval "git worktree add ${W}"`])
+    expect([run, refused(run), worktreeAdds(run).doubt !== undefined]).toEqual([run, true, true])
   // A real add after the text is still the add.
   expect(place(`git commit -m "git worktree add ./a" && git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
-  // A comment is not a command (and not text either: nothing is found, which is reported).
-  expect(unresolved(`echo hi # git worktree add ${W}`)).toBe(true)
+  // A mention names a path too, and it is judged: a file it wrote may be run by a later call.
+  expect(refused(`git commit -m "git worktree add /tmp/x"`)).toBe(true)
+})
+
+test('each add of a command has its own place, and a substitution keeps its add', () => {
+  expect(placeWorktreeAdds(worktreeAdds(`git worktree add ${W} && cd /r && git worktree add ./.claude/worktrees/g`), '/s')).toEqual([
+    { path: '/s/.claude/worktrees/f' },
+    { reason: "the path ./.claude/worktrees/g could not be resolved: the shell's directory is changed before git runs (cd)" },
+  ])
+  expect(worktreeAddPath('echo "$( git worktree add /r/.claude/worktrees/s)"')).toBe('/r/.claude/worktrees/s')
+  expect(worktreeAddPath('echo `git worktree add /r/.claude/worktrees/s`')).toBe('/r/.claude/worktrees/s')
+  expect(unresolved(`echo "$(git worktree add ${W})"`)).toBe(true)
 })
 
 test('shellSteps splits at separators outside quotes and keeps a here-document with its command', () => {
   const split = (command: string): string[] => shellSteps(command).steps.map((step) => `${step.sep}|${step.words.join(' ')}`)
   expect(split('a;b&&c||d|e\nf')).toEqual(['|a', ';|b', '&&|c', '|||d', '||e', '\n|f'])
   expect(split("a \"b;c\" 'd&&e' f")).toEqual(['|a b;c d&&e f'])
-  expect(split('(a) && $(b)')).toEqual(['(|a', '$(|b'])
+  // A substitution's commands are steps of their own; its text stays in the word it is part of.
+  expect(split('(a) && $(b)')).toEqual(['(|a', '$(|b', '&&|$(b)'])
+  expect(split('echo "x $(b; c) y" `d`')).toEqual(['$(|b', ';|c', '`|d', '|echo x $(b; c) y `d`'])
+  // A redirection is not a word: its operator and its target are taken out.
+  expect(split('git worktree add p 2>&1 > out <in &>/dev/null')).toEqual(['|git worktree add p'])
   expect(shellSteps('echo "x').open).toBe(true)
   expect(shellSteps('echo "x"').open).toBe(false)
   const doc = shellSteps('cat <<-EOF\n\ta; b\n\tEOF\nnext')
