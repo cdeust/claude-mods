@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   ciOf,
+  draftIssuePrompt,
   fleetRows,
   isBehind,
   parseInstalled,
@@ -171,6 +172,23 @@ test('the review prompt names the repo, the PR and the standing rules', () => {
   expect(text).toContain('head sha')
   expect(text).toContain('merge-gate.py with --repo')
   expect(text).toContain('Never merge, close or push from a mod')
+})
+
+// Audience: a hand-off prompt reaches Claude as "The harness-fleet plugin sent a message: ..." (it is not submitted
+// asUser), so it is the plugin's voice. It must not speak as "me" or "I", which would be the owner's.
+test('the draft-issue prompt speaks as the plugin: the owner is named in the third person, never "me" or "I"', () => {
+  const text = draftIssuePrompt(['cdeust/claude-mods', 'cdeust/Cortex'], {
+    refusals: 3,
+    classifierErrors: null,
+    stuckEscalations: 0,
+    offloads: 1,
+    unreadable: [],
+  })
+  expect(text).toContain('Candidate repositories: cdeust/claude-mods, cdeust/Cortex.')
+  expect(text).toContain('3 guard refusals, classifier errors: no reading')
+  expect(text).toContain('Show the owner the issue title and body first')
+  expect(text).toContain('only after the owner confirms')
+  expect(text).not.toMatch(/\b(me|I|my|mine)\b/)
 })
 
 test('the PR count query is OPEN pull requests, and owner and name travel as raw strings (-f, never -F)', () => {

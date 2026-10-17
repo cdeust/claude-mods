@@ -3,8 +3,9 @@ import type { TestBody } from 'claude-code/testing'
 
 // The registration of a worktree through the hygiene script, on a machine that is not the
 // owner's: the script's place is computed from HOME, a missing file is said once, a refusal from
-// the machine is shown. Registration runs in the background after the call; each test waits on
-// the toast it produces, the event that ends it.
+// the machine is shown. Registration runs after the call; each test waits on
+// the toast it produces, the event that ends it. The call itself waits for the registration, so that
+// a failure can be told to Claude in the call's result (the audience tests at the end).
 
 const SCRIPT = '/home/t/Developments/disk-hygiene/disk_hygiene.py'
 const ADD = { tool: 'Bash', command: 'git worktree add -b f /r/.claude/worktrees/f main' } as const
@@ -15,7 +16,7 @@ const later = (globalThis as unknown as { setTimeout: (run: () => void, ms: numb
 type Seen = { toasts: string[]; argvs: string[][]; stats: string[]; nextToast: () => Promise<string> }
 
 // `home` answers HOME alone; the other variables the mod asks for are unset.
-const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown): Seen => {
+const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown, how: { call?: unknown } = {}): Seen => {
   const seen: Seen = { toasts: [], argvs: [], stats: [], nextToast: () => Promise.resolve('') }
   let waiting: ((text: string) => void) | undefined
   seen.nextToast = () => new Promise((resolve) => (waiting = resolve))
@@ -33,7 +34,7 @@ const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: s
     waiting?.(e.text)
     return { value: undefined }
   })
-  on('tool.call', () => ({ result: 'ran' }))
+  on('tool.call', () => (how.call ?? { result: 'ran' }) as never)
   return seen
 }
 
@@ -198,4 +199,100 @@ test('an absolute path in the option is used as given', { options: { hygiene_scr
   await $.tool.call({ ...ADD })
   await done
   expect(scriptRuns(seen)[0]?.[1]).toBe('/opt/h.py')
+})
+
+// Audience: `$.ui.toast` is read by the user alone and a tool.call result's `context` by the model alone (the
+// engine's declarations). A worktree that did not get registered is news for both: the user is toasted, and
+// Claude, which ran `git worktree add`, is told on the result of that call that its cleanup is not covered.
+const NEW = '/r/.claude/worktrees/f'
+
+test('a worktree that is not registered is toasted to the user and told to Claude in the result context', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', ($$, e) =>
+    (e as { argv: string[] }).argv[1] === '--version'
+      ? { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+      : { value: { exitCode: 2, stdout: '', stderr: 'sandbox: write denied' } as never },
+  )
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.result).toBe('ran')
+  expect(seen.toasts).toEqual(['worktree NOT registered (sandbox: write denied)'])
+  expect(ran.context).toHaveLength(1)
+  expect(ran.context?.[0]).toContain(NEW)
+  expect(ran.context?.[0]).toContain('NOT registered')
+  expect(ran.context?.[0]).toContain('cleanup is not covered')
+  expect(ran.context?.[0]).toContain('sandbox: write denied')
+  expect(ran.context?.[0]).not.toBe(seen.toasts[0])
+})
+
+test('a missing script tells Claude as well; a later worktree tells Claude again and the user not again', async ($, on) => {
+  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' })
+  const first = await $.tool.call({ ...ADD })
+  expect(first.context?.[0]).toContain('cleanup is not covered')
+  expect(seen.toasts).toHaveLength(1)
+  const second = await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g /r/.claude/worktrees/g main' })
+  expect(second.context?.[0]).toContain('/r/.claude/worktrees/g')
+  expect(seen.toasts).toHaveLength(1)
+})
+
+test('a worktree that is registered tells Claude nothing', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }))
+  const ran = await $.tool.call({ ...ADD })
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(ran.context).toBeUndefined()
+})
+
+test('registration switched off by the option tells Claude nothing: no cleanup was promised', { options: { hygiene_script: '' } }, async ($, on) => {
+  stubs(on, '/home/t', { deny: 'would be missing' })
+  expect((await $.tool.call({ ...ADD })).context).toBeUndefined()
+})
+
+// Another plugin refused the add: no worktree exists, so there is nothing to tell Claude about, whatever the
+// registration says (here the script is missing, which would otherwise be context).
+test('an add another plugin refused carries no registration context', async ($, on) => {
+  stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { deny: 'another plugin: no' } })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.deny).toBe('another plugin: no')
+  expect(ran.context).toBeUndefined()
+})
+
+// The same refusal with a script that would register: nothing is run and the user is not told "registered".
+test('an add another plugin refused is not registered', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { call: { deny: 'another plugin: no' } })
+  let runs = 0
+  on('process.run', () => {
+    runs += 1
+    return { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+  })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.deny).toBe('another plugin: no')
+  expect(runs).toBe(0)
+  expect(seen.toasts).toEqual([])
+})
+
+// The add itself failed (git exited non-zero): no worktree exists, so nothing is registered or toasted.
+test('an add that failed is neither registered nor told to Claude', async ($, on) => {
+  const seen = stubs(on, '/home/t', { deny: 'ENOENT: no such file' }, { call: { result: 'fatal: already exists', isError: true } })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.isError).toBe(true)
+  expect(ran.context).toBeUndefined()
+  expect(seen.toasts).toEqual([])
+})
+
+// A run that hangs is killed by the engine at its timeout and rejects; the mod bounds both runs itself.
+test('both runs carry an explicit timeout, and a rejection on timeout is reported without blocking the add', async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
+  const inits: ({ timeoutMs?: number } | undefined)[] = []
+  on('process.run', ($$, e) => {
+    const call = e as { argv: string[]; init?: { timeoutMs?: number } }
+    inits.push(call.init)
+    return call.argv[1] === '--version'
+      ? { value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }
+      : { deny: 'timed out after 10000ms' }
+  })
+  const ran = await $.tool.call({ ...ADD })
+  expect(ran.result).toBe('ran')
+  expect(inits.map((init) => init?.timeoutMs)).toEqual([5_000, 10_000])
+  expect(seen.toasts[0]).toMatch(/^worktree NOT registered \(python3 could not run the script: .*timed out after 10000ms.*\)/)
+  expect(ran.context?.[0]).toContain('timed out after 10000ms')
 })

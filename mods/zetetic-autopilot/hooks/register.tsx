@@ -344,33 +344,57 @@ async function spawnRouted(
   return placed($, e, await next(applied ? { ...e, model: routed.model } : e), routeOf(routed, applied))
 }
 
-// The turn main was last warned in (a warning a turn, not a toast a call). Reset with the session.
-let warnedTurn: string | null | undefined
+// The turns main was last told in, each once a turn and not once a call: the user (a toast) and the model (a
+// reminder in the call's result). Reset with the session. The model's is given back when its call was refused,
+// so the next call of the turn carries it; the user's is not (a toast says what main did, and the refusal
+// is on the screen already).
+let toastedTurn: string | null | undefined
+let remindedTurn: string | null | undefined
+
+// What the model reads after the result of its first implementing call of a turn (the engine's declarations:
+// a tool.call result's `context` is "what the model reads after the tool's result and the user never sees").
+// It is the instruction; the user is told the fact in a toast and never this.
+const DELEGATE_REMINDER =
+  'zetetic-autopilot, owner rule 2026-10-15: implementation belongs to a subagent. This session\'s main loop just ran a ' +
+  'tool that changes files or state; delegate implementation to a subagent (Agent tool) and keep this loop for orchestration.'
 
 // Owner rule, 2026-10-15: no task runs in the global session, all is delegated. A call of the main loop
-// that writes code or changes things is the work a subagent is for: a row each time, a toast once a turn.
-// It warns and never blocks: the call goes ahead.
-async function nudgeMain($: EngineInterface, e: { tool: string }): Promise<void> {
+// that writes code or changes things is the work a subagent is for: a row each time, a toast to the user and a
+// reminder to the model once a turn. It warns and never blocks: the call goes ahead. Answers whether the model
+// is owed its reminder on this call's result, and for which turn.
+async function nudgeMain($: EngineInterface, e: { tool: string }): Promise<{ turnId: string | null; remind: boolean }> {
   const turnId = (await read($, phases)).turnId
   const at = await $.clock.now()
   await update($, policy, (s) =>
     decide(s, { at, kind: 'work', subject: `main · ${e.tool}`, from: 'main loop', to: 'delegate to a subagent', applied: false }),
   )
-  if (warnedTurn === turnId) return
-  warnedTurn = turnId
-  $.ui.toast(`main ran ${e.tool}: implementation belongs to a subagent, delegate it (owner rule 2026-10-15)`)
+  if (toastedTurn !== turnId) {
+    toastedTurn = turnId
+    $.ui.toast(`main ran ${e.tool} (owner rule 2026-10-15: implementation is a subagent's work)`)
+  }
+  const remind = remindedTurn !== turnId
+  if (remind) remindedTurn = turnId
+
+  return { turnId, remind }
 }
 
 // The stuck signal: main's tool errors in a row, read by the next turn.step.
 const onToolCall: Hook<'tool.call'> = async ($, e, next) => {
   const agentId = (e as { agentId?: string }).agentId
-  if (agentId === undefined && isMainImplementation(e.tool, e)) await nudgeMain($, e)
+  const nudge = agentId === undefined && isMainImplementation(e.tool, e) ? await nudgeMain($, e) : undefined
   const ran = await next(e)
   const isBlocked = ran.deny !== undefined || ran.isError === true
   if (agentId === undefined) await update($, policy, (s) => ({ ...s, errorsInRow: isBlocked ? s.errorsInRow + 1 : 0 }))
   if (isBlocked) await update($, phases, (s) => erred(s, agentId ?? 'main'))
+  if (nudge?.remind !== true) return ran
+  // A refused call has no `context` to carry it: the reminder is still owed to the turn's next call.
+  if (ran.deny !== undefined) {
+    if (remindedTurn === nudge.turnId) remindedTurn = undefined
+    return ran
+  }
 
-  return ran
+  // The result as core made it, whole (`ref` names its messages), with the reminder added to its context.
+  return { ...ran, context: [...(ran.context ?? []), DELEGATE_REMINDER] }
 }
 
 // Memory offload (offload.ts, offloadrow.ts): a stream tool's result past the threshold is written whole to a
@@ -420,7 +444,8 @@ const onComplete: Hook<'turn.complete'> = async ($, e, next) => {
 async function begin($: EngineInterface, mode: PolicyState['mode'], configured: (p: PolicyState) => PolicyState, capProblem?: string): Promise<void> {
   definitions.clear()
   resetGate()
-  warnedTurn = undefined
+  toastedTurn = undefined
+  remindedTurn = undefined
   await update($, phases, () => emptyPhases())
   await update($, spawns, () => [])
   await openRoutes($)

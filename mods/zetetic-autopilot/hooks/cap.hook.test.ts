@@ -27,8 +27,10 @@ scenario('at the quota mark the cap is 1: a second spawn is refused and the mess
     'zetetic-autopilot: 1 subagent is running and the cap is 1 at 90% of the five-hour window (the cap falls from 5 to 1 as the window fills to 80%). Wait for a running agent to finish, then spawn this one again.',
   )
   expect(seen.sent).toEqual(['haiku']) // the second never reached the engine
-  expect(seen.decisions.find((d) => d.kind === 'cap')).toMatchObject({ applied: true, from: '1 running', to: 'cap 1', subject: ENGINEER, reason: second.deny })
-  expect(seen.toasts).toEqual([second.deny])
+  expect(seen.decisions.find((d) => d.kind === 'cap')).toMatchObject({ applied: true, from: '1 running', to: 'cap 1', subject: ENGINEER, reason: seen.toasts[0] })
+  // The user is told the fact; the instruction is the deny's, for Claude (audience.hook.test.ts).
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).not.toBe(second.deny)
 })
 
 scenario('a finished agent frees its place: the next spawn passes', ENFORCE, async ($, seen) => {
@@ -121,7 +123,7 @@ test('main writing code is a POLICY row each time and a toast once a turn; the c
   const rows = seen.decisions.filter((d) => d.kind === 'work')
   expect(rows).toHaveLength(2)
   expect(rows[0]).toMatchObject({ subject: 'main · Edit', applied: false })
-  expect(seen.toasts.filter((t) => t.includes('delegate'))).toHaveLength(1)
+  expect(seen.toasts.filter((t) => t.startsWith('main ran'))).toHaveLength(1)
 })
 
 // Review of #25 round 2, m5 (G11): the turn main was warned in belongs to its session; a new session warns again.
@@ -133,7 +135,7 @@ test('a session started again warns main again, in a turn of the same id', { opt
   await $.tool.call(edit as never)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.tool.call(edit as never)
-  expect(seen.toasts.filter((t) => t.includes('delegate'))).toHaveLength(2)
+  expect(seen.toasts.filter((t) => t.startsWith('main ran'))).toHaveLength(2)
 })
 
 test('reading, checking and delegating are not warned about, nor is a subagent writing code', { options: ENFORCE }, async ($, on) => {
