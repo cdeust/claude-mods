@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { judgeCall, judgePath, placeWorktreeAdd, worktreeAddPath } from './guard'
+import { judgeCall, judgePath, placeWorktreeAdd, shellSteps, worktreeAddPath } from './guard'
 
 test('refuses the generated ADR mirror and canonical wiki pages', () => {
   expect(judgePath('/r/docs/adr/ADR-1060-refuse-a-decision.md').allow).toBe(false)
@@ -79,8 +79,9 @@ test('a worktree inside <repo>\\.claude\\worktrees\\ is allowed, one outside is 
 })
 
 // The command text sent to the shell, the path it names, and the directory the shell starts in.
-const place = (command: string, cwd = '/s'): ReturnType<typeof placeWorktreeAdd> =>
-  placeWorktreeAdd(command, worktreeAddPath(command) ?? '', cwd)
+const place = (command: string, cwd = '/s', agentId?: string): ReturnType<typeof placeWorktreeAdd> =>
+  placeWorktreeAdd(command, worktreeAddPath(command) ?? '', cwd, agentId)
+const unresolved = (command: string, cwd = '/s', agentId?: string): boolean => 'reason' in place(command, cwd, agentId)
 const W = './.claude/worktrees/f'
 
 test('a worktree path lands where the shell is when git runs, or the reason that is not known', () => {
@@ -106,4 +107,93 @@ test('a worktree path lands where the shell is when git runs, or the reason that
   expect(placeWorktreeAdd(`git worktree add ${W}`, W, undefined)).toEqual({
     reason: `the path ${W} could not be resolved: the session's directory could not be read`,
   })
+})
+
+// Round 1 of PR 30: a directory change is found on the text split at the shell's separators, not on whitespace.
+test('a directory change glued to a separator is still a directory change', () => {
+  expect(unresolved(`true;cd sub && git worktree add ../.claude/worktrees/w7 -b b7`)).toBe(true)
+  expect(unresolved(`echo x &&cd sub && git worktree add ../.claude/worktrees/w11 -b b11`)).toBe(true)
+  expect(unresolved(`true|cd sub && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`echo $(cd sub) && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`{ cd sub; git worktree add ${W}; }`)).toBe(true)
+  expect(unresolved(`if cd sub; then git worktree add ${W}; fi`)).toBe(true)
+  // The same words without a cd are not one.
+  expect(place(`echo cd && git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
+})
+
+test('a leading cd keeps its place only when git runs once every command after it succeeded and none moves the directory', () => {
+  // M9: `||` and a spaced `;` run git when the cd failed.
+  expect(unresolved(`cd /r || git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r ; git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r & git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r && echo a || git worktree add ${W}`)).toBe(true)
+  // M8: a second cd moves the shell again.
+  expect(unresolved(`cd /a && cd b && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /a && git fetch && cd b && git worktree add ${W}`)).toBe(true)
+  // M13: `cd -` goes to the previous directory.
+  expect(unresolved(`cd - && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd -P /r && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd "" && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r extra && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd "my dir" && git worktree add ${W}`)).toBe(true)
+  // Commands between the cd and git that move nothing leave the place known.
+  expect(place(`cd /r && git fetch && git worktree add -b f ${W} origin/main`)).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`cd /r && git fetch --prune && npm ci && git worktree add ${W}`)).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(unresolved(`cd /r && git fetch | cat && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r && (git worktree add ${W})`)).toBe(true)
+  // A command after the add, a `;` glued to the path and a redirect that holds an `&` change nothing.
+  expect(place(`git worktree add ${W}; echo done`)).toEqual({ path: '/s/.claude/worktrees/f' })
+  expect(place(`cd /r && git fetch 2>&1 && git worktree add ${W}`)).toEqual({ path: '/r/.claude/worktrees/f' })
+})
+
+test('a quoted path is resolved only when it has no space and its quote closes', () => {
+  expect(unresolved('git worktree add "./.claude/worktrees/w 5" -b b5')).toBe(true)
+  expect(unresolved("git worktree add '/r/.claude/worktrees/w 5'")).toBe(true)
+  expect(unresolved('git worktree add "./.claude/worktrees/w5 -b b5')).toBe(true)
+  expect(place('git worktree add "./.claude/worktrees/w5" -b b5')).toEqual({ path: '/s/.claude/worktrees/w5' })
+  // The path itself is fine; a quote later in the command never closes, so the split cannot be trusted.
+  expect(unresolved('git worktree add ./.claude/worktrees/w5 main "oops')).toBe(true)
+  // A quoted branch with a space no longer makes the next word the path.
+  expect(place('git worktree add -b "a b" ./.claude/worktrees/w5')).toEqual({ path: '/s/.claude/worktrees/w5' })
+})
+
+// The event of a subagent's loop carries `agentId`; the d.ts does not say which directory `$.session.cwd()` is
+// for that loop's shell, so a path that depends on it is not known.
+test('inside a subagent a path that depends on the session directory is not known', () => {
+  expect(unresolved(`git worktree add ${W}`, '/s', 'a1')).toBe(true)
+  expect(unresolved(`cd sub && git worktree add ${W}`, '/s', 'a1')).toBe(true)
+  expect(place(`git worktree add /r/.claude/worktrees/f`, '/s', 'a1')).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`cd /r && git worktree add ${W}`, '/s', 'a1')).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`git worktree add ${W}`, '/s', undefined)).toEqual({ path: '/s/.claude/worktrees/f' })
+})
+
+test('text that only mentions the phrase is not an add; a command that may run its text is not text', () => {
+  const mention = { mention: true }
+  expect(place(`cd /r && git commit -m "docs: git worktree add ${W} is now registered"`)).toEqual(mention)
+  expect(place(`git commit -m "git worktree add ${W}"`)).toEqual(mention)
+  expect(place(`echo "git worktree add ${W}"`)).toEqual(mention)
+  expect(place(`cd /r && grep -rn 'git worktree add' docs`)).toEqual(mention)
+  expect(place(`cd /r && gh pr create --title t --body "$(cat <<'EOF'\nrun git worktree add ../r/.claude/worktrees/x main\nEOF\n)"`)).toEqual(mention)
+  expect(place(`cd /r && cat > notes.md <<'EOF'\ngit worktree add ${W}\nEOF`)).toEqual(mention)
+  // Not text: the shell runs it.
+  expect(unresolved(`sh -c "git worktree add ${W}"`)).toBe(true)
+  expect(unresolved(`bash <<'EOF'\ngit worktree add ${W}\nEOF`)).toBe(true)
+  expect(unresolved(`echo hi; eval "git worktree add ${W}"`)).toBe(true)
+  // A real add after the text is still the add.
+  expect(place(`git commit -m "git worktree add ./a" && git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
+  // A comment is not a command (and not text either: nothing is found, which is reported).
+  expect(unresolved(`echo hi # git worktree add ${W}`)).toBe(true)
+})
+
+test('shellSteps splits at separators outside quotes and keeps a here-document with its command', () => {
+  const split = (command: string): string[] => shellSteps(command).steps.map((step) => `${step.sep}|${step.words.join(' ')}`)
+  expect(split('a;b&&c||d|e\nf')).toEqual(['|a', ';|b', '&&|c', '|||d', '||e', '\n|f'])
+  expect(split("a \"b;c\" 'd&&e' f")).toEqual(['|a b;c d&&e f'])
+  expect(split('(a) && $(b)')).toEqual(['(|a', '$(|b'])
+  expect(shellSteps('echo "x').open).toBe(true)
+  expect(shellSteps('echo "x"').open).toBe(false)
+  const doc = shellSteps('cat <<-EOF\n\ta; b\n\tEOF\nnext')
+  expect(doc.steps.map((step) => step.words.join(' '))).toEqual(['cat', 'next'])
+  expect(doc.steps[0]?.body).toContain('a; b')
 })
