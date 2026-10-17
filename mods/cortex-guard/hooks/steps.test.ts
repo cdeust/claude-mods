@@ -114,3 +114,95 @@ test('a here-document body belongs to the command that opened it, wherever that 
   expect(owner("cat <<'A' && tee x <<'B'\nBODY\nA\nother\nB")).toBe('cat')
   expect(owner("x=1; bash <<\\EOF\nBODY\nEOF")).toBe('bash')
 })
+
+// Round 4 of PR 30. B1: text a shell runs is read with the same split as the command, its quotes resolved, so a
+// verb quoted, escaped or continued inside it is the verb. Each form was allowed at 9f1b4b0 with nothing to register
+// (the review created q1 and q5 with real git under zsh and bash).
+test('an add spelled with quotes or escapes inside text a shell runs is refused', () => {
+  const o = '/tmp/o'
+  for (const command of [
+    `sh -c 'git worktree "add" ${o}/q1'`,
+    `eval 'git worktree "add" ${o}/q2'`,
+    `echo 'git worktree "add" ${o}/q5' | sh`,
+    `sh -c 'git worktree \\add ${o}/a'`,
+    `sh -c 'git "worktree" add ${o}/b'`,
+    `sh -c "git wor''ktree add ${o}/c"`,
+    `sh -c 'git worktree \\\nadd ${o}/d'`,
+    `bash -c 'git worktree a\\dd ${o}/q3'`,
+    `sh -c 'git worktree "$1" "$2"' _ add ${o}/q6`,
+    `sh -c "bash -c 'git worktree \\"add\\" ${o}/n'"`,
+    `bash <<'EOF'\ngit worktree "add" ${o}/h\nEOF`,
+    `sh -c 'git worktree "add" ${W}'`,
+  ])
+    expect([command, refused(command)]).toEqual([command, true])
+})
+
+// B2: a command named by a variable is a doubt only when its words read like a worktree add. Three of these are
+// from past sessions (1316 commands replayed by the review); all were allowed at b31e910 and refused at 9f1b4b0.
+test('a command named by a variable whose words do not read like a worktree add is allowed', () => {
+  for (const command of [
+    '$P/run.sh $P/check.py',
+    '"$PY" "$SCRIPT"',
+    '$EDITOR {a,b}.txt',
+    '"$VENV/bin/python" tools/*.py',
+    'cd /r/.claude/worktrees/x && P=/p && $P/hooks/run-python.sh $P/hooks/lib/staged_checks.py $P "$(pwd)"',
+    '$CARGO_TARGET_DIR/release/examples/ts_probe $s',
+  ])
+    expect([command, refused(command)]).toEqual([command, false])
+  for (const command of ['G=git; $G worktree add /tmp/evil', '$G worktree $A /tmp/evil', '$G -C /r $W add /tmp/evil', '$G $W "add" x'])
+    expect([command, refused(command)]).toEqual([command, true])
+})
+
+test('the reason of a refusal in doubt says the command may run an add, not that it does', () => {
+  for (const command of ['git $SUBCMD', 'G=git; W=worktree; $G $W add x', `sh -c 'git worktree "add" ${W}'`]) {
+    const verdict = judgeCall('Bash', { command })
+    expect([command, verdict.allow, verdict.allow ? '' : verdict.reason.startsWith('the command may run a git worktree add')]).toEqual([command, false, true])
+  }
+})
+
+// git-config(1): `-c <name>=<value>`; a key such as core.pager or alias.* names a program git runs, user.name does
+// not. Keys are case-insensitive.
+test('git -c with a key that runs nothing keeps a commit message a mention', () => {
+  const m = `commit -m "docs: git worktree add ${W}"`
+  expect(refused(`git -c user.name=x -c user.email=y ${m}`)).toBe(false)
+  expect(refused(`git -c User.Email=y ${m}`)).toBe(false)
+  expect(refused(`git --config-env user.name=N ${m}`)).toBe(false)
+  expect(refused(`git --config-env=user.name=N ${m}`)).toBe(false)
+  expect(refused(`git -c core.pager=sh ${m}`)).toBe(true)
+  expect(refused(`git --config-env=core.pager=PG ${m}`)).toBe(true)
+  expect(refused(`git -c alias.ci=!sh ${m}`)).toBe(true)
+  // An alias set by -c may be worktree add under another name (created /o/al with real git at 9f1b4b0, unseen).
+  expect(refused('git -c alias.wt=worktree wt add /tmp/o/al')).toBe(true)
+  expect(refused('git -c Alias.wt=worktree wt add ./.claude/worktrees/a')).toBe(true)
+})
+
+// The code review of this round: a step of text a shell runs gets the same check as a step of the command, and an
+// alias defined in the command, ANSI-C quoting and signing are read.
+test('text a shell runs is judged step by step like the command; aliases and $\'...\' are read', () => {
+  for (const command of [
+    'G=git; W=worktree; A=add; $G $W $A /tmp/evil',
+    "sh -c 'git -c alias.wt=worktree wt add /tmp/evil'",
+    "sh -c 'git $SUB /tmp/evil'",
+    "sh -c 'G=git; W=worktree; $G $W add /tmp/evil'",
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.wt GIT_CONFIG_VALUE_0=worktree git wt add /tmp/evil',
+    'git config alias.wt worktree && git wt add /tmp/evil',
+    'git --config-env=alias.wt=WT wt add /tmp/evil',
+    "sh -c $'git worktree \\x61dd /tmp/evil'",
+    `git -c commit.gpgsign=true commit -m "docs: git worktree add ${W}"`,
+  ])
+    expect([command, refused(command)]).toEqual([command, true])
+  // An alias to another command defines no add.
+  expect(refused('git config --global alias.co checkout')).toBe(false)
+  expect(refused('git -c alias.co=checkout co main')).toBe(false)
+  // A mention nested past the depth the split reads still has its path judged.
+  const q = (t: string): string => `'${t.replace(/'/g, "'\\''")}'`
+  let text = 'git worktree add /tmp/evil'
+  for (let k = 0; k < 6; k++) text = `echo ${q(text)}`
+  expect(refused(text)).toBe(true)
+})
+
+test('a pattern that is not a shell add stays text: its words, split as a shell would, name no add', () => {
+  expect(refused("sed -n '/git worktree add/p' README.md")).toBe(false)
+  // Prose with `worktree` before a variable is not git's verb (from a past session: the echo reached python3).
+  expect(refused('python3 h.py --path $P; echo "- red worktree $P (detached, registered)" >> notes.md')).toBe(false)
+})
