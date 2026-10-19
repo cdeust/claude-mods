@@ -7,7 +7,11 @@ export type Effort = 'low' | 'medium' | 'high'
 
 // `reads` mirrors the autopilot's PhaseRun.reads: steps whose every call was Read, Grep or Glob.
 // Absent on records written before it was kept: such records are not measured.
-export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number }
+// `escalated`: the run holds a step its stuck escalation raised (3 failed calls in a row raise the next
+// step one notch), not one the graded base and the ceiling put on its rung (hooks/reach.ts); set only when
+// true. Read from the autopilot's `PhaseRun.escalated` (0.8.0) when the run carries it; for a run recorded
+// before that, it may hold one by the time join over the autopilot's stuck decisions.
+export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number; escalated?: true }
 
 // The design contract a delegation was dispatched under, read from the DESIGN block of its prompt
 // (the dispatch-contract skill): the model and effort the orchestrator chose and the genius shape it
@@ -103,6 +107,20 @@ export type TurnRecord = {
   turnId: string
   at: number
   taskClass: string | null
+  // The effort the request classifier graded the turn at (zetetic-genius `classified.effort`), the rung its
+  // tool loop starts from; absent when the turn was not graded. `pressured`: quota or context pressure held
+  // the autopilot's ladder down at the end of the turn (set only when true). Both say why a run sits on its
+  // rung, which a move of the ceiling is compared on (hooks/reach.ts).
+  // `unenforced`: the autopilot's policy was not enforced in the turn (its `observe` mode, or its policy
+  // unread), so no step sat on a rung the ceiling, the pressure or the escalation chose. `decisionsLost`:
+  // the autopilot's decision log was full and starts after the turn did, so a stuck decision of the turn
+  // may have been dropped from it and which run it raised is not known; set only when a run of the turn
+  // lacks the autopilot's own `escalated` count (a run that has it needs no decision). Both set only when true; a run of
+  // such a turn is governed by no move (hooks/reach.ts).
+  base?: string
+  pressured?: true
+  unenforced?: true
+  decisionsLost?: true
   main: RunRecord[]
   agents: AgentRecord[]
   // The model main ran on this turn (autopilot phases, main loop); absent on records written before
@@ -133,11 +151,55 @@ export type PhaseStat = {
   sessions: number
   judged: number
   achieved: number
+  // The failed-call rate's Wilson interval (hooks/stats.ts, one-sided 95% bounds) and whether it is narrower than
+  // the precision asked for (HALF_WIDTH); a row that is not resolved can support no proposal.
+  lo: number
+  hi: number
+  resolved: boolean
 }
 
 export type AgentStat = { type: string; runs: number; steps: number; errors: number; models: string[] }
 
-export type Proposal = { phase: Phase; from: Effort; to: Effort; evidence: string }
+// A proposed move, with the rate it rests on and the reference it was set against (other phases at the
+// same effort), both with their intervals.
+export type Proposal = { phase: Phase; from: Effort; to: Effort; evidence: string; rate: RateInterval; reference: RateInterval }
+export type RateInterval = { errors: number; steps: number; lo: number; hi: number }
+
+// What a phase's evidence says without supporting a move: why none can come (hooks/rungs.ts findings).
+export type Finding = {
+  phase: Phase
+  effort: string
+  kind: 'unreachable' | 'unmeasured' | 'unresolved' | 'no-reference' | 'unstable' | 'held'
+  // One sentence with the numbers.
+  note: string
+}
+
+// A phase's statistics for one side of a move (hooks/effect.ts), of the steps the move governed (hooks/reach.ts): failed calls and steps by task class, and the outcome
+// of each session that side holds, keyed by the first 8 characters of the session id.
+export type Snapshot = { byClass: Record<string, { steps: number; errors: number }>; sessions: Record<string, 'achieved' | 'not-achieved' | 'unclear'> }
+// One applied move: the runs before it, frozen when it was made (the ledger may later trim them), and
+// the runs after it, frozen when a later move of the same phase superseded it (null while it is the last).
+export type Move = { phase: Phase; at: number; from: Effort; to: Effort; pre: Snapshot; post: Snapshot | null }
+// `no-baseline`: no step before the move was governed by it (a move made under 0.8.x kept no statistics;
+// or no graded turn ran at the rung it left): nothing can show it harmful, so nothing protects it.
+// `insufficient`: the rung moved to has no governed step yet.
+export type Credit = 'benefit' | 'harm' | 'inconclusive' | 'insufficient' | 'no-baseline'
+// The effect of a move: the difference post - pre with its interval (Newcombe), for the failed-call rate and for the
+// share of sessions achieved. A move is credited only on a comparison of the same phase and the same task classes.
+export type DeltaInterval = { d: number; lo: number; hi: number }
+export type Effect = {
+  phase: Phase
+  at: number
+  from: Effort
+  to: Effort
+  // The task classes both sides share (the only ones compared), and the steps / failed calls each side has in them.
+  classes: string[]
+  preSide: { steps: number; errors: number; judged: number; achieved: number }
+  postSide: { steps: number; errors: number; judged: number; achieved: number }
+  failed: DeltaInterval
+  outcome: DeltaInterval | null
+  credit: Credit
+}
 
 // The file the autopilot reads: the tool-loop effort of each calibrated phase, and why.
 export type Calibration = {
@@ -146,6 +208,8 @@ export type Calibration = {
   evidence: Partial<Record<Phase, string>>
   // Each phase's last move: only the runs recorded after it count, and undoing it needs more.
   changes: Partial<Record<Phase, { at: number; from: Effort; to: Effort }>>
+  // Every applied move with its frozen pre statistics, oldest first (hooks/effect.ts), at most MOVES_CAP.
+  moves: Move[]
   updatedAt: number | null
 }
 
@@ -220,6 +284,9 @@ export type InsightsState = {
   calibration: Calibration
   calibrationError: string | null
   proposals: Proposal[]
+  // Why no proposal can come, per phase and effort, and the measured effect of each applied move (the cockpit can draw both).
+  findings: Finding[]
+  effects: Effect[]
   updatedAt: number | null
 }
 

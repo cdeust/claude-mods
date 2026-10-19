@@ -4,18 +4,13 @@ import type { AgentRecord, TurnRecord } from '../types'
 import {
   LEDGER_BYTES,
   MAX_AGENTS,
-  MIN_STEPS,
-  REVERSAL_STEPS,
   advisorStats,
   agentStats,
   applied,
   emptyCalibration,
   goalStatus,
-  offRung,
   outcomeOf,
   parseCalibration,
-  phaseStats,
-  proposals,
   recordBytes,
   trimmed,
   utf8Bytes,
@@ -47,52 +42,27 @@ test("a goal's state is its last status line", () => {
   expect(goalStatus('# G\nno status\n')).toBe('none')
 })
 
-test('main runs add up per phase and effort, with the sessions /insights judged', () => {
-  const records = [
-    turn({ session: 's1', main: [{ phase: 'analysis', effort: 'medium', steps: 3, errors: 1 }, { phase: 'test', effort: 'low', steps: 2, errors: 0 }] }),
-    turn({ session: 's2', main: [{ phase: 'analysis', effort: 'medium', steps: 5, errors: 0 }] }),
-  ]
-  const outcomes = new Map([['s1', 'achieved' as const], ['s2', 'unclear' as const]])
-  expect(phaseStats(records, outcomes)).toEqual([
-    { phase: 'analysis', effort: 'medium', steps: 8, errors: 1, sessions: 2, judged: 1, achieved: 1 },
-    { phase: 'test', effort: 'low', steps: 2, errors: 0, sessions: 1, judged: 1, achieved: 1 },
-  ])
-})
-
-test('a phase failing often enough at its effort is proposed one notch up', () => {
-  const stats = [{ phase: 'test', effort: 'medium', steps: MIN_STEPS, errors: 12, sessions: 4, judged: 0, achieved: 0 }]
-  expect(proposals(stats, emptyCalibration())).toEqual([
-    { phase: 'test', from: 'medium', to: 'high', evidence: '12 failed calls in 40 steps at medium over 4 sessions' },
-  ])
-  expect(proposals([{ ...stats[0]!, steps: MIN_STEPS - 1 }], emptyCalibration())).toEqual([])
-})
-
-test('a phase is lowered only when it almost never fails and /insights says the sessions were achieved', () => {
-  const quiet = { phase: 'analysis', effort: 'medium', steps: 100, errors: 2, sessions: 9, judged: 6, achieved: 5 }
-  expect(proposals([quiet], emptyCalibration())[0]?.to).toBe('low')
-  expect(proposals([{ ...quiet, achieved: 4 }], emptyCalibration())).toEqual([])
-  expect(proposals([{ ...quiet, judged: 4, achieved: 4 }], emptyCalibration())).toEqual([])
-})
-
-test('proposals start from the calibrated effort and never leave low..high', () => {
-  const c = { ...emptyCalibration(), phases: { analysis: 'low' as const } }
-  expect(proposals([{ phase: 'analysis', effort: 'low', steps: 100, errors: 0, sessions: 9, judged: 9, achieved: 9 }], c)).toEqual([])
-  const high = { ...emptyCalibration(), phases: { review: 'high' as const } }
-  expect(proposals([{ phase: 'review', effort: 'high', steps: 100, errors: 60, sessions: 9, judged: 0, achieved: 0 }], high)).toEqual([])
+test('M20 the moves of a calibration file survive reading it: their frozen pre statistics are never discarded', () => {
+  const move = { phase: 'test' as const, at: 7, from: 'medium' as const, to: 'high' as const, pre: { byClass: { bugfix: { steps: 160, errors: 48 } }, sessions: { abcdef12: 'achieved' as const } }, post: null }
+  const c = { ...emptyCalibration(), phases: { test: 'high' as const }, changes: { test: { at: 7, from: 'medium' as const, to: 'high' as const } }, moves: [move], updatedAt: 7 }
+  expect(parseCalibration(JSON.stringify(c)).moves).toEqual([move])
+  expect(parseCalibration(JSON.stringify({ ...c, moves: 'not a list' })).moves).toEqual([])
 })
 
 test('applying writes the new effort and its evidence; a calibration file of another shape is refused', () => {
-  const c = applied(emptyCalibration(), [{ phase: 'test', from: 'medium', to: 'high', evidence: 'e' }], 7)
+  const c = applied(emptyCalibration(), [{ phase: 'test', from: 'medium', to: 'high', evidence: 'e', rate: { errors: 1, steps: 2, lo: 0, hi: 1 }, reference: { errors: 0, steps: 2, lo: 0, hi: 1 } }], 7)
   expect(c).toEqual({
     version: 1,
     phases: { test: 'high' },
     evidence: { test: 'medium → high: e' },
     changes: { test: { at: 7, from: 'medium', to: 'high' } },
+    moves: [],
     updatedAt: 7,
   })
   expect(parseCalibration(JSON.stringify(c))).toEqual(c)
-  // A file written before `changes` existed reads with none.
+  // A file written before `changes` and `moves` existed reads with none.
   expect(parseCalibration('{"version":1,"phases":{"test":"high"}}').changes).toEqual({})
+  expect(parseCalibration('{"version":1,"phases":{"test":"high"}}').moves).toEqual([])
   expect(() => parseCalibration('{"phases":{}}')).toThrow(/version 1/)
 })
 
@@ -129,25 +99,6 @@ test('a turn keeps MAX_AGENTS agents and counts the rest', () => {
   for (let i = 0; i < MAX_AGENTS + 3; i++) list = withAgent(list, agent(i))
   expect(list.agents.length).toBe(MAX_AGENTS)
   expect(list.dropped).toBe(3)
-})
-
-test("a moved phase counts only the runs after its move, and undoing the move needs more evidence", () => {
-  const runs = (at: number, effort: string, steps: number, errors: number) => turn({ at, main: [{ phase: 'test', effort, steps, errors }] })
-  const records = [runs(1, 'medium', 100, 50), runs(20, 'high', 40, 0)]
-  const moved = { ...emptyCalibration(), phases: { test: 'high' as const }, changes: { test: { at: 10, from: 'medium' as const, to: 'high' as const } } }
-  expect(phaseStats(records, new Map(), moved.changes).map((s) => [s.effort, s.steps])).toEqual([['high', 40]])
-  // Clean and achieved at high: lowering back to medium undoes the raise, 40 steps are not enough.
-  const clean = { phase: 'test', effort: 'high', steps: MIN_STEPS, errors: 0, sessions: 9, judged: 9, achieved: 9 }
-  expect(proposals([clean], moved)).toEqual([])
-  expect(proposals([{ ...clean, steps: REVERSAL_STEPS }], moved)[0]?.to).toBe('medium')
-  // Failing at high: there is no rung above, and the move is not undone either.
-  expect(proposals([{ ...clean, errors: 30 }], moved)).toEqual([])
-})
-
-test('a phase with steps only at other rungs is named as unable to produce a proposal', () => {
-  const stats = [{ phase: 'test', effort: 'high', steps: 60, errors: 0, sessions: 2, judged: 0, achieved: 0 }]
-  expect(offRung(stats, emptyCalibration())).toEqual([{ phase: 'test', now: 'medium', ran: ['high 60'] }])
-  expect(offRung([{ ...stats[0]!, effort: 'medium' }], emptyCalibration())).toEqual([])
 })
 
 test('trimmed counts the events a record carries: the byte cap holds with a full event list on every record', () => {

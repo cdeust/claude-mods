@@ -85,8 +85,8 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
   on('state.get', ($, e, next) => {
     const plugin = (e as { plugin?: string }).plugin
     if (plugin === 'zetetic-autopilot')
-      return { value: { value: ((e as { key?: string }).key === 'phases' ? phases : { decisions: [] }) as never, version: 1 } }
-    if (plugin === 'zetetic-genius') return { value: { value: { classified: { turnId: 't1', taskClass: 'bugfix' } } as never, version: 1 } }
+      return { value: { value: ((e as { key?: string }).key === 'phases' ? phases : { mode: 'enforce', decisions: [], pressure: 'none' }) as never, version: 1 } }
+    if (plugin === 'zetetic-genius') return { value: { value: { classified: { turnId: 't1', taskClass: 'bugfix', effort: 'high' } } as never, version: 1 } }
     return next(e)
   })
   on('turn.complete', () => ({ text: '' }))
@@ -102,8 +102,20 @@ test('a run without reads is kept without them', async ($, on) => {
   expect((w.store['turns:sess-1'] as { main: unknown[] }[])[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 4, errors: 0 }])
 })
 
-test('observe: a main turn is kept in the ledger and its evidence proposed, not applied', async ($, on) => {
-  const w: World = { files: {}, written: {}, store: {} }
+// Four past sessions of a ledger that supports a raise: `test` fails about 30% of its steps at medium, the
+// other phase about 3%, each in every session, so the verdict holds without any one of them.
+const evidenceStore = (): Record<string, unknown> => {
+  const store: Record<string, unknown> = {}
+  for (const s of ['p1', 'p2', 'p3', 'p4']) {
+    const run = (phase: string, errors: number) => ({ phase, effort: 'medium', steps: 30, errors })
+    store[`turns:${s}`] = [{ session: s, turnId: `t-${s}`, at: 10, taskClass: 'bugfix', base: 'high', main: [run('test', 9), run('analysis', 1)], agents: [], advisor: { calls: 0, beforeWrite: 0, atCompletion: 0 }, stuck: 0, nonInteractive: false }]
+    store[`ended:${s}`] = { at: 11 }
+  }
+  return store
+}
+
+test('observe: a main turn is kept in the ledger and its evidence proposed with its intervals, not applied', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: evidenceStore() }
   stubs(on, w)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
@@ -115,19 +127,35 @@ test('observe: a main turn is kept in the ledger and its evidence proposed, not 
   expect(ledger[0]?.main).toEqual([{ phase: 'test', effort: 'medium', steps: 40, errors: 12, reads: 25 }])
   expect(w.written[CAL]).toBe(undefined)
   const shown = await $.command.run({ command: 'calibrate' } as never)
-  expect(shown.text).toMatch(/^Ledger: 1 turns over 1 sessions, 0 judged by \/insights\./)
-  expect(shown.text).toMatch(/Proposals: test medium → high \(12 failed calls in 40 steps at medium over 1 sessions\)/)
+  expect(shown.text).toMatch(/^Ledger: 5 turns over 5 sessions \(0 probe sessions kept out\), 0 judged/)
+  expect(shown.text).toMatch(/Proposals: test medium → high \(test: 48\/160 steps failed at medium \(30% \[\d+%-\d+%\]\) against 4\/120 in the other phases at medium \(3% \[\d+%-\d+%\]\); 5 sessions/)
   const done = await $.command.run({ command: 'calibrate', args: 'apply' } as never)
   expect(done.text).toBe('Applied: test medium → high.')
-  expect(JSON.parse(w.written[CAL] ?? '{}').phases).toEqual({ test: 'high' })
+  const file = JSON.parse(w.written[CAL] ?? '{}')
+  expect(file.phases).toEqual({ test: 'high' })
+  // The move is recorded with the runs before it, frozen: the 160 graded steps at medium in one task class.
+  expect(file.moves.length).toBe(1)
+  expect(file.moves[0]).toMatchObject({ phase: 'test', from: 'medium', to: 'high', post: null })
+  expect(file.moves[0].pre.byClass.bugfix).toEqual({ steps: 160, errors: 48 })
 })
 
 test('enforce: the proposal is written to the calibration file as soon as it is made', { options: { learning_mode: 'enforce' } }, async ($, on) => {
-  const w: World = { files: {}, written: {}, store: {} }
+  const w: World = { files: {}, written: {}, store: evidenceStore() }
   stubs(on, w)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
   expect(JSON.parse(w.written[CAL] ?? '{}').phases).toEqual({ test: 'high' })
+})
+
+test('one session of the same failures is not enough: the proposal needs the evidence of the ledger, and the finding says why', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w)
+  const seen = stateOf(on)
+  await $.session.start(START)
+  await $.turn.complete({ turnId: 't1', reason: 'answer' } as never)
+  const shown = await $.command.run({ command: 'calibrate' } as never)
+  expect(shown.text).toMatch(/Proposals: none\./)
+  expect(seen.state?.proposals).toEqual([])
 })
 
 test('a calibration file that is not the expected shape is named, not read as empty', async ($, on) => {
