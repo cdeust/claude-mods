@@ -26,7 +26,7 @@ import { sessionModels } from './models'
 import { originStamp, observeCall, setOrigin, takeObserved } from './observe'
 import { combineOutcomes } from './outcome'
 import { type ProbeInfo, probesOf, withoutProbes } from './probes'
-import { withEscalation } from './reach'
+import { inferred, withEscalation } from './reach'
 import { type Cell, cellsOf, decisions, phaseStats } from './rungs'
 import { cut, expandHome, INITIAL } from './shared'
 import { held, ledger, loadLedger, loaded, markEnded, markTranscript, note, saved } from './store-io'
@@ -242,6 +242,16 @@ async function recordTurn($: EngineInterface): Promise<void> {
   const sid = await $.session.id()
   if (!(await loaded($, sid))) return
   const seen = takeObserved()
+  // The autopilot's own count of the steps its stuck escalation raised (PhaseRun.escalated, 0.8.0) is read when the run has it.
+  const timed = main.runs.map((r) => ({
+    phase: r.phase,
+    effort: r.effort,
+    steps: r.steps,
+    errors: r.errors,
+    since: r.since,
+    ...(r.reads === undefined ? {} : { reads: r.reads }),
+    ...(r.escalated === undefined ? {} : { observed: r.escalated }),
+  }))
   const record: TurnRecord = {
     session: sid,
     turnId: phases.turnId ?? '',
@@ -250,11 +260,9 @@ async function recordTurn($: EngineInterface): Promise<void> {
     ...(typeof graded?.effort === 'string' ? { base: graded.effort } : {}),
     ...(enforced && (policy.pressure === 'quota' || policy.pressure === 'context') ? { pressured: true as const } : {}),
     ...(enforced ? {} : { unenforced: true as const }),
-    ...(enforced && decisionsLost(policy.decisions, since) ? { decisionsLost: true as const } : {}),
-    main: withEscalation(
-      main.runs.map((r) => ({ phase: r.phase, effort: r.effort, steps: r.steps, errors: r.errors, since: r.since, ...(r.reads === undefined ? {} : { reads: r.reads }) })),
-      stuck,
-    ),
+    // A lost decision matters only to a run placed by the time join; a run carrying the autopilot's count needs no decision.
+    ...(enforced && inferred(timed) && decisionsLost(policy.decisions, since) ? { decisionsLost: true as const } : {}),
+    main: withEscalation(timed, stuck),
     mainModel: main.model,
     agents: pending.agents,
     ...(pending.dropped > 0 ? { agentsDropped: pending.dropped } : {}),

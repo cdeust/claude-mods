@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { type TimedRun, governs, reachOf, withEscalation } from './reach'
+import { type TimedRun, governs, inferred, reachOf, withEscalation } from './reach'
 import type { Cell } from './rungs'
 
 const cell = (extra: Partial<Cell> = {}): Cell => ({ phase: 'test', effort: 'medium', taskClass: 'critical', session: 's', at: 1, steps: 10, errors: 1, base: 'high', escalated: false, pressured: false, unenforced: false, decisionsLost: false, ...extra })
@@ -60,4 +60,38 @@ test('a raised step that may have joined the run active at the decision marks th
   expect(withEscalation(merged, [{ at: 8, to: 'high' }]).map((r) => r.escalated === true)).toEqual([true, true, false])
   // a run whose effort is not the one raised to cannot hold the raised step
   expect(withEscalation(merged, [{ at: 8, to: 'medium' }]).map((r) => r.escalated === true)).toEqual([false, false, false])
+})
+
+// Autopilot 0.8.0 counts the raised steps on the run each landed in (PhaseRun.escalated): read as observed.
+test('a run the autopilot counted a raised step on is marked from the count, with no decision', () => {
+  const counted: TimedRun[] = [
+    { phase: 'test', effort: 'medium', steps: 9, errors: 3, since: 5, observed: 0 },
+    { phase: 'test', effort: 'high', steps: 2, errors: 0, since: 9, observed: 1 },
+    { phase: 'review', effort: 'high', steps: 4, errors: 0, since: 12, observed: 0 },
+  ]
+  const out = withEscalation(counted, [])
+  expect(out.map((r) => r.escalated === true)).toEqual([false, true, false])
+  expect(out[1]).not.toHaveProperty('observed')
+})
+
+test('a counted run is never placed by time: a decision joined to a run counted 0 marks nothing', () => {
+  const counted: TimedRun[] = [
+    { phase: 'test', effort: 'medium', steps: 9, errors: 3, since: 5, observed: 0 },
+    { phase: 'test', effort: 'high', steps: 1, errors: 0, since: 9, observed: 0 },
+  ]
+  expect(withEscalation(counted, [{ at: 8, to: 'high' }]).map((r) => r.escalated === true)).toEqual([false, false])
+})
+
+test('a run recorded before the count is still placed by the time join, beside a counted one', () => {
+  const mixed: TimedRun[] = [
+    { phase: 'test', effort: 'medium', steps: 9, errors: 3, since: 5 },
+    { phase: 'test', effort: 'high', steps: 1, errors: 0, since: 9 },
+    { phase: 'review', effort: 'high', steps: 4, errors: 0, since: 12, observed: 0 },
+  ]
+  expect(withEscalation(mixed, [{ at: 8, to: 'high' }]).map((r) => r.escalated === true)).toEqual([false, true, false])
+})
+
+test('only a run without the count needs the decision log', () => {
+  expect(inferred([{ observed: 0 }, { observed: 2 }])).toBe(false)
+  expect(inferred([{ observed: 0 }, {}])).toBe(true)
 })

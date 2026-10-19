@@ -7,9 +7,10 @@ export type Effort = 'low' | 'medium' | 'high'
 
 // `reads` mirrors the autopilot's PhaseRun.reads: steps whose every call was Read, Grep or Glob.
 // Absent on records written before it was kept: such records are not measured.
-// `escalated`: the run holds (or, by the autopilot's record, may hold) a step its stuck escalation raised
-// (3 failed calls in a row raise the next step one notch), not one the graded base and the ceiling put on
-// its rung (hooks/reach.ts); set only when true.
+// `escalated`: the run holds a step its stuck escalation raised (3 failed calls in a row raise the next
+// step one notch), not one the graded base and the ceiling put on its rung (hooks/reach.ts); set only when
+// true. Read from the autopilot's `PhaseRun.escalated` (0.8.0) when the run carries it; for a run recorded
+// before that, it may hold one by the time join over the autopilot's stuck decisions.
 export type RunRecord = { phase: Phase; effort: string | null; steps: number; errors: number; reads?: number; escalated?: true }
 
 // The design contract a delegation was dispatched under, read from the DESIGN block of its prompt
@@ -113,7 +114,8 @@ export type TurnRecord = {
   // `unenforced`: the autopilot's policy was not enforced in the turn (its `observe` mode, or its policy
   // unread), so no step sat on a rung the ceiling, the pressure or the escalation chose. `decisionsLost`:
   // the autopilot's decision log was full and starts after the turn did, so a stuck decision of the turn
-  // may have been dropped from it and which run it raised is not known. Both set only when true; a run of
+  // may have been dropped from it and which run it raised is not known; set only when a run of the turn
+  // lacks the autopilot's own `escalated` count (a run that has it needs no decision). Both set only when true; a run of
   // such a turn is governed by no move (hooks/reach.ts).
   base?: string
   pressured?: true

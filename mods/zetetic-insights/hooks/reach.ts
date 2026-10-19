@@ -30,28 +30,36 @@ export const governs = (c: Cell, from: Effort, to: Effort): boolean => {
   return base !== undefined && base >= reachOf(from, to)
 }
 
-// A main run as the autopilot's phases row has it: `since` is when its first step answered.
-export type TimedRun = RunRecord & { since: number }
+// A main run as the autopilot's phases row has it: `since` is when its first step answered; `observed` is
+// its `PhaseRun.escalated` (autopilot 0.8.0): the steps the stuck escalation raised, counted on the run each
+// landed in. Absent on a run recorded before 0.8.0, which only the time join below can place.
+export type TimedRun = RunRecord & { since: number; observed?: number }
 // A stuck decision the autopilot applied: when it was taken and the effort it raised the next step to.
 export type Stuck = { at: number; to: string }
 
-// The runs that can hold the step a stuck decision raised. The autopilot (register.tsx `turn.step`) takes
-// the decision's `at` before it sends that one step and stamps a run's `since` after its first step
-// answers (`tracked`), and a step joins the last run when its phase and effort are the same (phases.ts
-// `stepped`). So the raised step, sent at `to`, is in the run active at `at` (when that run is at `to`)
-// or opens the first run after it. Both are returned when both are at `to`: which one holds it is not
-// recorded, and neither is counted. The step's phase is the one it was classed in, not the phase named
-// in the decision's subject (the phase before the step).
+// The runs, among those recorded without `observed`, that can hold the step a stuck decision raised. The
+// autopilot (register.tsx `turn.step`) takes the decision's `at` before it sends that one step and stamps
+// a run's `since` after its first step answers (`tracked`), and a step joins the last run when its phase
+// and effort are the same (phases.ts `stepped`). So the raised step, sent at `to`, is in the run active at
+// `at` (when that run is at `to`) or opens the first run after it. Both are returned when both are at
+// `to`: which one holds it is not recorded, and neither is counted. The step's phase is the one it was
+// classed in, not the phase named in the decision's subject (the phase before the step).
 const raisedBy = (runs: readonly TimedRun[], d: Stuck): number[] => {
   const active = runs.findLastIndex((r) => r.since <= d.at)
   const opened = runs.findIndex((r) => r.since > d.at)
-  return [active, opened].filter((i) => i >= 0 && runs[i]!.effort === d.to)
+  return [active, opened].filter((i) => i >= 0 && runs[i]!.observed === undefined && runs[i]!.effort === d.to)
 }
 
-// The runs of a turn with the run of each step the stuck escalation raised marked `escalated`. The run is
-// left out whole (its other steps are at that effort for another reason), which only costs steps; every
-// other run, whatever its effort, is returned as it was.
+// Whether a run is recorded without the autopilot's own count, so that only the time join over the decision
+// log (which may have lost a decision) can place an escalation on it.
+export const inferred = (runs: readonly { observed?: number }[]): boolean => runs.some((r) => r.observed === undefined)
+
+// The runs of a turn with the run of each step the stuck escalation raised marked `escalated`. A run that
+// carries the autopilot's count is read from it (`observed > 0`): no time join, no decision. Only a run
+// recorded before that count (autopilot 0.7.x and earlier) is placed by the time join over the stuck
+// decisions. The run is left out whole (its other steps are at that effort for another reason), which only
+// costs steps; every other run, whatever its effort, is returned as it was.
 export const withEscalation = (runs: readonly TimedRun[], stuck: readonly Stuck[]): RunRecord[] => {
   const marked = new Set(stuck.flatMap((d) => raisedBy(runs, d)))
-  return runs.map(({ since: _, ...r }, i) => (marked.has(i) ? { ...r, escalated: true as const } : r))
+  return runs.map(({ since: _, observed, ...r }, i) => (marked.has(i) || (observed ?? 0) > 0 ? { ...r, escalated: true as const } : r))
 }

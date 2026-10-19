@@ -111,6 +111,53 @@ test('C3 a stuck decision that was not applied raised nothing and marks no run',
   expect(escalatedOf(await recorded($, w)).map(([, , e]) => e)).toEqual([false, false, false])
 })
 
+// The same turn as the autopilot 0.8.0 records it: each run carries `escalated`, the steps its stuck escalation raised.
+const withCount = (counts: number[]) => stuckTurn.map((r, i) => ({ ...r, escalated: counts[i] }))
+
+test('E the run holding a raised step is read from run.escalated, not joined to a decision by time: no decision is needed', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  // the escalation went back to the effort the step came with: the autopilot logged no decision, yet it counted the step on its run
+  stubs(on, w, { phases: turnWith(withCount([0, 0, 1])), policy: { mode: 'enforce', decisions: [], pressure: 'none' } })
+  expect(escalatedOf(await recorded($, w))).toEqual([['implementation', 'high', false], ['test', 'medium', false], ['test', 'high', true]])
+})
+
+test('E a run counted 0 is not marked, whatever a decision joined to it by time says', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  // the decision at 7 would join the run opened at 8; the autopilot counted no raised step there (and one on the run before it)
+  stubs(on, w, { phases: turnWith(withCount([0, 1, 0])), policy: { mode: 'enforce', decisions: [stuckAt7], pressure: 'none' } })
+  expect(escalatedOf(await recorded($, w)).map(([, , e]) => e)).toEqual([false, true, false])
+})
+
+test('E a full decision log loses nothing when every run carries its count: the turn is not decisionsLost', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w, { phases: turnWith(withCount([0, 0, 1])), policy: { mode: 'enforce', decisions: logOf(50, 3), pressure: 'none' } })
+  const rec = await recorded($, w)
+  expect(rec.decisionsLost).toBeUndefined()
+  expect(escalatedOf(rec).map(([, , e]) => e)).toEqual([false, false, true])
+})
+
+test('E a turn with a run recorded before the count falls back to the time join and its decision-log guard for that run', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  const mixed = [stuckTurn[0]!, stuckTurn[1]!, { ...stuckTurn[2]!, escalated: 0 }] // only the last run has the count
+  stubs(on, w, { phases: turnWith(mixed), policy: { mode: 'enforce', decisions: logOf(50, 3), pressure: 'none' } })
+  expect((await recorded($, w)).decisionsLost).toBe(true)
+})
+
+test('E in a mixed turn a counted run is not placed by a decision, even one that would join it by time', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  const mixed = [stuckTurn[0]!, stuckTurn[1]!, { ...stuckTurn[2]!, escalated: 0 }]
+  stubs(on, w, { phases: turnWith(mixed), policy: { mode: 'enforce', decisions: [stuckAt7], pressure: 'none' } })
+  expect(escalatedOf(await recorded($, w)).map(([, , e]) => e)).toEqual([false, false, false]) // the counted last run, at the raised effort, is not joined to the decision
+})
+
+test('E under autopilot observe a counted run is still left out whole by unenforced', async ($, on) => {
+  const w: World = { files: {}, written: {}, store: {} }
+  stubs(on, w, { phases: turnWith(withCount([0, 0, 0])), policy: { mode: 'observe', decisions: [], pressure: 'none' } })
+  const rec = await recorded($, w)
+  expect(rec.unenforced).toBe(true)
+  expect(escalatedOf(rec).map(([, , e]) => e)).toEqual([false, false, false])
+})
+
 test('C a turn under autopilot observe is recorded unenforced: no rung was the ceiling, the pressure or the escalation', async ($, on) => {
   const w: World = { files: {}, written: {}, store: {} }
   stubs(on, w, { phases: turnWith(stuckTurn), policy: { mode: 'observe', decisions: [{ ...stuckAt7, applied: false }], pressure: 'quota' } })
