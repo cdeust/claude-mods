@@ -35,6 +35,8 @@ export type Seen = {
   rateLimits: { kind: string; percentUsed: number }[]
   // When set, a spawn that reaches the engine says so (`entered`) and answers only once `release` settles.
   hold?: { entered: () => void; release: Promise<void> }
+  // zetetic-genius's verdict as its state holds it; absent, the dependency has graded nothing.
+  grade?: { turnId: string | null; taskClass: string; effort: string }
 }
 
 type On = Parameters<TestBody>[1]
@@ -54,7 +56,9 @@ const machineStubs = (on: On, seen: Seen) => {
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
   on('state.get', ($, e, next) =>
-    (e as { plugin?: string }).plugin === 'zetetic-genius' ? { value: { value: undefined, version: 0 } as never } : next(e),
+    (e as { plugin?: string }).plugin === 'zetetic-genius'
+      ? { value: { value: seen.grade === undefined ? undefined : { classified: seen.grade }, version: 0 } as never }
+      : next(e),
   )
   on('state.set', ($, e, next) => {
     const set = e as unknown as { key?: string; value: never }

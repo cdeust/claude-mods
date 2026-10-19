@@ -5,6 +5,7 @@ import type { ContextHealth, PhasesState, PolicyDecision, PolicyState, SpawnRout
 import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
 import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH } from './agents'
 import { type Unread, expandHome, readDefinition } from './definitions'
+import { type Decided, callEnded, callOf, callStarted, decidedFor, holdEffort, resetEfforts, stepEffort, subagentEffort } from './effort'
 import { readContext } from './measure'
 import { DEFAULT_PREVIEW_CHARS, DEFAULT_THRESHOLD_CHARS, offloadOptions } from './offload'
 import { type Sink, offloadBlocks } from './offloadrow'
@@ -14,6 +15,7 @@ import {
   CHARS_PER_TOKEN,
   OFFLOAD_TOOLS,
   STUCK_ERRORS,
+  type Effort,
   currentEffort,
   defaultEffort,
   effortFor,
@@ -213,12 +215,15 @@ async function keepRoute($: EngineInterface, record: SpawnRoute): Promise<void> 
   }
 }
 
-const routeOf = (r: Routed, applied: boolean): Omit<SpawnRoute, 'at' | 'agentId' | 'type' | 'ran'> => ({
+const routeOf = (r: Routed, applied: boolean, effort: Decided, enforce: boolean): Omit<SpawnRoute, 'at' | 'agentId' | 'type' | 'ran'> => ({
   requested: r.requested,
   definition: r.definition,
   decided: r.model ?? r.stands,
   reason: r.reason,
   applied,
+  effort: effort.effort ?? null,
+  effortReason: effort.reason,
+  effortApplied: enforce && effort.effort !== undefined,
 })
 
 const onMeasure: Hook<'session.measure'> = async ($, e, next) => {
@@ -237,22 +242,27 @@ const onMeasure: Hook<'session.measure'> = async ($, e, next) => {
   return next(e)
 }
 
+// The turn main is in, set as its step goes out: the engine runs a step's tool calls, and so raises their spawns,
+// before the step's stream has ended, which is when its phases row records the turn (tracked).
+let mainTurnId: string | undefined
+
 // Main: the effort ladder from the graded rung, the stuck escalation, and the model under
-// quota. A subagent is left as designed. Observed, or applied under enforce. A generator, as the
-// event streams.
+// quota. A subagent: the effort decided at its spawn (effort.ts), else as the engine sent it. Observed,
+// or applied under enforce. A generator, as the event streams.
 const onStep: Hook<'turn.step'> = async function* ($, e, next) {
+  // Read before any await: the decision is held as soon as the agent's spawn answers (spawnRouted).
+  if (e.agentId !== undefined) return yield* agentStep($, e, next, decidedFor(e.agentId))
+  mainTurnId = e.turnId
   const p = await read($, policy)
-  const isMain = e.agentId === undefined
-  const grade = isMain ? await gradeOf($) : undefined
+  const grade = await gradeOf($)
   const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
   const have = currentEffort(e.model, e.effort)
-  if (isMain && e.index === 0) await readCeilings($)
-  const phase = isMain ? (await read($, phases)).loops.find((l) => l.id === 'main')?.phase : undefined
+  if (e.index === 0) await readCeilings($)
+  const phase = (await read($, phases)).loops.find((l) => l.id === 'main')?.phase
   const loop = phase === undefined || phase === null || e.index === 0 ? undefined : ceilings[phase]
-  // A subagent's requests keep the effort its definition or call pinned: the ladder is main's.
-  let target = (isMain ? effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) : undefined) ?? have
+  let target = effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) ?? have
   let kind: PolicyDecision['kind'] = 'effort'
-  if (isMain && p.errorsInRow >= STUCK_ERRORS) {
+  if (p.errorsInRow >= STUCK_ERRORS) {
     const raised = escalate(target)
     if (raised !== target) {
       target = raised
@@ -260,14 +270,14 @@ const onStep: Hook<'turn.step'> = async function* ($, e, next) {
     }
     await update($, policy, (s) => ({ ...s, errorsInRow: 0 }))
   }
-  const model = isMain ? mainModelFor(e.model, p.pressure) : undefined
+  const model = mainModelFor(e.model, p.pressure)
   // The escalation set this step's effort only when it is applied; that holds too when the raised effort
   // is the one the step came with (it goes out unchanged, no row), since the ladder would have sent it lower.
   const escalated = kind === 'stuck' && p.mode === 'enforce'
   if (target === have && model === undefined) return yield* tracked($, e, next(e), escalated)
   const applied = p.mode === 'enforce'
   const at = await $.clock.now()
-  const who = `${isMain ? 'main' : 'agent'} step ${e.index} (${e.model})`
+  const who = `main step ${e.index} (${e.model})`
   if (target !== have) {
     const subject = g !== undefined && e.index === 0 ? `${who} · ${g.taskClass}` : loop !== undefined ? `${who} · ${phase} calibrated` : who
     await update($, policy, (s) => decide(s, { at, kind, subject, from: String(e.effort ?? 'default'), to: target, applied }))
@@ -279,6 +289,20 @@ const onStep: Hook<'turn.step'> = async function* ($, e, next) {
   if (!applied) return yield* tracked($, e, next(e), escalated)
   const out = { ...e, ...(target !== have ? { effort: target } : {}), ...(model !== undefined ? { model } : {}) }
   return yield* tracked($, out, next(out), escalated)
+}
+
+// A subagent's step: at the effort decided at its spawn under enforce, else as the engine sent it (effort.ts). The
+// decision's row was logged once, at the spawn, not on each step.
+async function* agentStep(
+  $: EngineInterface,
+  e: Parameters<Hook<'turn.step'>>[1],
+  next: Parameters<Hook<'turn.step'>>[2],
+  designed: Effort | undefined,
+): AsyncGenerator<TurnStepChunk, TurnStepResult> {
+  const effort = stepEffort(designed, e.effort)
+  if (effort === undefined || (await read($, policy)).mode !== 'enforce') return yield* tracked($, e, next(e), false)
+  const out = { ...e, effort }
+  return yield* tracked($, out, next(out), false)
 }
 
 // The cap's view of the mod: its rows go to the POLICY panel, an agent the engine says is gone closes its row.
@@ -318,8 +342,7 @@ async function spawnRouted(
   // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
   // command, a notification) routes without one, as turn.step does.
   const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
-  const mainTurn = (await read($, phases)).turnId
-  const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurn ? grade.taskClass : undefined
+  const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurnId ? grade.taskClass : undefined
   // Read whatever the call says: the record names the definition's model beside the call's. A fork has no
   // definition: it runs as its parent, and the engine ignores a rewrite of its model or of a workflow agent's
   // content (AgentSpawnInput.model, .workflow), so neither is sent one.
@@ -341,7 +364,25 @@ async function spawnRouted(
     }
     await update($, policy, (s) => decide(s, d))
   }
-  return placed($, e, await next(applied ? { ...e, model: routed.model } : e), routeOf(routed, applied))
+  // The effort of its steps (effort.ts): decided before the spawn is passed on, held as soon as it answers.
+  const effort = subagentEffort({
+    fixed: !rewritable || e.isTeammate === true,
+    call: callOf(e.tool_use_id),
+    definition,
+    grade: cls === undefined ? undefined : grade?.effort,
+  })
+  const r = await next(applied ? { ...e, model: routed.model } : e)
+  // No await before this: the agent's first step may come as soon as its spawn answered (ADR-9850).
+  if (effort.effort !== undefined && r.deny === undefined && r.agentId !== undefined) holdEffort(r.agentId, effort.effort)
+  if (effort.effort !== undefined && r.agentId !== undefined) await effortRow($, e.subagentType, cls, effort.effort, p.mode === 'enforce')
+  return placed($, e, r, routeOf(routed, applied, effort, p.mode === 'enforce'))
+}
+
+// One row per spawn whose steps the mod sets the effort of; the steps themselves log none.
+async function effortRow($: EngineInterface, type: string, cls: TaskClass | undefined, effort: Effort, applied: boolean): Promise<void> {
+  const at = await $.clock.now()
+  const subject = `${type}${cls === undefined ? '' : ` · ${cls}`} · every step`
+  await update($, policy, (s) => decide(s, { at, kind: 'effort', subject, from: 'no call or definition effort', to: effort, applied }))
 }
 
 // The turns main was last told in, each once a turn and not once a call: the user (a toast) and the model (a
@@ -378,8 +419,21 @@ async function nudgeMain($: EngineInterface, e: { tool: string }): Promise<{ tur
   return { turnId, remind }
 }
 
-// The stuck signal: main's tool errors in a row, read by the next turn.step.
+// An Agent call is known to the spawn its tool raises by its tool_use_id, while the tool runs (effort.ts).
 const onToolCall: Hook<'tool.call'> = async ($, e, next) => {
+  const call = e as { tool: string; tool_use_id?: string; effort?: unknown }
+  const id = call.tool === 'Agent' ? call.tool_use_id : undefined
+  if (id === undefined) return toolCalled($, e, next)
+  callStarted(id, call.effort)
+  try {
+    return await toolCalled($, e, next)
+  } finally {
+    callEnded(id)
+  }
+}
+
+// The stuck signal: main's tool errors in a row, read by the next turn.step.
+const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
   const agentId = (e as { agentId?: string }).agentId
   const nudge = agentId === undefined && isMainImplementation(e.tool, e) ? await nudgeMain($, e) : undefined
   const ran = await next(e)
@@ -444,6 +498,8 @@ const onComplete: Hook<'turn.complete'> = async ($, e, next) => {
 async function begin($: EngineInterface, mode: PolicyState['mode'], configured: (p: PolicyState) => PolicyState, capProblem?: string): Promise<void> {
   definitions.clear()
   resetGate()
+  resetEfforts()
+  mainTurnId = undefined
   toastedTurn = undefined
   remindedTurn = undefined
   await update($, phases, () => emptyPhases())
