@@ -16,6 +16,7 @@ import {
   holdEffort,
   resetEfforts,
   resumed,
+  spawnAnswered,
   spawnPending,
   spawnsSettled,
   stepEffort,
@@ -188,8 +189,13 @@ async function placed(
 // `effortApplied` as the record is written: the effort was decided under enforce AND a step of the agent went out at
 // it (effort.ts `carried`). A step that carries it later marks the written records (markCarried).
 const asWritten = (r: SpawnRoute): SpawnRoute => (r.effortApplied === true ? { ...r, effortApplied: carried(r.agentId) } : r)
-const marked = (rows: SpawnRoute[], id: string): SpawnRoute[] =>
-  rows.map((r) => (r.agentId === id && r.effortApplied === false && r.effort !== null && r.effort !== undefined ? { ...r, effortApplied: true } : r))
+// Only the agent's newest record is its current run's: an older one (a run before a resume) keeps what it said.
+const marked = (rows: SpawnRoute[], id: string): SpawnRoute[] => {
+  const i = rows.findLastIndex((r) => r.agentId === id)
+  const r = rows[i]
+  if (r === undefined || r.effortApplied !== false || r.effort === null || r.effort === undefined) return rows
+  return rows.map((row, j) => (j === i ? { ...row, effortApplied: true } : row))
+}
 
 // An option key the engine does not read for this install (config.ts): a toast, and a row in the POLICY
 // panel, each time a session starts, instead of the defaults running unannounced.
@@ -242,7 +248,8 @@ async function rewriteRoutes($: EngineInterface, change: (kept: SpawnRoute[]) =>
     }
   }
   const done = routeWrites.then(write)
-  routeWrites = done
+  // A write that failed fails its caller only: the next write still runs.
+  routeWrites = done.catch(() => undefined)
   await done
 }
 
@@ -340,19 +347,18 @@ async function* agentStep(
   id: string,
   next: Parameters<Hook<'turn.step'>>[2],
 ): AsyncGenerator<TurnStepChunk, TurnStepResult> {
-  let designed = decidedFor(id)
-  const inFlight = designed === undefined ? spawnsSettled() : undefined
-  if (inFlight !== undefined) {
-    await inFlight
-    designed = decidedFor(id)
-  }
-  const effort = stepEffort(designed, e.effort)
-  if (effort === undefined || (await read($, policy)).mode !== 'enforce') return yield* tracked($, e, next(e), false)
-  const first = carry(id)
+  if ((await read($, policy)).mode !== 'enforce') return yield* tracked($, e, next(e), false)
+  const inFlight = decidedFor(id) === undefined ? spawnsSettled(id) : undefined
+  if (inFlight !== undefined) await inFlight
+  const effort = stepEffort(decidedFor(id), e.effort)
+  if (effort === undefined) return yield* tracked($, e, next(e), false)
   const out = effort === e.effort ? e : { ...e, effort }
-  const r = yield* tracked($, out, next(out), false)
-  if (first) await markCarried($, id)
-  return r
+  try {
+    return yield* tracked($, out, next(out), false)
+  } finally {
+    // The request went out at it, whether its stream ended, failed or was let go: the run's record says so once.
+    if (carry(id)) await markCarried($, id)
+  }
 }
 
 // The cap's view of the mod: its rows go to the POLICY panel, an agent the engine says is gone closes its row.
@@ -423,9 +429,13 @@ async function spawnRouted(
   })
   // Pending until held: a step of the agent that comes before the spawn answers waits for it (agentStep).
   const settle = effort.effort === undefined ? undefined : spawnPending()
+  // A resume names its agent (2.1.304 `resume.agentId`): its new run has carried nothing, before that run can step.
+  const resuming = (e as { resume?: { agentId?: unknown } }).resume?.agentId
+  if (typeof resuming === 'string') resumed(resuming)
   let r: AgentSpawnResult
   try {
     r = await next(applied ? { ...e, model: routed.model } : e)
+    if (r.agentId !== undefined) spawnAnswered(r.agentId)
     if (effort.effort !== undefined && r.deny === undefined && r.agentId !== undefined) holdEffort(r.agentId, effort.effort)
   } finally {
     settle?.()
@@ -434,7 +444,8 @@ async function spawnRouted(
   // A resumed agent's record names the effort its steps keep, the one held since its first spawn; its run has
   // carried nothing yet.
   const held = effort.effort === undefined && r.agentId !== undefined ? decidedFor(r.agentId) : undefined
-  if (held !== undefined && r.agentId !== undefined) resumed(r.agentId)
+  // An engine whose resume names no agent (2.1.292 types): the reset comes once the spawn answered.
+  if (held !== undefined && r.agentId !== undefined && typeof resuming !== 'string') resumed(r.agentId)
   const kept: Decided = held === undefined ? effort : { effort: held, reason: 'resumed' }
   return placed($, e, r, routeOf(routed, applied, kept, p.mode === 'enforce'))
 }

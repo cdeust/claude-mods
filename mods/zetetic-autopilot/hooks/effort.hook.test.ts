@@ -18,7 +18,7 @@ type On = Parameters<TestBody>[1]
 // The Agent tool as the engine runs it: `tool.call` reaches the bottom (the tool runs) and the spawn is raised from
 // inside the tool, while the call is still running (2.1.304: the Agent tool raises agent.spawn from its `call`, which
 // runs beneath every tool.call hook). The tool answers once the test released it.
-type Tool = { entered?: () => void; release?: Promise<void>; mainHeld?: Promise<void> }
+type Tool = { entered?: () => void; release?: Promise<void>; mainHeld?: Promise<void>; failing?: boolean }
 
 const engine = (on: On, seen: Seen, steps: Step[], tool: Tool) => {
   stubs(on, seen)
@@ -29,6 +29,8 @@ const engine = (on: On, seen: Seen, steps: Step[], tool: Tool) => {
   })
   on('turn.step', async function* ($, e) {
     steps.push({ agentId: e.agentId, effort: e.effort })
+    // A request that went out and whose stream then failed (an API error).
+    if (tool.failing === true && e.agentId !== undefined) throw new Error('overloaded')
     yield { kind: 'text', index: 0, text: 'ok' }
     // A main step whose stream the test holds open: the engine runs its tool calls before the step's stream ended.
     if (e.agentId === undefined) await tool.mainHeld
@@ -122,6 +124,66 @@ scenario('I1: a background launch starts the run before its spawn answers: step 
   await agentStep($, 'ag-1', 1)
   expect(sentFor(steps, 'ag-1')).toEqual(['medium', 'medium'])
   expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', effortApplied: true })
+})
+
+scenario('I1: a request that went out at the decided effort counts, even when its stream then failed', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('Explore'))
+  tool.failing = true
+  await expect(agentStep($, 'ag-1', 0)).rejects.toThrow()
+  expect(sentFor(steps, 'ag-1')).toEqual(['medium'])
+  expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortApplied: true })
+})
+
+scenario('I1: a step of an agent whose spawn answered never waits on another spawn in flight', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn(ARCHITECT))
+  let entered = (): void => undefined
+  let release = (): void => undefined
+  const inside = new Promise<void>((r) => (entered = r))
+  seen.hold = { entered: () => entered(), release: new Promise<void>((r) => (release = r)) }
+  const second = dispatch($, tool, { ...(spawn('Explore') as object), tool_use_id: 'a2' })
+  await inside
+  // The Explore spawn is held at the engine: the architect's step goes out meanwhile, at the engine's effort.
+  await agentStep($, 'ag-1', 0)
+  expect(sentFor(steps, 'ag-1')).toEqual(['high'])
+  release()
+  await second
+  await agentStep($, 'ag-2', 0)
+  expect(sentFor(steps, 'ag-2')).toEqual(['medium'])
+})
+
+scenario('I1: a resumed run none of whose steps carried the effort is not recorded as applied', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('general-purpose'))
+  await agentStep($, 'ag-1', 0)
+  await $.turn.complete(done('ag-1'))
+  seen.resumes = 'ag-1'
+  await $.agent.spawn({ ...(spawn('general-purpose') as object), tool_use_id: 'send-1', resume: { agentId: 'ag-1' } } as never)
+  await agentStep($, 'ag-1', 0, 'none')
+  expect(seen.spawns?.[0]).toMatchObject({ effortApplied: true })
+  expect(seen.spawns?.[1]).toMatchObject({ effortReason: 'resumed', effortApplied: false })
+})
+
+scenario('I1: a resumed run that steps before its spawn answers is recorded as carried', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('general-purpose'))
+  await agentStep($, 'ag-1', 0)
+  await $.turn.complete(done('ag-1'))
+  let first: Promise<void> | undefined
+  seen.resumes = 'ag-1'
+  seen.launch = (id) => {
+    seen.launch = undefined
+    first = agentStep($, id, 0)
+  }
+  await $.agent.spawn({ ...(spawn('general-purpose') as object), tool_use_id: 'send-1', resume: { agentId: 'ag-1' } } as never)
+  await first
+  expect(sentFor(steps, 'ag-1')).toEqual(['medium', 'medium'])
+  expect(seen.spawns?.[1]).toMatchObject({ agentId: 'ag-1', effortReason: 'resumed', effortApplied: true })
 })
 
 scenario('I1: a resumed run of the agent, after its turn ended, keeps the decided effort', ENFORCE, async ($, seen, steps, tool) => {

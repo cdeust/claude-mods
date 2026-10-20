@@ -79,10 +79,15 @@ const decided = new Map<string, { effort: Effort; carried: boolean }>()
 // launch starts the agent's run before its spawn answers (2.1.304), so a step may come first and waits for these.
 const pending = new Set<Promise<void>>()
 
+// The agents whose spawn answered (decided or not), by id: a step of one never waits, its decision is known. Bounded by
+// EFFORTS_CAP; a forgotten one only waits while spawns are pending.
+const answered = new Map<string, true>()
+
 export const isEffort = (v: unknown): v is Effort => v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh' || v === 'max'
 
 export const callStarted = (toolUseId: string, effort: unknown): void => {
-  keep(calls, toolUseId, effort === undefined ? {} : { effort }, EFFORTS_CAP)
+  // JSON's null is a call that named none; any other value is the call's own, and stands.
+  keep(calls, toolUseId, effort === undefined || effort === null ? {} : { effort }, EFFORTS_CAP)
 }
 
 export const callEnded = (toolUseId: string): void => {
@@ -125,15 +130,20 @@ export const spawnPending = (): (() => void) => {
   }
 }
 
-// What a step of an agent with no decision waits for: every pending spawn's answer; undefined when none is in flight.
-// The engine answers a spawn without waiting on the agent's run (2.1.304, both launch paths), so this settles.
-export const spawnsSettled = (): Promise<void> | undefined =>
-  pending.size === 0 ? undefined : Promise.all([...pending]).then(() => undefined)
+export const spawnAnswered = (agentId: string): void => {
+  keep(answered, agentId, true, EFFORTS_CAP)
+}
+
+// What a step of an agent whose spawn has not answered waits for: every pending spawn's answer; undefined when its
+// spawn answered or none is pending. The engine answers a spawn without waiting on the run (2.1.304), so it settles.
+export const spawnsSettled = (agentId: string): Promise<void> | undefined =>
+  pending.size === 0 || answered.has(agentId) ? undefined : Promise.all([...pending]).then(() => undefined)
 
 export const resetEfforts = (): void => {
   calls.clear()
   decided.clear()
   pending.clear()
+  answered.clear()
 }
 
 // The effort a subagent's step goes out at: the decided one, on a step that carries an effort level (absent: a model
