@@ -1,7 +1,6 @@
 // Host adapter: commands own their output; they do not intercept native tool results.
 import { readFile, mkdtemp, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,7 +9,6 @@ import { TASK_CLASSES, effortForClass, classifierSystem, parseShapes } from '../
 import { parseGeniusIndex } from '../shared/genius.mjs';
 import { prListArgv, issueListArgv, parsePrList, parseIssues, PR_LIMIT, ISSUE_LIMIT, prCountArgv, parsePrCount } from '../shared/fleet.mjs';
 
-const environment = process['env'];
 const output = (value) => console.log(JSON.stringify(value, null, 2));
 const run = (argv) => {
   const result = spawnSync(argv[0], argv.slice(1), { encoding: 'utf8' });
@@ -19,17 +17,6 @@ const run = (argv) => {
   return result.stdout;
 };
 const reading = (fn) => { try { return { value: fn(), error: null }; } catch (e) { return { value: null, error: e.message }; } };
-
-async function cortex(sessionId) {
-  let events = null, error = null;
-  if (sessionId && environment.PLUGIN_DATA) {
-    const id = createHash('sha256').update(sessionId).digest('hex');
-    try { events = (await readFile(join(environment.PLUGIN_DATA,'sessions',`${id}.jsonl`),'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); }
-    catch (e) { error = e.message; }
-  } else error = 'Pass a session id and PLUGIN_DATA to read this plugin’s recorded hooks.';
-  return { host:'codex', sessionId:sessionId ?? null, events, error, usage:null, quotas:null, nativePanels:false,
-    routing:{mode:'advisory', enforced:false}, note:'Hook events prove observations only. Usage, quotas and UI panels are not exposed by this adapter.' };
-}
 
 async function wiki(path, outputPath) {
   const target = wikiTarget(path ?? '');
@@ -77,7 +64,6 @@ export async function main(args) {
   try {
     const [command,...rest] = args;
     switch(command) {
-      case 'cortex': output(await cortex(rest[0])); break;
       case 'wiki': output(await wiki(...rest)); break;
       case 'fleet': output(fleet(rest)); break;
       case 'genius': output(await genius(...rest)); break;
@@ -87,7 +73,7 @@ export async function main(args) {
         output({taskClass,effort:effortForClass(taskClass),enforced:false,mode:'advisory',
           note:'The effort table is shared with Claude. Codex hooks cannot change root model/effort at every inference step. Select model and effort in the host before the next turn.'}); break;
       }
-      default: throw new Error('usage: mods.mjs cortex [session-id] | wiki <wiki/page.md> <new.pdf> | fleet [owner/repo ...] | genius [INDEX.md] [routing-table.md] | autopilot <task-class>');
+      default: throw new Error('usage: mods.mjs wiki <wiki/page.md> <new.pdf> | fleet [owner/repo ...] | genius [INDEX.md] [routing-table.md] | autopilot <task-class>');
     }
   } catch(e) { console.error(e.message); process.exitCode=1; }
 }

@@ -7,7 +7,7 @@ import { guard } from './guard.mjs';
 import { prepareWorktreeIntent, consumeWorktreeIntent } from './worktree-intents.mjs';
 import { record, dataDirectory } from './telemetry.mjs';
 const event = process.argv[2];
-const context = 'claude-mods for Codex: $cortex reports hook telemetry, $fleet inspects installed plugins and GitHub, $wiki exports a wiki page, $genius recommends a workflow, and $autopilot provides advisory effort guidance. Hooks cannot select the model/effort or render Claude panes. Wiki pages and ADR mirrors require Cortex wiki tools; git worktrees must live inside the real repository worktree roots.';
+const context = 'claude-mods for Codex: $fleet inspects installed plugins and GitHub, $wiki exports a wiki page, $genius recommends a workflow, and $autopilot provides advisory effort guidance. Hooks cannot select the model/effort or render Claude panes. Wiki pages and ADR mirrors require Cortex wiki tools; git worktrees must live inside the real repository worktree roots.';
 const output = value => process.stdout.write(JSON.stringify(value) + '\n');
 const deny = reason => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 function register(input) {

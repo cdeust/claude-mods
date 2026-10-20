@@ -11,7 +11,6 @@ The Claude mods keep one concern per mod, state shared through
 | `zetetic-genius` | `state`: the request grade (task class → effort), the genius patterns and skills it matches | nothing |
 | `zetetic-autopilot` | `context`, `policy`, `phases`: effort ladder, model routing (a subagent's own definition first, never lowered by pressure), an inheriting subagent's effort from the turn's grade when neither its call nor its definition sets one (`effort` on each spawn record, absent before 0.10.0), the quota's cap on the main loop's parallel subagents, offloaded tool results; the phase each loop is in, on each run the steps a stuck escalation raised (`escalated`, absent before 0.8.0), and the advisor calls | `zetetic-genius` |
 | `zetetic-insights` | `insights`: the turn ledger across sessions ($.store), joined with `/insights` session outcomes and `.zetetic/goals`; per-phase effort proposals, `/calibrate apply\|reset`, the calibration file the autopilot reads | `zetetic-autopilot`, `zetetic-genius` |
-| `cortex-cockpit` | `stats`, `ledger`, `tally`, `stages`, `hygiene`; the `/cortex` pane draws the rest (PHASES, INSIGHTS, POLICY...) | the four above |
 | `mission-control` | `renderer`; the `/mission` pane: the turn's lanes by phase (bar height = effort, advisor calls, failed calls), effort per phase, learning curves per phase. Pixels in kitty or Ghostty outside tmux, coloured cells elsewhere | `zetetic-autopilot`, `zetetic-insights` |
 | `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
 | `superpowers` | third-party skills library (obra/superpowers, MIT), pinned to v7.0.0 `bb92a77`: listed here so it installs with the mods; which skills we keep is decided after measurement | nothing |
@@ -52,8 +51,7 @@ the engine watches the folder a link names.
 
 A mod cannot import a file from another mod (the engine refuses it: "outside the plugin's folder"),
 so the few small pure files several mods need are copied into each of them: `hooks/paths.ts`
-(where `~/` lands: HOME, else USERPROFILE, `CLAUDE_CONFIG_DIR` for `~/.claude`) in five mods, and
-`hooks/rules.ts` (the worktree roots, the python names) in `cortex-guard` and `cortex-cockpit`,
+(where `~/` lands: HOME, else USERPROFILE, `CLAUDE_CONFIG_DIR` for `~/.claude`) in five mods,
 each with its test. After editing one, copy it over the others; this fails when a copy differs:
 
 ```sh
@@ -89,16 +87,15 @@ claude \
   --plugin-dir $MODS/zetetic-genius \
   --plugin-dir $MODS/zetetic-autopilot \
   --plugin-dir $MODS/zetetic-insights \
-  --plugin-dir $MODS/cortex-cockpit \
   --plugin-dir $MODS/mission-control \
   --plugin-dir $MODS/harness-fleet
 
 # or one variable, colon separated
-CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/zetetic-insights:$MODS/cortex-cockpit:$MODS/mission-control:$MODS/harness-fleet claude
+CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/zetetic-insights:$MODS/mission-control:$MODS/harness-fleet claude
 
 # an alias in the shell profile: it sets MODS itself, because the alias body is single-quoted and
 # is expanded each time it runs, not when the profile is read
-alias claude-mods='MODS=/path/to/claude-mods/mods; CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/zetetic-insights:$MODS/cortex-cockpit:$MODS/mission-control:$MODS/harness-fleet claude'
+alias claude-mods='MODS=/path/to/claude-mods/mods; CLAUDE_CODE_PLUGIN_DIRS=$MODS/cortex-guard:$MODS/cortex-wiki:$MODS/zetetic-genius:$MODS/zetetic-autopilot:$MODS/zetetic-insights:$MODS/mission-control:$MODS/harness-fleet claude'
 ```
 
 Which form to prefer: an interactive session may ask for a login when `CLAUDE_CONFIG_DIR` points at
@@ -112,9 +109,8 @@ for tests only.
 What then must hold:
 
 - The `dependencies` of a mod are resolved among the mods loaded in the same command, so load a
-  mod together with what it names: `zetetic-autopilot` needs `zetetic-genius`; `cortex-cockpit`
-  needs `cortex-guard`, `zetetic-autopilot` and `zetetic-genius`; `harness-fleet` needs the same
-  three. A mod whose dependency is absent is listed `disabled`, with the error
+  mod together with what it names: `zetetic-autopilot` needs `zetetic-genius`;
+  `harness-fleet` needs `cortex-guard`, `zetetic-autopilot` and `zetetic-genius`. A mod whose dependency is absent is listed `disabled`, with the error
   `Dependency "<name>" is not installed`.
 - Options cannot be set (they live in `settings.json` under `pluginConfigs`), so every default in a
   `plugin.json` has to be right on any machine:
@@ -124,39 +120,19 @@ What then must hold:
 | `cortex-guard` | `hygiene_script` | `~/Developments/disk-hygiene/disk_hygiene.py` | `~/` is the home of the user running the session, read at runtime. When the file is not there, one toast per session says `hygiene script not found at <path>; worktrees are not registered`; an empty value disables the registration without a toast. A `python3` that fails to start gets one toast naming the cause, and no further worktree is registered for the session (no retry) |
 | `zetetic-genius` | `mode`, `classifier_model` | `observe`, `haiku` | the grade is one low-effort completion on the `haiku` alias |
 | `zetetic-autopilot` | `policy_mode`, `quota_pressure_percent`, `max_parallel_agents`, `offload_threshold_chars`, `offload_preview_chars` | `enforce`, `80`, `5`, `30000`, `2000` | the cap counts and refuses only the main loop's own spawns (a fork of main included): a subagent's nested spawn, a workflow script's `agent()` and a teammate are neither refused nor counted. A result past the threshold is written whole to a file in the session's tool-results directory (the engine's `cleanupPeriodDays` sweeps it, 30 days by default; the mod deletes nothing); the model reads the preview, the path and the size |
-| `cortex-cockpit` | `surface`, `cortex_server` | `ink`, `plugin_hypermnesia-mcp_cortex` | the server name as `/mcp` lists it |
 | `mission-control` | `renderer` | `auto` | `auto` draws pixels in kitty or Ghostty outside tmux (TMUX, TERM, TERM_PROGRAM, KITTY_WINDOW_ID), cells elsewhere; `cells` or `pixels` forces one |
 | `harness-fleet` | `github_owner`, `refresh_on_start` | `cdeust`, `true` | reads `gh pr list`, `gh issue list` and `git remote` |
 
-- The machine must let the mods do what they ask: `python3` (guard), the Cortex MCP server by
-  name (cockpit), `gh` and a route to `api.github.com` (fleet), the files under `~/.claude/plugins/`
-  (fleet), `pandoc` and `xelatex` (wiki), and the model aliases (genius, autopilot).
-
-`/cortex check` tests each of these on the machine where it runs and prints one line per check,
-`ok`, `FAIL` or `n/a`. `cortex-wiki` and `harness-fleet` count as loaded only when the command
-they register (`/wiki`, `/fleet`) was registered by that plugin; a user's own `wiki.md`, an MCP
-prompt or another plugin's command of the same name prints `FAIL`, and a plugin command whose
-plugin the engine does not name prints `n/a`. A refusal from the sandbox reaches the line as the first 160 characters of
-its own text, so it can be pasted back. It only reads: `python3 --version`, `gh --version`,
-`gh api rate_limit`, `git remote`, the two fleet files, `memory_stats` on the Cortex server.
-
-Two limits of the check are stated in its output. A model alias is only proven by a paid
-completion, which the check does not make, so it prints `n/a` for the models. The options of
-`cortex-guard` and `harness-fleet` are not readable from another mod (they publish none in their
-state, and the engine did not list their rows in the run below); the check then says so, and
-checks the hygiene script at its default location.
+- The machine must let the mods do what they ask: `python3` (guard), `gh` and a route to
+  `api.github.com` (fleet), the files under `~/.claude/plugins/` (fleet), `pandoc` and `xelatex`
+  (wiki), and the model aliases (genius, autopilot).
 
 Measured, on one Mac (Claude Code 2.1.293, no company sandbox): with a pristine `settings.json`
-holding `{}` and an isolated `CLAUDE_CONFIG_DIR`, loading all six by `CLAUDE_CODE_PLUGIN_DIRS` lists
-all six as `loaded` and leaves `settings.json` at `{}`; `cortex-cockpit` or `zetetic-autopilot`
-loaded alone is `disabled` with the dependency error above; `/cortex check` run headless
-(`claude -p "/cortex check"`) answers one line per check, and reports `harness-fleet` and
-`cortex-wiki` as not loaded when only the other four are, and with user commands `wiki.md` and
-`fleet.md` present it still reports them not loaded (the engine reports a directory-loaded mod's
-command with `source: plugin` and `plugin` set to the bare manifest name).
+holding `{}` and an isolated `CLAUDE_CONFIG_DIR`, loading the mods by `CLAUDE_CODE_PLUGIN_DIRS` lists
+them as `loaded` and leaves `settings.json` at `{}`; `zetetic-autopilot` loaded alone is
+`disabled` with the dependency error above.
 
 Not measured: the managed-settings lock itself (it could not be reproduced), whether a company
 policy accepts `--plugin-dir`, any refusal of a real sandbox (blocked network, denied `exec`,
-unreadable `~/.claude`), the Cortex server answering through `/cortex check` (the headless run had
-no MCP server connected, and the check printed the engine's refusal for it), the model aliases, and
+unreadable `~/.claude`), the model aliases, and
 whether `/config` lists the options of directory-loaded mods in an interactive session.

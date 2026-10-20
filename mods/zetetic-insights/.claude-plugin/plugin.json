@@ -8,7 +8,7 @@
     "learning_mode": {
       "type": "string",
       "title": "Learning mode",
-      "description": "observe (default): proposals are shown in the cockpit's INSIGHTS panel and applied by /calibrate apply. enforce: a proposal is written to the calibration file as soon as the evidence supports it.",
+      "description": "observe (default): proposals are shown, not applied; /calibrate apply applies them. enforce: a proposal is written to the calibration file as soon as the evidence supports it.",
       "default": "observe",
       "options": ["observe", "enforce"]
     },
