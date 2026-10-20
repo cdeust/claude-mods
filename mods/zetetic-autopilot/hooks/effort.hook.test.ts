@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import type { Plugin, TestBody } from 'claude-code/testing'
 
 import { ARCHITECT, ENFORCE, FABLE, type Seen, done, freshSeen, spawn, stubs } from './harness'
 
@@ -271,6 +271,44 @@ scenario('a mark whose write is refused neither fails a clean step nor replaces 
   )
   expect(error).toBeDefined()
   expect(error).not.toContain('spawns state offline')
+})
+
+// Review r3, S2: the mark's write is refused and so is the row that would name it: the step still ends cleanly.
+// The kit keeps a step's result when a hook fails after `next` (outcome `kept`), so the step resolving says nothing:
+// a plugin above the mod reads how the mod's link settled (`next.trace`), which must be a clean answer. The plugin runs
+// in its own realm, so it reports through a toast the test's stubs record.
+const WATCH: Plugin = {
+  name: 'watch',
+  tier: 'prepend',
+  register: (on) => {
+    on('turn.step', async function* ($, e, next) {
+      const r = yield* next(e)
+      const own = next.trace.find((t) => t.plugin === 'zetetic-autopilot')
+      if (e.agentId !== undefined && own !== undefined) $.ui.toast(`watch: ${own.outcome}`)
+      return r
+    })
+  },
+}
+
+test('a mark whose write and whose row are both refused still lets the step end as the mod\'s own answer', { options: ENFORCE, plugins: [WATCH] }, async ($, on) => {
+  const seen = freshSeen()
+  const steps: Step[] = []
+  const tool: Tool = {}
+  engine(on, seen, steps, tool)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('Explore'))
+  seen.failStateSet = [
+    { key: 'spawns', count: 1 },
+    { key: 'policy', count: 1 },
+  ]
+  seen.toasts.length = 0
+  await agentStep($, 'ag-1', 0)
+  expect(sentFor(steps, 'ag-1')).toEqual(['medium'])
+  const outcomes = seen.toasts.filter((t) => t.startsWith('watch: '))
+  expect(outcomes).toHaveLength(1)
+  expect(['watch: returned', 'watch: passed']).toContain(outcomes[0])
 })
 
 // Review r2, R1: JSON's null is a call that named no effort.

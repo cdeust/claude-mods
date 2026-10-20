@@ -49,7 +49,7 @@ export type Seen = {
   // How many of the next writes the engine refuses ({ deny }, as a failed write answers): the store's, and the
   // mod's own state by key.
   failStoreSet?: number
-  failStateSet?: { key: string; count: number; skip?: number }
+  failStateSet?: { key: string; count: number; skip?: number } | { key: string; count: number; skip?: number }[]
 }
 
 type On = Parameters<TestBody>[1]
@@ -81,9 +81,10 @@ const machineStubs = (on: On, seen: Seen) => {
   })
   on('state.set', ($, e, next) => {
     const set = e as unknown as { key?: string; value: never }
-    const failing = seen.failStateSet
-    if (failing !== undefined && failing.key === set.key && (failing.skip ?? 0) > 0) failing.skip = (failing.skip ?? 0) - 1
-    else if (failing !== undefined && failing.key === set.key && failing.count > 0) {
+    const listed = seen.failStateSet
+    const failing = (listed === undefined ? [] : Array.isArray(listed) ? listed : [listed]).find((f) => f.key === set.key)
+    if (failing !== undefined && (failing.skip ?? 0) > 0) failing.skip = (failing.skip ?? 0) - 1
+    else if (failing !== undefined && failing.count > 0) {
       failing.count -= 1
       return { deny: `${set.key} state offline` }
     }

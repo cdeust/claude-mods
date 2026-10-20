@@ -257,7 +257,7 @@ async function rewriteRoutes($: EngineInterface, change: (kept: SpawnRoute[]) =>
 const keepRoute = ($: EngineInterface, record: SpawnRoute): Promise<void> =>
   rewriteRoutes($, (kept) => [...kept, asWritten(record)].slice(-ROUTES_PER_SESSION))
 
-// The first step of an agent's run that went out at its decided effort: its records say so, in the state and the store.
+// The first step of an agent's run passed down the chain at its decided effort: its records say so, in state and store.
 async function markCarried($: EngineInterface, id: string): Promise<void> {
   await update($, spawns, (s) => marked(s, id))
   await rewriteRoutes($, (kept) => marked(kept, id))

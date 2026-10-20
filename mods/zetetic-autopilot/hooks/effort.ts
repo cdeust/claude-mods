@@ -70,8 +70,8 @@ export const keep = <V>(m: Map<string, V>, key: string, value: V, cap: number): 
 // agent.spawn from inside its call, with the tool_use_id the tool.call input carries.
 const calls = new Map<string, { effort?: unknown }>()
 
-// The decided effort of each agent the mod decided one for, by agent id, and whether a step of its current run went
-// out at it. Kept past the agent's turn.complete: a message resumes an ended agent under the same id, and its resumed
+// The decided effort of each agent the mod decided one for, by agent id, and whether a step of its current run was
+// passed down the chain at it. Kept past the agent's turn.complete: a message resumes an ended agent under the same id, and its resumed
 // run keeps its effort. Bounded by EFFORTS_CAP.
 const decided = new Map<string, { effort: Effort; carried: boolean }>()
 
@@ -106,7 +106,7 @@ export const holdEffort = (agentId: string, effort: Effort): void => {
 
 export const decidedFor = (agentId: string): Effort | undefined => decided.get(agentId)?.effort
 
-// A step went out at the agent's decided effort; true the first time for its current run.
+// A step was passed down the chain at the agent's decided effort; true the first time for its current run.
 export const carry = (agentId: string): boolean => {
   const d = decided.get(agentId)
   if (d === undefined || d.carried) return false
