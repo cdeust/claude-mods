@@ -1,10 +1,11 @@
 // A subagent's effort: who decides it, and what the mod keeps to apply it on each of the agent's steps.
-// source: ADR-9850 (the invariant I1-I4, and why the decision is made at agent.spawn and applied at turn.step)
-// agent.spawn can neither read nor set an effort; turn.step rewrites one, and the rewritten effort is the one in the
+// source: ADR-9850 (the invariant I1-I4, and why the decision is made at agent.spawn and applied at turn.step); ADR-9851
+// (DESIGN and the dispatch table decide before the grade). agent.spawn can neither read nor set an effort; turn.step rewrites one, and the rewritten effort is the one in the
 // API request (measured 2026-10-19, ~/.claude/fleet/research/mods-auto-dispatch-gap.md § 2.2). The two maps below
 // live in this module's memory, as gate.ts's do, and are reset with the session.
 
 import { type Definition, pinnedModel } from './agents'
+import type { Steer } from './dispatch'
 import type { Effort } from './policy'
 import { ROUTES_PER_SESSION } from './spawns'
 
@@ -21,24 +22,27 @@ type Stands = 'call' | 'definition' | 'pinned' | 'fixed'
 //   ungraded    no grade bound to main's turn, or the spawn is a subagent's own
 type Undecided = 'unseen' | 'unread' | 'ungraded'
 
-// Why an agent's steps run at the effort they run at, the short code kept in its spawn record; `grade` is decided
-// here: the effort of the grade of main's turn (zetetic-genius, class -> effort); `resumed`, a spawn raised again
-// for an agent already held (a message resumed it): its steps keep the effort decided at its first spawn.
-export type EffortReason = 'grade' | 'resumed' | Stands | Undecided
+// Why an agent's steps run at the effort they run at, the short code kept in its spawn record. Decided here: `design`
+// the spawn prompt's DESIGN block, `table` the dispatch table's rung for the task's class (dispatch.ts), `grade` the
+// effort of the grade of main's turn (zetetic-genius, class -> effort); `resumed`, a spawn raised again for an agent
+// already held (a message resumed it): its steps keep the effort decided at its first spawn. `unclassified`: the table
+// was asked and the classifier gave no class, so the engine's effort stands (never the grade's in its place).
+export type EffortReason = 'design' | 'table' | 'grade' | 'resumed' | 'unclassified' | Stands | Undecided
 
 // What the spawn tells: `call` is the Agent call as tool.call saw it (undefined when none was seen), `definition`
-// what the agent's file sets (undefined when it could not be read), `grade` the effort of the grade bound to main's
-// turn (undefined when there is none, or when a subagent spawns).
+// what the agent's file sets (undefined when it could not be read), `steer` what DESIGN or the table say (dispatch.ts),
+// `grade` the effort of the grade bound to main's turn (undefined when there is none, or when a subagent spawns).
 export type SpawnFacts = {
   fixed: boolean
   call: { effort?: unknown } | undefined
   definition: Definition | undefined
+  steer: Steer
   grade: Effort | undefined
 }
 
 export type Decided = { effort: Effort | undefined; reason: EffortReason }
 
-// First match wins; every fact that makes the effort someone else's comes before the grade.
+// First match wins; every fact that makes the effort someone else's comes before DESIGN, the table and the grade.
 export const subagentEffort = (f: SpawnFacts): Decided => {
   const none = (reason: EffortReason): Decided => ({ effort: undefined, reason })
   if (f.fixed) return none('fixed')
@@ -47,6 +51,8 @@ export const subagentEffort = (f: SpawnFacts): Decided => {
   if (f.definition === undefined) return none('unread')
   if (f.definition.effort !== undefined) return none('definition')
   if (pinnedModel(f.definition) !== undefined) return none('pinned')
+  if ((f.steer.by === 'design' || f.steer.by === 'table') && f.steer.effort !== undefined) return { effort: f.steer.effort, reason: f.steer.by }
+  if (f.steer.by === 'unclassified') return none('unclassified')
   if (f.grade === undefined) return none('ungraded')
   return { effort: f.grade, reason: 'grade' }
 }

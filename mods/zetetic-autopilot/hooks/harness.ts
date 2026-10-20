@@ -18,7 +18,7 @@ export const FILES: Record<string, string> = {
 export const ENGINEER = 'zetetic-team-subagents:engineer'
 export const ARCHITECT = 'zetetic-team-subagents:architect'
 
-export type Route = { agentId: string; type: string; requested: string | null; definition: string | null; decided: string; ran: string; reason: string; applied: boolean }
+export type Route = { agentId: string; type: string; requested: string | null; definition: string | null; decided: string; ran: string; reason: string; applied: boolean; cls?: string; review?: boolean; effort?: string | null; effortReason?: string }
 export type Decision = { kind: string; reason?: string; to: string; from: string; subject: string; applied: boolean }
 export type ListedAgent = { id: string; status: string }
 export type Seen = {
@@ -50,6 +50,11 @@ export type Seen = {
   // mod's own state by key.
   failStoreSet?: number
   failStateSet?: { key: string; count: number; skip?: number } | { key: string; count: number; skip?: number }[]
+  // The spawn classifier's completion (dispatch.ts): `answer` its reply's text, `fails` a reply with no text for that
+  // reason, `rejects` a request the engine refuses. Unset, the completion is refused ("no classifier stubbed"), so a
+  // completion nobody expected is a row and a count, never a silent class. `asked` keeps each prompt it was sent.
+  classifier?: { answer?: string; fails?: 'aborted' | 'empty-reply' | 'api-error'; rejects?: string }
+  asked: { model: string; effort?: string; prompt: string }[]
 }
 
 type On = Parameters<TestBody>[1]
@@ -177,10 +182,59 @@ export const ENFORCE = { policy_mode: 'enforce', quota_pressure_percent: 80 }
 
 export type Body = (engine: Parameters<TestBody>[0], seen: Seen) => Promise<void>
 
-export const freshSeen = (): Seen => ({ files: { ...FILES }, sent: [], store: {}, decisions: [], listed: [], listFails: false, toasts: [], rateLimits: [] })
+export const freshSeen = (): Seen => ({ files: { ...FILES }, sent: [], store: {}, decisions: [], listed: [], listFails: false, toasts: [], rateLimits: [], asked: [] })
+
+const USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+// The one completion the mod asks for: the spawn classifier's.
+const modelStubs = (on: On, seen: Seen) => {
+  on('model.complete', ($, e) => {
+    const c = e as unknown as { model: string; effort?: string; prompt: string }
+    seen.asked.push({ model: c.model, effort: c.effort, prompt: c.prompt })
+    const k = seen.classifier
+    // A stand-in for a call on $ answers { value } (what the call resolves to), or { deny } (what it rejects with).
+    if (k?.answer !== undefined) return { value: { isAnswered: true, text: k.answer, usage: USAGE } } as never
+    if (k?.fails === 'api-error') return { value: { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE } } as never
+    if (k?.fails !== undefined) return { value: { isAnswered: false, reason: k.fails, usage: USAGE } } as never
+    return { deny: k?.rejects ?? 'no classifier stubbed' }
+  })
+}
 
 export const stubs = (on: On, seen: Seen) => {
   machineStubs(on, seen)
   storeStubs(on, seen)
   agentStubs(on, seen)
+  modelStubs(on, seen)
 }
+
+// The Agent tool as the engine runs it: `tool.call` reaches the bottom (the tool runs) and the spawn is raised from
+// inside the tool, while the call is still running (2.1.304: the Agent tool raises agent.spawn from its `call`, which
+// runs beneath every tool.call hook). The tool answers once the test released it.
+export type Tool = { entered?: () => void; release?: Promise<void>; mainHeld?: Promise<void>; failing?: boolean }
+
+export const agentTool = (on: On, tool: Tool) =>
+  on('tool.call', async () => {
+    tool.entered?.()
+    await tool.release
+    return { result: 'ok', text: 'ok' } as never
+  })
+
+// The model's Agent call, and the spawn its tool raises while the call runs.
+type SpawnInput = Record<string, unknown>
+type CallInput = { effort?: string | null }
+
+export async function dispatch($: Parameters<TestBody>[0], tool: Tool, input: SpawnInput, call: CallInput = {}) {
+  let release = (): void => undefined
+  tool.release = new Promise<void>((r) => (release = r))
+  const entered = new Promise<void>((r) => (tool.entered = r))
+  const args = { tool: 'Agent', tool_use_id: input.tool_use_id, description: 'd', prompt: 'p', subagent_type: input.subagentType, ...call }
+  const ran = $.tool.call(args as never)
+  await entered
+  const spawned = await $.agent.spawn(input as never)
+  release()
+  await ran
+  return spawned
+}
+
+// A classifier reply naming a class (dispatch.ts parseClass reads it).
+export const graded = (cls: string, review = false) => ({ answer: JSON.stringify({ task_class: cls, review }) })

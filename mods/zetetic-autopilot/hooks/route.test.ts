@@ -21,31 +21,37 @@ test('families are matched by substring, alias or full id of any release', () =>
 // An inheriting type (the built-ins, a definition with no model line) pins nothing.
 const INHERIT = {}
 const SONNET_DEF = { model: 'sonnet', effort: 'medium' }
+const NONE = { by: 'none' } as const
+const TABLE = { by: 'table', model: 'opus', effort: 'medium', cls: 'analysis', review: false, rung: 'opus/medium' } as const
+const DESIGN = { by: 'design', model: 'haiku' } as const
 
-test('search subagents that inherit: haiku on a mechanical turn, sonnet otherwise', () => {
-  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'routine')).toBe('haiku')
-  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'planned')).toBe('haiku')
-  expect(routeAgentModel('Explore', undefined, INHERIT, FABLE, 'analysis')).toBe('sonnet')
-  expect(routeAgentModel('general-purpose', undefined, INHERIT, OPUS)).toBe('sonnet')
-  expect(routeAgentModel('Plan', undefined, INHERIT, FABLE)).toBe('opus')
-  expect(routeAgentModel('Plan', undefined, INHERIT, OPUS)).toBe(undefined)
+// The type is no input of the router (0.11.0): the regex routing by kind is gone, the table decides by the task.
+test('an inheriting type nothing steers runs on the parent\'s model', () => {
+  expect(routeAgentModel(undefined, INHERIT, FABLE, NONE)).toBe(undefined)
+  expect(route(undefined, INHERIT, FABLE, NONE)).toMatchObject({ reason: 'inherit', stands: `inherit ${FABLE}` })
 })
 
-test("a model the definition pins stands: the router never overrides the agent's author", () => {
-  // advisor and orchestrator are defined on fable; under a fable parent they used to go to opus.
-  expect(routeAgentModel('zetetic-team-subagents:advisor', undefined, { model: 'fable', effort: 'high' }, FABLE)).toBe(undefined)
-  expect(routeAgentModel('zetetic-team-subagents:orchestrator', undefined, { model: 'fable' }, FABLE)).toBe(undefined)
-  expect(routeAgentModel('zetetic-team-subagents:code-reviewer', undefined, SONNET_DEF, FABLE)).toBe(undefined)
-  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, SONNET_DEF, FABLE, 'planned')).toBe(undefined)
-  expect(routeAgentModel('zetetic-team-subagents:architect', undefined, { model: 'inherit' }, FABLE)).toBe('opus')
+test('DESIGN and the table steer an inheriting type: the rewrite and its reason', () => {
+  expect(route(undefined, INHERIT, FABLE, TABLE)).toMatchObject({ model: 'opus', reason: 'table' })
+  expect(route(undefined, { model: 'inherit' }, OPUS, DESIGN)).toMatchObject({ model: 'haiku', reason: 'design' })
+  // A DESIGN that names only an effort leaves the model to the parent.
+  expect(route(undefined, INHERIT, OPUS, { by: 'design', effort: 'low' })).toMatchObject({ model: undefined, reason: 'inherit' })
+  expect(route(undefined, INHERIT, OPUS, { by: 'unclassified', why: 'api-error' })).toMatchObject({ model: undefined, reason: 'unclassified' })
 })
 
-test('an explicit model, a sonnet or haiku parent, an unknown type and an unread definition route nothing', () => {
-  expect(routeAgentModel('Explore', 'opus', undefined, FABLE, 'routine')).toBe(undefined)
-  expect(routeAgentModel('Explore', undefined, INHERIT, 'claude-sonnet-5-5', 'routine')).toBe(undefined)
-  expect(routeAgentModel('Explore', undefined, INHERIT, 'claude-haiku-5-5', 'routine')).toBe(undefined)
-  expect(routeAgentModel('brand-voice:discover-brand', undefined, INHERIT, FABLE)).toBe(undefined)
-  expect(routeAgentModel('zetetic-team-subagents:engineer', undefined, undefined, FABLE)).toBe(undefined)
+test("a pinned model is never rewritten: neither DESIGN nor the table overrides the call or the agent's author", () => {
+  for (const steer of [TABLE, DESIGN, NONE]) {
+    expect(routeAgentModel(undefined, { model: 'fable', effort: 'high' }, FABLE, steer)).toBe(undefined)
+    expect(routeAgentModel(undefined, SONNET_DEF, FABLE, steer)).toBe(undefined)
+    expect(routeAgentModel('opus', SONNET_DEF, FABLE, steer)).toBe(undefined)
+    expect(routeAgentModel('haiku', INHERIT, FABLE, steer)).toBe(undefined)
+    expect(route(undefined, SONNET_DEF, FABLE, steer)).toMatchObject({ stands: 'sonnet', reason: 'definition' })
+    expect(route('haiku', INHERIT, FABLE, steer)).toMatchObject({ stands: 'haiku', reason: 'call' })
+  }
+})
+
+test('an unread definition with no call model decides nothing, whatever the steer', () => {
+  expect(route(undefined, undefined, FABLE, TABLE)).toMatchObject({ model: undefined, stands: `inherit ${FABLE}`, reason: 'unread' })
 })
 
 test('main drops to sonnet under quota pressure only, and only from opus or fable', () => {
@@ -58,16 +64,16 @@ test('main drops to sonnet under quota pressure only, and only from opus or fabl
 })
 
 test('the router has no pressure input: a designed model cannot be lowered by one (owner rule 2026-10-15)', () => {
-  // routeAgentModel takes (type, call, definition, parent, class): five parameters, none a pressure.
-  expect(route.length).toBe(5)
-  expect(route('zetetic-team-subagents:security-auditor', undefined, { model: 'opus' }, OPUS)).toMatchObject({ model: undefined, stands: 'opus', reason: 'definition' })
-  expect(route('zetetic-team-subagents:engineer', 'opus', SONNET_DEF, OPUS)).toMatchObject({ model: undefined, stands: 'opus', reason: 'call' })
+  // routeAgentModel takes (call, definition, parent, steer): four parameters, none a pressure.
+  expect(route.length).toBe(4)
+  expect(route(undefined, { model: 'opus' }, OPUS, NONE)).toMatchObject({ model: undefined, stands: 'opus', reason: 'definition' })
+  expect(route('opus', SONNET_DEF, OPUS, NONE)).toMatchObject({ model: undefined, stands: 'opus', reason: 'call' })
 })
 
 test('the route names what stands and why for each way a model is decided', () => {
-  expect(route('zetetic-team-subagents:engineer', 'opus', SONNET_DEF, OPUS)).toMatchObject({ requested: 'opus', definition: 'sonnet', stands: 'opus', reason: 'call' })
-  expect(route('zetetic-team-subagents:code-reviewer', undefined, SONNET_DEF, OPUS)).toMatchObject({ requested: null, definition: 'sonnet', stands: 'sonnet', reason: 'definition' })
-  expect(route('zetetic-team-subagents:architect', undefined, { model: 'inherit' }, OPUS)).toMatchObject({ definition: null, stands: `inherit ${OPUS}`, reason: 'inherit' })
-  expect(route('Explore', undefined, INHERIT, FABLE, 'routine')).toMatchObject({ model: 'haiku', reason: 'kind' })
-  expect(route('zetetic-team-subagents:engineer', undefined, undefined, FABLE)).toMatchObject({ model: undefined, stands: `inherit ${FABLE}`, reason: 'unread' })
+  expect(route('opus', SONNET_DEF, OPUS, NONE)).toMatchObject({ requested: 'opus', definition: 'sonnet', stands: 'opus', reason: 'call' })
+  expect(route(undefined, SONNET_DEF, OPUS, NONE)).toMatchObject({ requested: null, definition: 'sonnet', stands: 'sonnet', reason: 'definition' })
+  expect(route(undefined, { model: 'inherit' }, OPUS, NONE)).toMatchObject({ definition: null, stands: `inherit ${OPUS}`, reason: 'inherit' })
+  expect(route(undefined, INHERIT, FABLE, TABLE)).toMatchObject({ model: 'opus', reason: 'table' })
+  expect(route(undefined, undefined, FABLE, NONE)).toMatchObject({ model: undefined, stands: `inherit ${FABLE}`, reason: 'unread' })
 })

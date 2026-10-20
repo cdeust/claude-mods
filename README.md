@@ -9,7 +9,7 @@ The Claude mods keep one concern per mod, state shared through
 | `cortex-guard` | `refusals`: wiki pages only through `wiki_write`, worktrees inside `<repo>/.claude/worktrees/` | nothing |
 | `cortex-wiki` | `/wiki <wiki/**.md>` to PDF | nothing |
 | `zetetic-genius` | `state`: the request grade (task class → effort), the genius patterns and skills it matches | nothing |
-| `zetetic-autopilot` | `context`, `policy`, `phases`: effort ladder, model routing (a subagent's own definition first, never lowered by pressure), an inheriting subagent's effort from the turn's grade when neither its call nor its definition sets one (`effort` on each spawn record, absent before 0.10.0), the quota's cap on the main loop's parallel subagents, offloaded tool results; the phase each loop is in, on each run the steps a stuck escalation raised (`escalated`, absent before 0.8.0), and the advisor calls | `zetetic-genius` |
+| `zetetic-autopilot` | `context`, `policy`, `phases`: effort ladder, model routing (a subagent's call, then its own definition, then its prompt's DESIGN block, never lowered by pressure), the dispatch table (`hooks/dispatch-table.ts`): an inheriting subagent nobody designed runs at the model and effort of its task's class, graded by one classifier completion (`cls`/`review` on each spawn record the table decided, absent before 0.11.0), an inheriting subagent's effort from the turn's grade when its call names a model but no effort (`effort` on each spawn record, absent before 0.10.0), the quota's cap on the main loop's parallel subagents, offloaded tool results; the phase each loop is in, on each run the steps a stuck escalation raised (`escalated`, absent before 0.8.0), and the advisor calls | `zetetic-genius` |
 | `zetetic-insights` | `insights`: the turn ledger across sessions ($.store), joined with `/insights` session outcomes and `.zetetic/goals`; per-phase effort proposals, `/calibrate apply\|reset`, the calibration file the autopilot reads | `zetetic-autopilot`, `zetetic-genius` |
 | `mission-control` | `renderer`; the `/mission` pane: the turn's lanes by phase (bar height = effort, advisor calls, failed calls), effort per phase, learning curves per phase. Pixels in kitty or Ghostty outside tmux, coloured cells elsewhere | `zetetic-autopilot`, `zetetic-insights` |
 | `harness-fleet` | `fleet`: the owner's plugins, installed vs offered version, open PRs with CI, open issues (a defect is taken and fixed, a feature request goes to the owner); `/fleet`. Reads only (`gh pr list`, `gh issue list`, `git remote`): every outward action is a button the owner presses, which puts a prompt in front of the model | guard, genius, autopilot |
@@ -51,7 +51,8 @@ the engine watches the folder a link names.
 
 A mod cannot import a file from another mod (the engine refuses it: "outside the plugin's folder"),
 so the few small pure files several mods need are copied into each of them: `hooks/paths.ts`
-(where `~/` lands: HOME, else USERPROFILE, `CLAUDE_CONFIG_DIR` for `~/.claude`) in five mods,
+(where `~/` lands: HOME, else USERPROFILE, `CLAUDE_CONFIG_DIR` for `~/.claude`) in five mods, and
+`hooks/design.ts` (the one parser of a prompt's DESIGN block) in `zetetic-insights` and `zetetic-autopilot`,
 each with its test. After editing one, copy it over the others; this fails when a copy differs:
 
 ```sh

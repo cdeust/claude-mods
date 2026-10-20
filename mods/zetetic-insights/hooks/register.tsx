@@ -3,7 +3,8 @@ import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
 import type { AgentRecord, Calibration, Design, Finding, InsightsState, ProbeCount, ProbeReason, TurnRecord, Verdict } from '../types'
 import { briefOf, mechanicalShare } from './brief'
-import { delegationStats, parseDesign } from './delegations'
+import { delegationStats } from './delegations'
+import { parseDesign } from './design'
 import { effectLine, effectsOf, movesOf, movesWith } from './effect'
 import { recurringIn, schedulePush, setServer } from './handover'
 import {

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ARCHITECT, CONTEXT, ENFORCE, ENGINEER, QUOTA, type Body, done, freshSeen, spawn, stubs } from './harness'
+import { ARCHITECT, CONTEXT, ENFORCE, ENGINEER, QUOTA, type Body, type Tool, agentTool, dispatch, done, freshSeen, graded, spawn, stubs } from './harness'
 import { ROUTES_PER_SESSION, SPAWNS_CAP } from './spawns'
 
 // The model a subagent runs on is the one the orchestrator designed: the Agent call's `model`, else
@@ -48,13 +48,14 @@ scenario('(c) quota pressure never changes a designed model: opus, haiku and son
   expect(seen.decisions.filter((d) => d.kind === 'model')).toEqual([])
 })
 
-scenario('(c) an inheriting type is routed by its kind, the same under quota pressure as without it', ENFORCE, async ($, seen) => {
+// 0.11.0: no regex of its type routes an inheriting type; the dispatch table does, by its task (dispatch.hook.test.ts).
+scenario('(c) an inheriting type no Agent call was seen for inherits, the same under quota pressure as without it', ENFORCE, async ($, seen) => {
   await $.agent.spawn(spawn('Explore'))
   await $.turn.complete(done('ag-1'))
   await $.session.measure(QUOTA)
   await $.agent.spawn(spawn('Explore'))
-  expect(seen.sent).toEqual(['sonnet', 'sonnet'])
-  expect(seen.spawns?.map((r) => r.reason)).toEqual(['kind', 'kind'])
+  expect(seen.sent).toEqual([undefined, undefined])
+  expect(seen.spawns?.map((r) => r.reason)).toEqual(['inherit', 'inherit'])
 })
 
 scenario('(d) every spawn keeps requested, definition, decided, ran and a short reason in the state and in the store', ENFORCE, async ($, seen) => {
@@ -113,11 +114,17 @@ scenario('observe: nothing is rewritten and nothing is logged for a designed mod
 })
 
 // Review of #25 round 2, m5 (G16): observe logs the route of an inheriting type and sends the call as it came.
-scenario('observe: an inheriting type is routed in a row, not rewritten', { policy_mode: 'observe', quota_pressure_percent: 80 }, async ($, seen) => {
-  await $.agent.spawn(spawn('Explore'))
+test('observe: an inheriting type the table routes is a row, not rewritten', { options: { policy_mode: 'observe', quota_pressure_percent: 80 } }, async ($, on) => {
+  const seen = freshSeen()
+  const tool: Tool = {}
+  stubs(on, seen)
+  agentTool(on, tool)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  seen.classifier = graded('bugfix')
+  await dispatch($, tool, spawn('Explore'))
   expect(seen.sent).toEqual([undefined])
-  expect(seen.decisions.find((d) => d.kind === 'model')).toMatchObject({ subject: 'Explore', to: 'sonnet', applied: false })
-  expect(seen.spawns?.[0]).toMatchObject({ decided: 'sonnet', ran: 'sonnet', reason: 'kind', applied: false })
+  expect(seen.decisions.find((d) => d.kind === 'model')).toMatchObject({ subject: 'Explore · bugfix', to: 'sonnet', applied: false })
+  expect(seen.spawns?.[0]).toMatchObject({ decided: 'sonnet', ran: 'sonnet', reason: 'table', applied: false })
 })
 
 // Review of #25 round 2, m5 (G19): the spawns row in $.state keeps the newest SPAWNS_CAP, the store keeps the rest.
