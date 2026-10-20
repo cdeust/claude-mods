@@ -186,8 +186,9 @@ async function placed(
   return r
 }
 
-// `effortApplied` as the record is written: the effort was decided under enforce AND a step of the agent went out at
-// it (effort.ts `carried`). A step that carries it later marks the written records (markCarried).
+// `effortApplied` as the record is written: the effort was decided under enforce AND a step of the agent's run was
+// passed down the chain at it (effort.ts `carried`), as the model's `applied` means a rewrite was sent down. A hook
+// cannot see whether the engine then sent the request. A step that carries it later marks the record (markCarried).
 const asWritten = (r: SpawnRoute): SpawnRoute => (r.effortApplied === true ? { ...r, effortApplied: carried(r.agentId) } : r)
 // Only the agent's newest record is its current run's: an older one (a run before a resume) keeps what it said.
 const marked = (rows: SpawnRoute[], id: string): SpawnRoute[] => {
@@ -356,8 +357,9 @@ async function* agentStep(
   try {
     return yield* tracked($, out, next(out), false)
   } finally {
-    // The request went out at it, whether its stream ended, failed or was let go: the run's record says so once.
-    if (carry(id)) await markCarried($, id)
+    // The step was passed down at it, whether its stream then ended, failed or was let go: the run's record says so,
+    // once. The mark is bookkeeping: its failure is a row, never the step's outcome.
+    if (carry(id)) await markCarried($, id).catch((error: unknown) => note($, 'spawn records', `not marked: ${String(error).slice(0, 100)}`).catch(() => undefined))
   }
 }
 
@@ -435,8 +437,9 @@ async function spawnRouted(
   let r: AgentSpawnResult
   try {
     r = await next(applied ? { ...e, model: routed.model } : e)
-    if (r.agentId !== undefined) spawnAnswered(r.agentId)
+    // Held before the answer is announced: a step it releases reads the decision.
     if (effort.effort !== undefined && r.deny === undefined && r.agentId !== undefined) holdEffort(r.agentId, effort.effort)
+    if (r.agentId !== undefined) spawnAnswered(r.agentId)
   } finally {
     settle?.()
   }

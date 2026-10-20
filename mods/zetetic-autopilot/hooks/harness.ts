@@ -42,8 +42,14 @@ export type Seen = {
   // When set, the spawn starts the agent's run before it answers, as a background launch does (2.1.304: the run is
   // started, then the spawn answers), without waiting on the run.
   launch?: (agentId: string) => void
+  // When set, a spawn that launched its run answers only once this settles (taken by the first spawn that reads it).
+  answerHeld?: Promise<void>
   // When set, the mod's next read of its own `spawns` state finds these rows (once): a state already filled.
   spawnsState?: Route[]
+  // How many of the next writes the engine refuses ({ deny }, as a failed write answers): the store's, and the
+  // mod's own state by key.
+  failStoreSet?: number
+  failStateSet?: { key: string; count: number; skip?: number }
 }
 
 type On = Parameters<TestBody>[1]
@@ -75,6 +81,12 @@ const machineStubs = (on: On, seen: Seen) => {
   })
   on('state.set', ($, e, next) => {
     const set = e as unknown as { key?: string; value: never }
+    const failing = seen.failStateSet
+    if (failing !== undefined && failing.key === set.key && (failing.skip ?? 0) > 0) failing.skip = (failing.skip ?? 0) - 1
+    else if (failing !== undefined && failing.key === set.key && failing.count > 0) {
+      failing.count -= 1
+      return { deny: `${set.key} state offline` }
+    }
     if (set.key === 'spawns') seen.spawns = set.value
     if (set.key === 'policy') seen.decisions = (set.value as { decisions: Seen['decisions'] }).decisions
     return next(e)
@@ -87,6 +99,10 @@ const storeStubs = (on: On, seen: Seen) => {
   on('store.keys', () => ({ value: Object.keys(seen.store) as never }))
   on('store.get', ($, e) => ({ value: seen.store[String((e as { key?: string }).key)] as never }))
   on('store.set', ($, e) => {
+    if ((seen.failStoreSet ?? 0) > 0) {
+      seen.failStoreSet = (seen.failStoreSet ?? 0) - 1
+      return { deny: 'store offline' }
+    }
     const { key, value } = e as unknown as { key: string; value: Route[] }
     seen.store[key] = JSON.parse(JSON.stringify(value))
     return { value: undefined as never }
@@ -128,6 +144,9 @@ const agentStubs = (on: On, seen: Seen) => {
     seen.resumes = undefined
     seen.listed.push({ id: agentId, status: 'running' })
     seen.launch?.(agentId)
+    const held = seen.answerHeld
+    seen.answerHeld = undefined
+    if (held !== undefined) await held
     return { model: e.model ?? 'sonnet', agentId }
   })
 }

@@ -44,7 +44,7 @@ const drain = async (stream: AsyncGenerator<unknown, unknown>) => {
 }
 
 // The model's Agent call, and the spawn its tool raises while the call runs.
-async function dispatch($: Engine, tool: Tool, input: Record<string, unknown>, call: { effort?: string } = {}) {
+async function dispatch($: Engine, tool: Tool, input: Record<string, unknown>, call: { effort?: string | null } = {}) {
   let release = (): void => undefined
   tool.release = new Promise<void>((r) => (release = r))
   const entered = new Promise<void>((r) => (tool.entered = r))
@@ -65,6 +65,20 @@ const mainStep = ($: Engine) => drain($.turn.step({ turnId: MAIN_TURN, index: 0,
 // A step as the engine sends it: at `high` (the session's setting), or with no effort at all (`none`: a model without one).
 const agentStep = ($: Engine, agentId: string, index: number, effort: 'high' | 'none' = 'high') =>
   drain($.turn.step({ turnId: `t-${agentId}`, index, model: 'claude-sonnet-5-5', ...(effort === 'none' ? {} : { effort }), messageCount: 3, agentId }))
+
+// Whether `p` settles within `turns` turns of the microtask queue: a bound counted in queue turns, not on a clock, so
+// a step that waits forever fails an assertion instead of the kit's deadline.
+const settles = async (p: Promise<unknown>, turns = 2000): Promise<boolean> => {
+  let done = false
+  void p.then(
+    () => (done = true),
+    () => (done = true),
+  )
+  for (let i = 0; i < turns && !done; i++) await Promise.resolve()
+  return done
+}
+
+const KEY = 'spawns:0000001000000:sid-1'
 
 const sentFor = (steps: Step[], agentId: string) => steps.filter((s) => s.agentId === agentId).map((s) => s.effort)
 
@@ -126,7 +140,7 @@ scenario('I1: a background launch starts the run before its spawn answers: step 
   expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', effortApplied: true })
 })
 
-scenario('I1: a request that went out at the decided effort counts, even when its stream then failed', ENFORCE, async ($, seen, steps, tool) => {
+scenario('I1: a step passed down at the decided effort counts, even when its stream then failed (effortApplied: passed down, not proven sent)', ENFORCE, async ($, seen, steps, tool) => {
   seen.grade = ANALYSIS
   await mainStep($)
   await dispatch($, tool, spawn('Explore'))
@@ -147,12 +161,126 @@ scenario('I1: a step of an agent whose spawn answered never waits on another spa
   const second = dispatch($, tool, { ...(spawn('Explore') as object), tool_use_id: 'a2' })
   await inside
   // The Explore spawn is held at the engine: the architect's step goes out meanwhile, at the engine's effort.
-  await agentStep($, 'ag-1', 0)
+  const step = agentStep($, 'ag-1', 0)
+  expect(await settles(step)).toBe(true)
   expect(sentFor(steps, 'ag-1')).toEqual(['high'])
+  seen.hold = undefined
   release()
   await second
   await agentStep($, 'ag-2', 0)
   expect(sentFor(steps, 'ag-2')).toEqual(['medium'])
+})
+
+// Review r2, N4: X (a pinned architect, nothing decided) is launched in the background while a decided Explore spawn Y
+// is held at the engine; X's step 0 comes before X's spawn answers. It waits for its own answer, not for Y's.
+scenario('I1: a step waiting on spawns in flight is released by its own spawn\'s answer', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  let entered = (): void => undefined
+  let release = (): void => undefined
+  const inside = new Promise<void>((r) => (entered = r))
+  seen.hold = { entered: () => entered(), release: new Promise<void>((r) => (release = r)) }
+  const y = dispatch($, tool, spawn('Explore'))
+  await inside
+  seen.hold = undefined
+  let first: Promise<void> | undefined
+  seen.launch = (id) => {
+    seen.launch = undefined
+    first = agentStep($, id, 0)
+  }
+  let answer = (): void => undefined
+  seen.answerHeld = new Promise<void>((r) => (answer = r))
+  const x = dispatch($, tool, { ...(spawn(ARCHITECT) as object), tool_use_id: 'a2' })
+  // The engine names agents in the order they reach it: X is ag-1, Y (still held) will be ag-2.
+  for (let i = 0; i < 2000 && first === undefined; i++) await Promise.resolve()
+  if (first === undefined) throw new Error('the spawn never launched its run')
+  // X's step came before X's answer: it is parked.
+  expect(await settles(first)).toBe(false)
+  answer()
+  await x
+  // X answered; Y is still held. X's step goes out now, at the engine's effort.
+  expect(await settles(first)).toBe(true)
+  await first
+  expect(sentFor(steps, 'ag-1')).toEqual(['high'])
+  release()
+  await y
+  await agentStep($, 'ag-2', 0)
+  expect(sentFor(steps, 'ag-2')).toEqual(['medium'])
+})
+
+// Review r2, R3: the first run ended before any step, so its record says not applied; the resumed run's step marks the
+// resumed run's record only.
+scenario('I1: a step marks its run\'s record only, never an earlier run\'s', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('general-purpose'))
+  await $.turn.complete(done('ag-1'))
+  expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortApplied: false })
+  seen.resumes = 'ag-1'
+  await $.agent.spawn({ ...(spawn('general-purpose') as object), tool_use_id: 'send-1', resume: { agentId: 'ag-1' } } as never)
+  await agentStep($, 'ag-1', 0)
+  expect(seen.spawns?.[1]).toMatchObject({ effortReason: 'resumed', effortApplied: true })
+  expect(seen.spawns?.[0]).toMatchObject({ effortApplied: false })
+  expect(seen.store[KEY]?.[0]).toMatchObject({ effortApplied: false })
+  expect(seen.store[KEY]?.[1]).toMatchObject({ effortApplied: true })
+})
+
+// Review r2, R2: a store write the engine refuses is a named row, and the writes after it still land.
+scenario('a refused store write is a row, and the next spawn\'s record and its mark are still written', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  seen.failStoreSet = 1
+  await dispatch($, tool, spawn('Explore'))
+  expect(seen.decisions.some((d) => d.kind === 'unread' && d.subject === 'spawn records')).toBe(true)
+  expect(seen.store[KEY]).toBeUndefined()
+  await dispatch($, tool, { ...(spawn('Explore') as object), tool_use_id: 'a2' })
+  expect(seen.store[KEY]?.map((r) => r.agentId)).toEqual(['ag-2'])
+  await agentStep($, 'ag-2', 0)
+  expect(seen.store[KEY]?.[0]).toMatchObject({ agentId: 'ag-2', effortApplied: true })
+})
+
+// Review r2, R2: the store write fails and so does the row that would name it (the policy state is refused too): that
+// spawn's record is lost, the next one's is still written.
+scenario('a store write whose row also fails does not stop the writes after it', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  seen.failStoreSet = 1
+  // The spawn's model row and effort row land; the third policy write, the row naming the refused store write, fails.
+  seen.failStateSet = { key: 'policy', count: 1, skip: 2 }
+  await dispatch($, tool, spawn('Explore')).catch(() => undefined)
+  await dispatch($, tool, { ...(spawn('Explore') as object), tool_use_id: 'a2' })
+  expect(seen.store[KEY]?.map((r) => r.agentId)).toEqual(['ag-2'])
+})
+
+// Review r2, N5: the mark is bookkeeping; when its write is refused, the step still ends as its stream did.
+scenario('a mark whose write is refused neither fails a clean step nor replaces a failed stream\'s error', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('Explore'))
+  seen.failStateSet = { key: 'spawns', count: 1 }
+  await agentStep($, 'ag-1', 0)
+  expect(sentFor(steps, 'ag-1')).toEqual(['medium'])
+  expect(seen.decisions.some((d) => d.kind === 'unread' && d.subject === 'spawn records')).toBe(true)
+  await dispatch($, tool, { ...(spawn('Explore') as object), tool_use_id: 'a2' })
+  seen.failStateSet = { key: 'spawns', count: 1 }
+  tool.failing = true
+  // (The kit answers a failing stream with its own error; what matters is that the mark's error does not replace it.)
+  const error = await agentStep($, 'ag-2', 0).then(
+    () => undefined,
+    (e: unknown) => String(e),
+  )
+  expect(error).toBeDefined()
+  expect(error).not.toContain('spawns state offline')
+})
+
+// Review r2, R1: JSON's null is a call that named no effort.
+scenario('I2: a call effort of null is no effort: the grade decides', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('Explore'), { effort: null })
+  await agentStep($, 'ag-1', 0)
+  expect(sentFor(steps, 'ag-1')).toEqual(['medium'])
+  expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', effortApplied: true })
 })
 
 scenario('I1: a resumed run none of whose steps carried the effort is not recorded as applied', ENFORCE, async ($, seen, steps, tool) => {

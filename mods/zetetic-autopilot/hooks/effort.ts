@@ -83,6 +83,9 @@ const pending = new Set<Promise<void>>()
 // EFFORTS_CAP; a forgotten one only waits while spawns are pending.
 const answered = new Map<string, true>()
 
+// The steps parked on their own agent's answer, by agent id: its spawn answering releases them.
+const waiting = new Map<string, () => void>()
+
 export const isEffort = (v: unknown): v is Effort => v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh' || v === 'max'
 
 export const callStarted = (toolUseId: string, effort: unknown): void => {
@@ -132,18 +135,33 @@ export const spawnPending = (): (() => void) => {
 
 export const spawnAnswered = (agentId: string): void => {
   keep(answered, agentId, true, EFFORTS_CAP)
+  waiting.get(agentId)?.()
+  waiting.delete(agentId)
+}
+
+// Its own spawn's answer, for a step parked on it: resolved by spawnAnswered, or let go once the step moved on.
+const ownAnswer = (agentId: string): { answered: Promise<void>; forget: () => void } => {
+  let release = (): void => undefined
+  const answeredNow = new Promise<void>((r) => (release = r))
+  waiting.set(agentId, release)
+  return { answered: answeredNow, forget: () => waiting.delete(agentId) }
 }
 
 // What a step of an agent whose spawn has not answered waits for: every pending spawn's answer; undefined when its
 // spawn answered or none is pending. The engine answers a spawn without waiting on the run (2.1.304), so it settles.
-export const spawnsSettled = (agentId: string): Promise<void> | undefined =>
-  pending.size === 0 || answered.has(agentId) ? undefined : Promise.all([...pending]).then(() => undefined)
+// Whichever comes first: its own answer, or every pending spawn's (an agent no pending spawn will name).
+export const spawnsSettled = (agentId: string): Promise<void> | undefined => {
+  if (pending.size === 0 || answered.has(agentId)) return undefined
+  const own = ownAnswer(agentId)
+  return Promise.race([own.answered, Promise.all([...pending])]).then(own.forget)
+}
 
 export const resetEfforts = (): void => {
   calls.clear()
   decided.clear()
   pending.clear()
   answered.clear()
+  waiting.clear()
 }
 
 // The effort a subagent's step goes out at: the decided one, on a step that carries an effort level (absent: a model
