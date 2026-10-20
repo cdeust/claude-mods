@@ -1,0 +1,5 @@
+{
+  "name": "replay-dispatch",
+  "version": "0.0.1",
+  "description": "Not a shipped mod: the classifier half of scripts/replay-dispatch.mjs. /replay-classify <requests.jsonl> <answers.jsonl> sends each request through $.model.complete, as zetetic-autopilot's spawn classifier does, and writes each answer. Load it with --plugin-dir for one headless run."
+}

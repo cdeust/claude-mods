@@ -3,7 +3,7 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import { type Definition, INSTALLED_PLUGINS_PATH, ancestors, definitionPaths, parseDefinition } from './agents'
+import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH, ancestors, definitionPaths, parseDefinition } from './agents'
 import { placePath } from './paths'
 
 export type Unread = { unread: string; absent: boolean }
@@ -48,3 +48,20 @@ export async function readDefinition($: EngineInterface, type: string): Promise<
   }
 }
 
+// Agent definitions: what the type's file pins, or why it could not be read. A definition found, and
+// a file proven absent, or no installed plugin providing the type (`absent`: the records answered
+// "no such file" / "no such plugin"), are remembered for
+// the session; a read that failed, or a record that could not be read, is asked again at the next
+// spawn, so a transient error does not stand until /clear (issue #11). The built-ins measured to
+// inherit pin nothing and have no file.
+const definitions = new Map<string, Definition | Unread>()
+
+export async function definitionOf($: EngineInterface, type: string): Promise<Definition | Unread> {
+  const known = definitions.get(type)
+  if (known !== undefined) return known
+  const found = INHERITING_BUILT_INS.includes(type) ? {} : await readDefinition($, type)
+  if (!('unread' in found) || found.absent) definitions.set(type, found)
+  return found
+}
+
+export const forgetDefinitions = (): void => definitions.clear()

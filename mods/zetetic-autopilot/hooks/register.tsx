@@ -1,16 +1,14 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, EngineInterface, Hook, PluginState, Register, TurnStepChunk, TurnStepResult } from 'claude-code'
+import type { AgentSpawnResult, EngineInterface, Hook, Register, TurnStepChunk, TurnStepResult } from 'claude-code'
 
 import type { ContextHealth, PhasesState, PolicyDecision, PolicyState, SpawnRoute } from '../types'
-import { CALIBRATION_PATH, type LoopCeilings, parseCeilings } from './calibration'
-import { type Definition, INHERITING_BUILT_INS, INSTALLED_PLUGINS_PATH } from './agents'
-import { type Unread, expandHome, readDefinition } from './definitions'
+import type { LoopCeilings } from './calibration'
+import { definitionOf, forgetDefinitions } from './definitions'
 import {
   type Decided,
   callEnded,
   callOf,
   callStarted,
-  carried,
   carry,
   decidedFor,
   holdEffort,
@@ -31,7 +29,6 @@ import {
   CHARS_PER_TOKEN,
   OFFLOAD_TOOLS,
   STUCK_ERRORS,
-  type Effort,
   currentEffort,
   defaultEffort,
   effortFor,
@@ -39,9 +36,11 @@ import {
   group,
   pressureOf,
 } from './policy'
-import { type Routed, type TaskClass, mainModelFor, routeAgentModel } from './route'
-import { SETTINGS_PATH, unboundKeys, unboundMessage } from './config'
-import { ROUTES_PER_SESSION, SPAWNS_CAP, clipped, spawnsKey, staleSpawnKeys } from './spawns'
+import { type RouteFields, asWritten, keepRoute, marked, openRoutes, rewriteRoutes, routeOf } from './records'
+import { mainModelFor, routeAgentModel } from './route'
+import { checkConfig, gradeOf, readCeilings } from './reads'
+import { SPAWNS_CAP, clipped } from './spawns'
+import { dispatchOf, effortRowOf, modelRowOf } from './spawnrows'
 import { inBudget, maxParallelOption } from './concurrency'
 import { type GateSink, admit, configureGate, ended, released, resetGate, started } from './gate'
 
@@ -63,29 +62,11 @@ const phases = atom({ plugin: 'zetetic-autopilot', key: 'phases' } as const, emp
 
 const spawns = atom({ plugin: 'zetetic-autopilot', key: 'spawns' } as const, [] as SpawnRoute[])
 
-// The classifier's verdict is zetetic-genius's state (a dependency): read, never written here.
-const geniusState = { plugin: 'zetetic-genius', key: 'state' } as const
-type Grade = { turnId: string | null; taskClass: TaskClass; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
-
 const decide = (p: PolicyState, d: PolicyDecision, charsOffloaded = 0): PolicyState => ({
   ...p,
   decisions: [...p.decisions, d].slice(-DECISIONS_CAP),
   charsOffloaded: p.charsOffloaded + charsOffloaded,
 })
-
-// The current grade. A genius mod that is not loaded leaves the value undefined, a known state
-// (no grade); a read that fails is another condition, named in a decision row (issue #6).
-async function gradeOf($: EngineInterface): Promise<Grade | undefined> {
-  let value: PluginState['zetetic-genius']['state'] | undefined
-  try {
-    value = (await $.state.get(geniusState)).value
-  } catch (error) {
-    await note($, 'zetetic-genius state', `unreadable: ${String(error).slice(0, 100)}`)
-    return undefined
-  }
-  const c = value?.classified
-  return c === null || c === undefined ? undefined : { turnId: c.turnId, taskClass: c.taskClass, effort: c.effort }
-}
 
 // A failed read, logged once until its reason changes: the POLICY panel shows it, routing goes on
 // without what could not be read.
@@ -97,35 +78,9 @@ async function note($: EngineInterface, subject: string, reason: string): Promis
   await update($, policy, (s) => decide(s, { at, kind: 'unread', subject, from: '', to: reason, applied: false }))
 }
 
-// The calibrated tool-loop rung per phase, read at start and at each new main turn: a missing file
-// is no calibration; an unreadable one is a named row and no calibration.
+
+// The calibrated tool-loop rung per phase, read at each new main turn (reads.ts).
 let ceilings: LoopCeilings = {}
-
-async function readCeilings($: EngineInterface): Promise<void> {
-  try {
-    const path = await expandHome($, CALIBRATION_PATH)
-    ceilings = (await $.fs.exists(path)) ? parseCeilings(await $.fs.read(path)) : {}
-  } catch (error) {
-    ceilings = {}
-    await note($, 'calibration', `unreadable: ${String(error).slice(0, 100)}`)
-  }
-}
-
-// Agent definitions: what the type's file pins, or why it could not be read. A definition found, and
-// a file proven absent, or no installed plugin providing the type (`absent`: the records answered
-// "no such file" / "no such plugin"), are remembered for
-// the session; a read that failed, or a record that could not be read, is asked again at the next
-// spawn, so a transient error does not stand until /clear (issue #11). The built-ins measured to
-// inherit pin nothing and have no file.
-const definitions = new Map<string, Definition | Unread>()
-
-async function definitionOf($: EngineInterface, type: string): Promise<Definition | Unread> {
-  const known = definitions.get(type)
-  if (known !== undefined) return known
-  const found = INHERITING_BUILT_INS.includes(type) ? {} : await readDefinition($, type)
-  if (!('unread' in found) || found.absent) definitions.set(type, found)
-  return found
-}
 
 // The full read, with the window broken down as /context does it: at start.
 async function refreshContext($: EngineInterface): Promise<void> {
@@ -174,7 +129,7 @@ async function placed(
   $: EngineInterface,
   e: { subagentType: string; description: string },
   r: AgentSpawnResult,
-  route: Omit<SpawnRoute, 'at' | 'agentId' | 'type' | 'ran'>,
+  route: RouteFields,
 ): Promise<AgentSpawnResult> {
   if (r.deny !== undefined || r.agentId === undefined) return r
   const at = await $.clock.now()
@@ -182,97 +137,15 @@ async function placed(
   await update($, phases, (s) => spawned(s, { id, type: e.subagentType, description: e.description, model: r.model, at }))
   const record: SpawnRoute = clipped({ at, agentId: id, type: e.subagentType, ...route, ran: r.model })
   await update($, spawns, (s) => [...s, asWritten(record)].slice(-SPAWNS_CAP))
-  await keepRoute($, record)
+  await keepRoute($, record, (subject, reason) => note($, subject, reason))
   return r
 }
-
-// `effortApplied` as the record is written: the effort was decided under enforce AND a step of the agent's run was
-// passed down the chain at it (effort.ts `carried`), as the model's `applied` means a rewrite was sent down. A hook
-// cannot see whether the engine then sent the request. A step that carries it later marks the record (markCarried).
-const asWritten = (r: SpawnRoute): SpawnRoute => (r.effortApplied === true ? { ...r, effortApplied: carried(r.agentId) } : r)
-// Only the agent's newest record is its current run's: an older one (a run before a resume) keeps what it said.
-const marked = (rows: SpawnRoute[], id: string): SpawnRoute[] => {
-  const i = rows.findLastIndex((r) => r.agentId === id)
-  const r = rows[i]
-  if (r === undefined || r.effortApplied !== false || r.effort === null || r.effort === undefined) return rows
-  return rows.map((row, j) => (j === i ? { ...row, effortApplied: true } : row))
-}
-
-// An option key the engine does not read for this install (config.ts): a toast, and a row in the POLICY
-// panel, each time a session starts, instead of the defaults running unannounced.
-async function checkConfig($: EngineInterface, mode: string): Promise<void> {
-  try {
-    const settingsPath = await expandHome($, SETTINGS_PATH)
-    if (!(await $.fs.exists(settingsPath))) return
-    const settings = String(await $.fs.read(settingsPath))
-    const installedPath = await expandHome($, INSTALLED_PLUGINS_PATH)
-    const installed = (await $.fs.exists(installedPath)) ? String(await $.fs.read(installedPath)) : undefined
-    for (const u of unboundKeys(settings, installed, $.plugin.name, $.plugin.root)) {
-      const message = unboundMessage(u, mode)
-      await note($, 'options not bound', message)
-      $.ui.toast(message)
-    }
-  } catch (error) {
-    await note($, 'options not checked', String(error).slice(0, 120))
-  }
-}
-
-// This session's key in $.store (spawns.ts), set when the session opens; a spawn before that, or after
-// a failure to open it, is kept in $.state only, and the failure is a named row.
-let routesKey: string | undefined
-
-async function openRoutes($: EngineInterface): Promise<void> {
-  routesKey = undefined
-  try {
-    const now = await $.clock.now()
-    const key = spawnsKey(now, await $.session.id())
-    for (const stale of staleSpawnKeys(await $.store.keys(), now)) await $.store.delete(stale)
-    routesKey = key
-  } catch (error) {
-    await note($, 'spawn records', `not kept across sessions: ${String(error).slice(0, 100)}`)
-  }
-}
-
-// The store's reads and writes of this session's key, one at a time: a spawn's record and a step marking it would
-// otherwise read the same rows and the later write drop the other's change.
-let routeWrites: Promise<void> = Promise.resolve()
-
-async function rewriteRoutes($: EngineInterface, change: (kept: SpawnRoute[]) => SpawnRoute[]): Promise<void> {
-  const key = routesKey
-  if (key === undefined) return
-  const write = async (): Promise<void> => {
-    try {
-      const kept = ((await $.store.get(key)) ?? []) as SpawnRoute[]
-      await $.store.set(key, change(kept))
-    } catch (error) {
-      await note($, 'spawn records', `not kept across sessions: ${String(error).slice(0, 100)}`)
-    }
-  }
-  const done = routeWrites.then(write)
-  // A write that failed fails its caller only: the next write still runs.
-  routeWrites = done.catch(() => undefined)
-  await done
-}
-
-const keepRoute = ($: EngineInterface, record: SpawnRoute): Promise<void> =>
-  rewriteRoutes($, (kept) => [...kept, asWritten(record)].slice(-ROUTES_PER_SESSION))
 
 // The first step of an agent's run passed down the chain at its decided effort: its records say so, in state and store.
 async function markCarried($: EngineInterface, id: string): Promise<void> {
   await update($, spawns, (s) => marked(s, id))
-  await rewriteRoutes($, (kept) => marked(kept, id))
+  await rewriteRoutes($, (kept) => marked(kept, id), (subject, reason) => note($, subject, reason))
 }
-
-const routeOf = (r: Routed, applied: boolean, effort: Decided, enforce: boolean): Omit<SpawnRoute, 'at' | 'agentId' | 'type' | 'ran'> => ({
-  requested: r.requested,
-  definition: r.definition,
-  decided: r.model ?? r.stands,
-  reason: r.reason,
-  applied,
-  effort: effort.effort ?? null,
-  effortReason: effort.reason,
-  effortApplied: enforce && effort.effort !== undefined,
-})
 
 const onMeasure: Hook<'session.measure'> = async ($, e, next) => {
   const before = await read($, context)
@@ -301,10 +174,10 @@ const onStep: Hook<'turn.step'> = async function* ($, e, next) {
   if (e.agentId !== undefined) return yield* agentStep($, e, e.agentId, next)
   mainTurnId = e.turnId
   const p = await read($, policy)
-  const grade = await gradeOf($)
+  const grade = await gradeOf($, (subject, reason) => note($, subject, reason))
   const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
   const have = currentEffort(e.model, e.effort)
-  if (e.index === 0) await readCeilings($)
+  if (e.index === 0) ceilings = await readCeilings($, (subject, reason) => note($, subject, reason))
   const phase = (await read($, phases)).loops.find((l) => l.id === 'main')?.phase
   const loop = phase === undefined || phase === null || e.index === 0 ? undefined : ceilings[phase]
   let target = effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) ?? have
@@ -399,40 +272,36 @@ async function spawnRouted(
 ): Promise<AgentSpawnResult> {
   // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
   // command, a notification) routes without one, as turn.step does.
-  const grade = e.parentAgentId === undefined ? await gradeOf($) : undefined
-  const cls = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurnId ? grade.taskClass : undefined
+  const grade = e.parentAgentId === undefined ? await gradeOf($, (subject, reason) => note($, subject, reason)) : undefined
+  const turnClass = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurnId ? grade.taskClass : undefined
   // Read whatever the call says: the record names the definition's model beside the call's. A fork has no
   // definition: it runs as its parent, and the engine ignores a rewrite of its model or of a workflow agent's
-  // content (AgentSpawnInput.model, .workflow), so neither is sent one.
+  // content (AgentSpawnInput.model, .workflow), so neither is sent one; nor is a teammate given DESIGN or the table.
   const rewritable = !e.fork && e.workflow === undefined
+  const fixed = !rewritable || e.isTeammate === true
   const found = e.fork ? {} : await definitionOf($, e.subagentType)
   if ('unread' in found && e.model === undefined) await note($, `${e.subagentType} definition`, found.unread)
   const definition = 'unread' in found ? undefined : found
-  const routed = routeAgentModel(e.subagentType, e.model, definition, e.parentModel, cls)
-  const applied = p.mode === 'enforce' && routed.model !== undefined && rewritable
-  if (routed.model !== undefined) {
-    const d: PolicyDecision = {
-      at: await $.clock.now(),
-      kind: 'model',
-      subject: `${e.subagentType}${cls === undefined ? '' : ` · ${cls}`}`,
-      from: e.model ?? definition?.model ?? `inherit ${e.parentModel}`,
-      to: routed.model,
-      applied,
-      reason: `inheriting ${e.subagentType} routed to ${routed.model} by its kind${cls === undefined ? '' : ` on a ${cls} turn`}`,
-    }
-    await update($, policy, (s) => decide(s, d))
-  }
-  // The effort of its steps (effort.ts): decided before the spawn is passed on, held as soon as it answers.
-  const effort = subagentEffort({
-    fixed: !rewritable || e.isTeammate === true,
-    call: callOf(e.tool_use_id),
-    definition,
-    grade: cls === undefined ? undefined : grade?.effort,
-  })
-  // Pending until held: a step of the agent that comes before the spawn answers waits for it (agentStep).
-  const settle = effort.effort === undefined ? undefined : spawnPending()
+  const call = callOf(e.tool_use_id)
   // A resume names its agent (2.1.304 `resume.agentId`): its new run has carried nothing, before that run can step.
   const resuming = (e as { resume?: { agentId?: unknown } }).resume?.agentId
+  const d = await dispatchOf($, e, { fixed, seen: call !== undefined, resumed: typeof resuming === 'string', callModel: e.model, definition })
+  for (const [subject, why] of d.refused) await note($, subject, why)
+  const row = d.row
+  if (row !== undefined) await update($, policy, (s) => decide(s, row))
+  const steer = d.steer
+  const routed = routeAgentModel(e.model, definition, e.parentModel, steer)
+  const applied = p.mode === 'enforce' && routed.model !== undefined && rewritable
+  const from = e.model ?? definition?.model ?? `inherit ${e.parentModel}`
+  const to = routed.model
+  if (to !== undefined) {
+    const at = await $.clock.now()
+    await update($, policy, (s) => decide(s, modelRowOf(at, { type: e.subagentType, steer, from, to, applied })))
+  }
+  // The effort of its steps (effort.ts): decided before the spawn is passed on, held as soon as it answers.
+  const effort = subagentEffort({ fixed, call, definition, steer, grade: turnClass === undefined ? undefined : grade?.effort })
+  // Pending until held: a step of the agent that comes before the spawn answers waits for it (agentStep).
+  const settle = effort.effort === undefined ? undefined : spawnPending()
   if (typeof resuming === 'string') resumed(resuming)
   let r: AgentSpawnResult
   try {
@@ -443,21 +312,18 @@ async function spawnRouted(
   } finally {
     settle?.()
   }
-  if (effort.effort !== undefined && r.agentId !== undefined) await effortRow($, e.subagentType, cls, effort.effort, p.mode === 'enforce')
+  const cls = steer.by === 'table' ? steer.cls : turnClass
+  if (effort.effort !== undefined && r.agentId !== undefined) {
+    const at = await $.clock.now()
+    await update($, policy, (s) => decide(s, effortRowOf(at, { type: e.subagentType, cls, effort, applied: p.mode === 'enforce' })))
+  }
   // A resumed agent's record names the effort its steps keep, the one held since its first spawn; its run has
   // carried nothing yet.
   const held = effort.effort === undefined && r.agentId !== undefined ? decidedFor(r.agentId) : undefined
   // An engine whose resume names no agent (2.1.292 types): the reset comes once the spawn answered.
   if (held !== undefined && r.agentId !== undefined && typeof resuming !== 'string') resumed(r.agentId)
   const kept: Decided = held === undefined ? effort : { effort: held, reason: 'resumed' }
-  return placed($, e, r, routeOf(routed, applied, kept, p.mode === 'enforce'))
-}
-
-// One row per spawn whose steps the mod sets the effort of; the steps themselves log none.
-async function effortRow($: EngineInterface, type: string, cls: TaskClass | undefined, effort: Effort, applied: boolean): Promise<void> {
-  const at = await $.clock.now()
-  const subject = `${type}${cls === undefined ? '' : ` · ${cls}`} · every step`
-  await update($, policy, (s) => decide(s, { at, kind: 'effort', subject, from: 'no call or definition effort', to: effort, applied }))
+  return placed($, e, r, routeOf({ routed, applied, steer, effort: kept, enforce: p.mode === 'enforce' }))
 }
 
 // The turns main was last told in, each once a turn and not once a call: the user (a toast) and the model (a
@@ -571,7 +437,7 @@ const onComplete: Hook<'turn.complete'> = async ($, e, next) => {
 // What a session starts from: no definition, phase or route known, this session's store key, the options
 // checked, the configured fields set afresh (a hot reload keeps $.state from the previous load).
 async function begin($: EngineInterface, mode: PolicyState['mode'], configured: (p: PolicyState) => PolicyState, capProblem?: string): Promise<void> {
-  definitions.clear()
+  forgetDefinitions()
   resetGate()
   resetEfforts()
   mainTurnId = undefined
@@ -579,8 +445,8 @@ async function begin($: EngineInterface, mode: PolicyState['mode'], configured: 
   remindedTurn = undefined
   await update($, phases, () => emptyPhases())
   await update($, spawns, () => [])
-  await openRoutes($)
-  await checkConfig($, mode)
+  await openRoutes($, (subject, reason) => note($, subject, reason))
+  await checkConfig($, mode, (subject, reason) => note($, subject, reason))
   await update($, policy, configured)
   if (capProblem !== undefined) await note($, 'agent cap option', capProblem)
   await refreshContext($)

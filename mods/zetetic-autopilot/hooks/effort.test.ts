@@ -4,7 +4,7 @@ import { EFFORTS_CAP, type SpawnFacts, callEnded, callOf, callStarted, decidedFo
 
 // The rule of effort.ts, one fact at a time (ADR-9850), and the bounds of what it keeps.
 
-const INHERITING: SpawnFacts = { fixed: false, call: {}, definition: {}, grade: 'low' }
+const INHERITING: SpawnFacts = { fixed: false, call: {}, definition: {}, steer: { by: 'none' }, grade: 'low' }
 
 test('an inheriting type with no call or definition effort takes the grade\'s effort', () => {
   expect(subagentEffort(INHERITING)).toEqual({ effort: 'low', reason: 'grade' })
@@ -24,6 +24,24 @@ test('every fact that makes the effort another\'s decides nothing, whatever the 
     [{ grade: undefined }, 'ungraded'],
   ]
   for (const [facts, reason] of cases) expect(subagentEffort({ ...INHERITING, ...facts })).toEqual({ effort: undefined, reason })
+})
+
+// ADR-9851: DESIGN and the table decide after every explicit fact and before the grade; a failed classifier decides
+// nothing and does not fall back to the grade.
+test('DESIGN and the table decide before the grade, after every explicit fact; a failed class leaves the engine\'s', () => {
+  const design = { by: 'design', effort: 'high' } as const
+  const table = { by: 'table', model: 'opus', effort: 'medium', cls: 'analysis', review: false, rung: 'opus/medium' } as const
+  expect(subagentEffort({ ...INHERITING, steer: design })).toEqual({ effort: 'high', reason: 'design' })
+  expect(subagentEffort({ ...INHERITING, steer: table })).toEqual({ effort: 'medium', reason: 'table' })
+  expect(subagentEffort({ ...INHERITING, steer: { by: 'design', model: 'opus' } })).toEqual({ effort: 'low', reason: 'grade' })
+  expect(subagentEffort({ ...INHERITING, steer: { by: 'unclassified', why: 'x' } })).toEqual({ effort: undefined, reason: 'unclassified' })
+  for (const steer of [design, table]) {
+    expect(subagentEffort({ ...INHERITING, steer, call: { effort: 'low' } }).reason).toBe('call')
+    expect(subagentEffort({ ...INHERITING, steer, definition: { effort: 'low' } }).reason).toBe('definition')
+    expect(subagentEffort({ ...INHERITING, steer, definition: { model: 'sonnet' } }).reason).toBe('pinned')
+    expect(subagentEffort({ ...INHERITING, steer, fixed: true }).reason).toBe('fixed')
+    expect(subagentEffort({ ...INHERITING, steer, call: undefined }).reason).toBe('unseen')
+  }
 })
 
 test('the order: a call effort beats an unread definition, a fork beats an unseen call', () => {

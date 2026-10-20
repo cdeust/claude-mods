@@ -40,8 +40,8 @@ export type PolicyDecision = {
 // that ran (hooks/route.ts). `requested` is the Agent call's `model`, `definition` the model its
 // agent file pins (null: none, `inherit`, or the file was not read), `decided` what the router
 // settled on (the call's, else the definition's, else `inherit <parent model>`), `ran` what the
-// engine answered it runs on, `reason` the rule that decided as a short code (call, definition, kind,
-// inherit, unread: hooks/route.ts), `applied` true when a rewrite was sent (false when the call stood
+// engine answered it runs on, `reason` the rule that decided as a short code (hooks/route.ts; `kind`
+// only on records before 0.11.0), `applied` true when a rewrite was sent (false when the call stood
 // as it was, or observe mode only logged the rewrite). Every string is clipped (spawns.ts), so the
 // size of a record, and of the store, is bounded.
 export type SpawnRoute = {
@@ -52,14 +52,19 @@ export type SpawnRoute = {
   definition: string | null
   decided: string
   ran: string
-  reason: 'call' | 'definition' | 'kind' | 'inherit' | 'unread'
+  reason: 'call' | 'definition' | 'design' | 'table' | 'unclassified' | 'kind' | 'inherit' | 'unread'
   applied: boolean
+  // The dispatch table's decision (hooks/dispatch.ts, ADR-9851): the class the classifier gave the spawn's task and
+  // whether it is a review, on a record whose `reason` is `table` only; its rung is `decided`/`effort`. Absent on every
+  // other record (an explicit model, DESIGN, no classification or a failed one) and before 0.11.0.
+  cls?: 'routine' | 'planned' | 'bugfix' | 'analysis' | 'critical'
+  review?: boolean
   // The effort the mod decided for every step of the agent (hooks/effort.ts, ADR-9850): null when it decided none and
   // the engine's stands; `effortReason` the rule, as a short code; `effortApplied` true once the mod passed a step of the
   // agent's run down the chain at it (enforce), as `applied` means for the model: what the engine then sent is not
   // seen from a hook. False before that, under observe, or when nothing was decided. Absent before 0.10.0.
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
-  effortReason?: 'grade' | 'resumed' | 'call' | 'definition' | 'pinned' | 'fixed' | 'unseen' | 'unread' | 'ungraded'
+  effortReason?: 'design' | 'table' | 'grade' | 'resumed' | 'unclassified' | 'call' | 'definition' | 'pinned' | 'fixed' | 'unseen' | 'unread' | 'ungraded'
   effortApplied?: boolean
 }
 

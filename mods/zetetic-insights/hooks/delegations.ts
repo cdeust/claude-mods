@@ -1,52 +1,18 @@
 // What the orchestrator asked of each delegation and what came of it: the DESIGN block its prompt
-// opened with (the dispatch-contract skill), kept beside the agent's outcome, and four predicates
+// opened with (the dispatch-contract skill, parsed in design.ts), kept beside the agent's outcome, and four predicates
 // that question a delegation. Each predicate is written once, in flagsOf; pure, so the register and
 // the tests share it.
 
-import type { AgentRecord, Design, DelegationFlag, DelegationRow, DelegationStats, OutcomeEvent, TurnRecord } from '../types'
+import type { AgentRecord, DelegationFlag, DelegationRow, DelegationStats, TurnRecord } from '../types'
 import { familyOf } from './models'
 import { eventsBySession, judge } from './outcome'
 
-export const DESIGN_FIELD_CAP = 80 // source: own choice, characters kept of each design field; the block states a reason, not an essay
 export const OVERKILL_STEPS = 5 // source: own choice, an opus or fable agent that took at most this many steps did a small job
 export const UNDERPOWERED_RATE = 0.25 // source: own choice, a flag on one small delegation, not a decision: one failed call in four (the old phase threshold; phases are now read with intervals, hooks/rungs.ts)
 export const UNDERPOWERED_MIN_STEPS = 4 // source: own choice, fewer steps than this is too small a sample for a failure rate
 export const RECENT_FLAGGED = 8 // source: own choice, the flagged delegations the panel can list
 
 const FLAGS: readonly DelegationFlag[] = ['undesigned', 'rerouted', 'overkill', 'underpowered']
-
-const cap = (s: string): string | null => {
-  const t = s.trim().slice(0, DESIGN_FIELD_CAP)
-  return t === '' ? null : t
-}
-
-// The DESIGN block of a prompt: the lines after the first line that is exactly `DESIGN`, up to the
-// first blank line. `model: X` and `effort: Y` may share a line, separated by ` · `; `genius shape:`
-// takes the rest of its line. A field the block does not state is null; no block is null. Total.
-export const parseDesign = (prompt: string): Design | null => {
-  if (typeof prompt !== 'string') return null
-  const lines = prompt.split(/\r?\n/)
-  const start = lines.findIndex((l) => l.trim() === 'DESIGN')
-  if (start < 0) return null
-  const design: Design = { model: null, effort: null, shape: null }
-  for (const raw of lines.slice(start + 1)) {
-    const line = raw.trim()
-    if (line === '') break
-    const shape = /^genius shape:(.*)$/i.exec(line)
-    if (shape !== null) {
-      design.shape ??= cap(shape[1] ?? '')
-      continue
-    }
-    if (/^(task|check):/i.test(line)) continue
-    for (const part of line.split(' · ')) {
-      const m = /^(model|effort):(.*)$/i.exec(part.trim())
-      if (m === null) continue
-      const key = m[1]?.toLowerCase() === 'model' ? 'model' : 'effort'
-      design[key] ??= cap(m[2] ?? '')
-    }
-  }
-  return design
-}
 
 const REAL = new Set(['haiku', 'sonnet', 'opus', 'fable'])
 

@@ -56,13 +56,19 @@ test('the worst-case store is under half of the 4 MiB cap, and every string of a
     definition: long(CLIP.model),
     decided: long(CLIP.model),
     ran: long(CLIP.model),
-    reason: 'definition',
+    reason: 'unclassified',
     applied: true,
+    // Every optional field at its longest value: 0.10.0's effort, and 0.11.0's longest effort reason.
+    effort: 'medium',
+    effortReason: 'unclassified',
+    effortApplied: false,
   } satisfies SpawnRoute)
+  // 0.11.0's table fields ride only a record whose reasons are `table` (shorter than `unclassified`): its worst too.
+  const tabled = clipped({ ...worst, reason: 'table', effortReason: 'table', cls: 'critical', review: false } satisfies SpawnRoute)
   expect(worst.agentId).toHaveLength(CLIP.agentId)
   expect(worst.type).toHaveLength(CLIP.type)
   expect(worst.ran).toHaveLength(CLIP.model)
-  const record = JSON.stringify(worst).length
+  const record = Math.max(JSON.stringify(worst).length, JSON.stringify(tabled).length)
   const session = record * ROUTES_PER_SESSION + 2 + SESSION_KEY_BYTES
   const total = session * HARD_SESSIONS
   expect(total).toBeLessThan(STORE_BYTES / 2)

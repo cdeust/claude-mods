@@ -23,6 +23,8 @@ while read -r file reference users; do
 done <<'LIST'
 paths.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot zetetic-insights
 paths.test.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot zetetic-insights
+design.ts zetetic-insights zetetic-autopilot
+design.test.ts zetetic-insights zetetic-autopilot
 LIST
 [ "$status" -eq 0 ] && echo "every shared file is identical in all of its mods"
 exit "$status"

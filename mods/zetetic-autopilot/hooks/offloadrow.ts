@@ -1,6 +1,6 @@
 // The offload as the engine sees it: the blocks of one stored tool-result row, the files written for
 // the long ones, the blocks the model will read. The plan itself is offload.ts (pure); this is the
-// part that writes and reports, with the policy state and the cockpit rows behind a `Sink`.
+// part that writes and reports, with the policy state and its decision rows behind a `Sink`.
 import type { EngineInterface } from 'claude-code'
 
 import { type OffloadOptions, type OffloadPlan, planOffload, toolResultsDir } from './offload'

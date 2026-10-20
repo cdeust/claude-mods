@@ -299,7 +299,7 @@ test('an option that is not a positive whole number is named and the default sta
 })
 
 test(
-  'enforce: a routine Explore goes to haiku, and quota pressure leaves a call for opus on opus',
+  'enforce: the turn grade routes no model (0.11.0: the dispatch table does, by the spawn\'s own task), and quota pressure leaves a call for opus on opus',
   { options: { policy_mode: 'enforce', quota_pressure_percent: 50 } },
   async ($, on) => {
     stubs(on, [], { turnId: 't', taskClass: 'routine', effort: 'low' })
@@ -323,7 +323,7 @@ test(
         parentModel: 'claude-fable-5-1',
       }) as never
     await $.agent.spawn(spawn(undefined))
-    expect(spawned).toBe('haiku')
+    expect(spawned).toBe(undefined)
     await $.session.measure({
       context: { window: 200000, tokens: 1000, percent: 1 },
       rateLimits: [{ kind: 'five_hour', percentUsed: 60 }],
@@ -385,7 +385,7 @@ test('with no home to place the thresholds file the source says so', async ($, o
 })
 
 test(
-  'enforce: a grade bound to an earlier main turn does not route the next turn\'s subagents',
+  'enforce: a grade, bound to this turn or an earlier one, routes no subagent\'s model (0.11.0)',
   { options: { policy_mode: 'enforce' } },
   async ($, on) => {
     stubs(on, [], { turnId: 't', taskClass: 'routine', effort: 'low' })
@@ -404,6 +404,6 @@ test(
       provider: { kind: 'model', model: 'claude-fable-5-1' },
       parentModel: 'claude-fable-5-1',
     } as never)
-    expect(spawned).toBe('sonnet')
+    expect(spawned).toBe(undefined)
   },
 )
