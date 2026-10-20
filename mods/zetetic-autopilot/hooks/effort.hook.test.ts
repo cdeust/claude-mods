@@ -86,6 +86,8 @@ scenario('I1: an inheriting Explore whose call set no effort runs every step at 
   await mainStep($)
   const r = await dispatch($, tool, spawn('Explore'))
   expect(r.agentId).toBe('ag-1')
+  // Decided, and no step has carried it yet.
+  expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', effortApplied: false })
   await agentStep($, 'ag-1', 0)
   await agentStep($, 'ag-1', 3)
   expect(sentFor(steps, 'ag-1')).toEqual(['medium', 'medium'])
@@ -107,6 +109,21 @@ scenario('I3: a spawn raised while main\'s step is still streaming (its first tu
   expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', reason: 'kind', decided: 'sonnet' })
 })
 
+scenario('I1: a background launch starts the run before its spawn answers: step 0 goes out at the decided effort too', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  let first: Promise<void> | undefined
+  seen.launch = (id) => {
+    seen.launch = undefined
+    first = agentStep($, id, 0)
+  }
+  await dispatch($, tool, spawn('Explore'))
+  await first
+  await agentStep($, 'ag-1', 1)
+  expect(sentFor(steps, 'ag-1')).toEqual(['medium', 'medium'])
+  expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', effortApplied: true })
+})
+
 scenario('I1: a resumed run of the agent, after its turn ended, keeps the decided effort', ENFORCE, async ($, seen, steps, tool) => {
   seen.grade = ANALYSIS
   await mainStep($)
@@ -116,6 +133,7 @@ scenario('I1: a resumed run of the agent, after its turn ended, keeps the decide
   // A message resumes it under the same id; the engine raises the spawn again with the message's call, not an Agent one.
   seen.resumes = 'ag-1'
   await $.agent.spawn({ ...(spawn('general-purpose') as object), tool_use_id: 'send-1' } as never)
+  expect(seen.spawns?.[1]).toMatchObject({ agentId: 'ag-1', effortReason: 'resumed', effortApplied: false })
   await agentStep($, 'ag-1', 0)
   expect(sentFor(steps, 'ag-1')).toEqual(['medium', 'medium'])
   // The resume's record names the effort the steps keep, not the unseen call's nothing.
@@ -126,6 +144,17 @@ scenario('I2: the Agent call\'s own effort stands', ENFORCE, async ($, seen, ste
   seen.grade = ANALYSIS
   await mainStep($)
   await dispatch($, tool, spawn('Explore'), { effort: 'high' })
+  await agentStep($, 'ag-1', 0)
+  expect(sentFor(steps, 'ag-1')).toEqual(['high'])
+  expect(seen.spawns?.[0]).toMatchObject({ effort: null, effortReason: 'call' })
+})
+
+// 2.1.304 also takes the relative levels `lower` and `higher` on the call (behind a feature flag): an effort the
+// call names stands, whatever its value.
+scenario('I2: a call effort that is not one of the five levels stands too', ENFORCE, async ($, seen, steps, tool) => {
+  seen.grade = ANALYSIS
+  await mainStep($)
+  await dispatch($, tool, spawn('Explore'), { effort: 'higher' })
   await agentStep($, 'ag-1', 0)
   expect(sentFor(steps, 'ag-1')).toEqual(['high'])
   expect(seen.spawns?.[0]).toMatchObject({ effort: null, effortReason: 'call' })
@@ -200,6 +229,8 @@ scenario('I1: a step that carries no effort (a model without one) is not given o
   await dispatch($, tool, spawn('Explore'))
   await agentStep($, 'ag-1', 0, 'none')
   expect(sentFor(steps, 'ag-1')).toEqual([undefined])
+  // No step carried the decided effort: the record does not say it was applied.
+  expect(seen.spawns?.[0]).toMatchObject({ effort: 'medium', effortReason: 'grade', effortApplied: false })
 })
 
 scenario('observe: the decision is a row and in the record, and every step goes out as the engine sent it', { policy_mode: 'observe', quota_pressure_percent: 80 }, async ($, seen, steps, tool) => {

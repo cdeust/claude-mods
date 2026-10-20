@@ -84,19 +84,25 @@ scenario('B1: a long-running session outside the newest KEEP_SESSIONS keeps its 
   expect(seen.store['spawns:0000000000500:long-running']).toEqual([{ agentId: 'early' }])
 })
 
-const spawnMany = async ($: Parameters<Body>[0], n: number) => {
-  for (let i = 0; i < n; i++) await $.agent.spawn(spawn(ENGINEER, 'haiku'))
-}
+// The bounds are asserted on a store and a state already filled to them, so each test makes one or two spawns: a
+// test that made the hundred spawns itself had its verdict set by how fast the machine ran them, not by the code.
+const KEY = 'spawns:0000001000000:sid-1'
+const kept = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({ agentId: `old-${from + i}` }) as never)
 
-scenario('the route cap boundary: ROUTES_PER_SESSION routes are all kept, one more drops the oldest', { ...ENFORCE, max_parallel_agents: 500 }, async ($, seen) => {
-  await spawnMany($, ROUTES_PER_SESSION)
-  const key = 'spawns:0000001000000:sid-1'
-  expect(seen.store[key]).toHaveLength(ROUTES_PER_SESSION)
-  expect(seen.store[key]?.[0]?.agentId).toBe('ag-1')
-  await spawnMany($, 1)
-  expect(seen.store[key]).toHaveLength(ROUTES_PER_SESSION)
-  expect(seen.store[key]?.[0]?.agentId).toBe('ag-2')
-  expect(seen.store[key]?.at(-1)?.agentId).toBe(`ag-${ROUTES_PER_SESSION + 1}`)
+scenario('the route cap boundary: ROUTES_PER_SESSION routes are all kept', ENFORCE, async ($, seen) => {
+  seen.store[KEY] = kept(ROUTES_PER_SESSION - 1)
+  await $.agent.spawn(spawn(ENGINEER, 'haiku'))
+  expect(seen.store[KEY]).toHaveLength(ROUTES_PER_SESSION)
+  expect(seen.store[KEY]?.[0]?.agentId).toBe('old-0')
+  expect(seen.store[KEY]?.at(-1)?.agentId).toBe('ag-1')
+})
+
+scenario('the route cap boundary: one past ROUTES_PER_SESSION drops the oldest', ENFORCE, async ($, seen) => {
+  seen.store[KEY] = kept(ROUTES_PER_SESSION)
+  await $.agent.spawn(spawn(ENGINEER, 'haiku'))
+  expect(seen.store[KEY]).toHaveLength(ROUTES_PER_SESSION)
+  expect(seen.store[KEY]?.[0]?.agentId).toBe('old-1')
+  expect(seen.store[KEY]?.at(-1)?.agentId).toBe('ag-1')
 })
 
 scenario('observe: nothing is rewritten and nothing is logged for a designed model, under pressure or not', { policy_mode: 'observe', quota_pressure_percent: 80 }, async ($, seen) => {
@@ -115,14 +121,21 @@ scenario('observe: an inheriting type is routed in a row, not rewritten', { poli
 })
 
 // Review of #25 round 2, m5 (G19): the spawns row in $.state keeps the newest SPAWNS_CAP, the store keeps the rest.
-scenario('the spawns state boundary: SPAWNS_CAP rows are all kept, one more drops the oldest', { ...ENFORCE, max_parallel_agents: 500 }, async ($, seen) => {
-  await spawnMany($, SPAWNS_CAP)
+
+scenario('the spawns state boundary: SPAWNS_CAP rows are all kept', ENFORCE, async ($, seen) => {
+  seen.spawnsState = kept(SPAWNS_CAP - 1)
+  await $.agent.spawn(spawn(ENGINEER, 'haiku'))
   expect(seen.spawns).toHaveLength(SPAWNS_CAP)
-  expect(seen.spawns?.[0]?.agentId).toBe('ag-1')
-  await spawnMany($, 1)
+  expect(seen.spawns?.[0]?.agentId).toBe('old-0')
+  expect(seen.spawns?.at(-1)?.agentId).toBe('ag-1')
+})
+
+scenario('the spawns state boundary: one past SPAWNS_CAP drops the oldest', ENFORCE, async ($, seen) => {
+  seen.spawnsState = kept(SPAWNS_CAP)
+  await $.agent.spawn(spawn(ENGINEER, 'haiku'))
   expect(seen.spawns).toHaveLength(SPAWNS_CAP)
-  expect(seen.spawns?.[0]?.agentId).toBe('ag-2')
-  expect(seen.spawns?.at(-1)?.agentId).toBe(`ag-${SPAWNS_CAP + 1}`)
+  expect(seen.spawns?.[0]?.agentId).toBe('old-1')
+  expect(seen.spawns?.at(-1)?.agentId).toBe('ag-1')
 })
 
 const BARE = JSON.stringify({ pluginConfigs: { 'zetetic-autopilot': { options: { policy_mode: 'observe' } } } })

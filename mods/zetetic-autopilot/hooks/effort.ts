@@ -31,7 +31,7 @@ export type EffortReason = 'grade' | 'resumed' | Stands | Undecided
 // turn (undefined when there is none, or when a subagent spawns).
 export type SpawnFacts = {
   fixed: boolean
-  call: { effort?: string } | undefined
+  call: { effort?: unknown } | undefined
   definition: Definition | undefined
   grade: Effort | undefined
 }
@@ -65,18 +65,24 @@ export const keep = <V>(m: Map<string, V>, key: string, value: V, cap: number): 
   }
 }
 
-// The Agent calls running now, by tool_use_id, with the effort each set (null: none). An entry lives while its tool
-// runs: the Agent tool raises agent.spawn from inside its call, with the tool_use_id the tool.call input carries.
-const calls = new Map<string, Effort | null>()
+// The Agent calls running now, by tool_use_id, each with the effort it named, as it came: any value stands, one of the
+// five levels or not (2.1.304 also takes `lower`/`higher`). An entry lives while its tool runs: the Agent tool raises
+// agent.spawn from inside its call, with the tool_use_id the tool.call input carries.
+const calls = new Map<string, { effort?: unknown }>()
 
-// The decided effort of each agent the mod decided one for, by agent id. Kept past the agent's turn.complete: a
-// message resumes an ended agent under the same id, and its resumed run keeps its effort. Bounded by EFFORTS_CAP.
-const decided = new Map<string, Effort>()
+// The decided effort of each agent the mod decided one for, by agent id, and whether a step of its current run went
+// out at it. Kept past the agent's turn.complete: a message resumes an ended agent under the same id, and its resumed
+// run keeps its effort. Bounded by EFFORTS_CAP.
+const decided = new Map<string, { effort: Effort; carried: boolean }>()
+
+// The spawns in flight whose decision is not held yet (agent id unknown until the spawn answers). A background
+// launch starts the agent's run before its spawn answers (2.1.304), so a step may come first and waits for these.
+const pending = new Set<Promise<void>>()
 
 export const isEffort = (v: unknown): v is Effort => v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh' || v === 'max'
 
 export const callStarted = (toolUseId: string, effort: unknown): void => {
-  keep(calls, toolUseId, isEffort(effort) ? effort : null, EFFORTS_CAP)
+  keep(calls, toolUseId, effort === undefined ? {} : { effort }, EFFORTS_CAP)
 }
 
 export const callEnded = (toolUseId: string): void => {
@@ -84,24 +90,53 @@ export const callEnded = (toolUseId: string): void => {
 }
 
 // The Agent call a spawn belongs to, as tool.call saw it; undefined when none is running under that id.
-export const callOf = (toolUseId: string): { effort?: Effort } | undefined => {
-  if (!calls.has(toolUseId)) return undefined
-  const effort = calls.get(toolUseId)
-  return effort === null || effort === undefined ? {} : { effort }
-}
+export const callOf = (toolUseId: string): { effort?: unknown } | undefined => calls.get(toolUseId)
 
 export const holdEffort = (agentId: string, effort: Effort): void => {
-  keep(decided, agentId, effort, EFFORTS_CAP)
+  keep(decided, agentId, { effort, carried: false }, EFFORTS_CAP)
 }
 
-export const decidedFor = (agentId: string): Effort | undefined => decided.get(agentId)
+export const decidedFor = (agentId: string): Effort | undefined => decided.get(agentId)?.effort
+
+// A step went out at the agent's decided effort; true the first time for its current run.
+export const carry = (agentId: string): boolean => {
+  const d = decided.get(agentId)
+  if (d === undefined || d.carried) return false
+  d.carried = true
+  return true
+}
+
+export const carried = (agentId: string): boolean => decided.get(agentId)?.carried === true
+
+// A resumed run has carried nothing yet.
+export const resumed = (agentId: string): void => {
+  const d = decided.get(agentId)
+  if (d !== undefined) d.carried = false
+}
+
+// A spawn whose decision will be held once it answers; the function returned settles it, held or not.
+export const spawnPending = (): (() => void) => {
+  let settle = (): void => undefined
+  const p = new Promise<void>((resolve) => (settle = resolve))
+  pending.add(p)
+  return () => {
+    pending.delete(p)
+    settle()
+  }
+}
+
+// What a step of an agent with no decision waits for: every pending spawn's answer; undefined when none is in flight.
+// The engine answers a spawn without waiting on the agent's run (2.1.304, both launch paths), so this settles.
+export const spawnsSettled = (): Promise<void> | undefined =>
+  pending.size === 0 ? undefined : Promise.all([...pending]).then(() => undefined)
 
 export const resetEfforts = (): void => {
   calls.clear()
   decided.clear()
+  pending.clear()
 }
 
 // The effort a subagent's step goes out at: the decided one, on a step that carries an effort level (absent: a model
 // without effort, which is not given one; a number is not a level). Undefined: the step goes out as it came.
 export const stepEffort = (designed: Effort | undefined, sent: unknown): Effort | undefined =>
-  designed !== undefined && isEffort(sent) && sent !== designed ? designed : undefined
+  designed !== undefined && isEffort(sent) ? designed : undefined

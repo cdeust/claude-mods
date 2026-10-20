@@ -39,6 +39,11 @@ export type Seen = {
   grade?: { turnId: string | null; taskClass: string; effort: string }
   // When set, the next spawn answers this id: a message resumed that agent, which keeps its id.
   resumes?: string
+  // When set, the spawn starts the agent's run before it answers, as a background launch does (2.1.304: the run is
+  // started, then the spawn answers), without waiting on the run.
+  launch?: (agentId: string) => void
+  // When set, the mod's next read of its own `spawns` state finds these rows (once): a state already filled.
+  spawnsState?: Route[]
 }
 
 type On = Parameters<TestBody>[1]
@@ -57,11 +62,17 @@ const machineStubs = (on: On, seen: Seen) => {
     const text = seen.files[path]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
-  on('state.get', ($, e, next) =>
-    (e as { plugin?: string }).plugin === 'zetetic-genius'
-      ? { value: { value: seen.grade === undefined ? undefined : { classified: seen.grade }, version: 0 } as never }
-      : next(e),
-  )
+  on('state.get', async ($, e, next) => {
+    const get = e as { plugin?: string; key?: string }
+    if (get.plugin === 'zetetic-genius')
+      return { value: { value: seen.grade === undefined ? undefined : { classified: seen.grade }, version: 0 } as never }
+    const filled = get.key === 'spawns' ? seen.spawnsState : undefined
+    if (filled === undefined) return next(e)
+    seen.spawnsState = undefined
+    // The engine's own answer, its version kept, with the rows the test filled it with.
+    const real = await next(e)
+    return { ...real, value: { ...(real as { value: object }).value, value: filled } } as never
+  })
   on('state.set', ($, e, next) => {
     const set = e as unknown as { key?: string; value: never }
     if (set.key === 'spawns') seen.spawns = set.value
@@ -116,6 +127,7 @@ const agentStubs = (on: On, seen: Seen) => {
     const agentId = seen.resumes ?? `ag-${seen.sent.length}`
     seen.resumes = undefined
     seen.listed.push({ id: agentId, status: 'running' })
+    seen.launch?.(agentId)
     return { model: e.model ?? 'sonnet', agentId }
   })
 }

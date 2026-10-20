@@ -16,6 +16,7 @@ test('every fact that makes the effort another\'s decides nothing, whatever the 
     [{ fixed: true }, 'fixed'],
     [{ call: undefined }, 'unseen'],
     [{ call: { effort: 'medium' } }, 'call'],
+    [{ call: { effort: 'higher' } }, 'call'],
     [{ definition: undefined }, 'unread'],
     [{ definition: { effort: 'high' } }, 'definition'],
     [{ definition: { model: 'inherit', effort: 'high' } }, 'definition'],
@@ -54,9 +55,12 @@ test('an Agent call is known while its tool runs, with its effort or none, and g
   callStarted('u1', 'high')
   callStarted('u2', undefined)
   callStarted('u3', 7)
+  callStarted('u4', 'lower')
   expect(callOf('u1')).toEqual({ effort: 'high' })
   expect(callOf('u2')).toEqual({})
-  expect(callOf('u3')).toEqual({})
+  // Any effort the call names is kept as it came: it stands, whether or not it is one of the five levels.
+  expect(callOf('u3')).toEqual({ effort: 7 })
+  expect(callOf('u4')).toEqual({ effort: 'lower' })
   callEnded('u1')
   expect(callOf('u1')).toBeUndefined()
   expect(callOf('never')).toBeUndefined()
@@ -64,9 +68,9 @@ test('an Agent call is known while its tool runs, with its effort or none, and g
   expect(callOf('u2')).toBeUndefined()
 })
 
-test('a step is rewritten only to a decided effort it does not carry, and only when it carries a level', () => {
+test('a step goes out at a decided effort only when it carries an effort level', () => {
   expect(stepEffort('low', 'high')).toBe('low')
-  expect(stepEffort('low', 'low')).toBeUndefined()
+  expect(stepEffort('low', 'low')).toBe('low')
   expect(stepEffort(undefined, 'high')).toBeUndefined()
   expect(stepEffort('low', undefined)).toBeUndefined()
   expect(stepEffort('low', 2048)).toBeUndefined()
