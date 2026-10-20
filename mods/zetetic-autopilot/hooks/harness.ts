@@ -37,6 +37,8 @@ export type Seen = {
   hold?: { entered: () => void; release: Promise<void> }
   // zetetic-genius's verdict as its state holds it; absent, the dependency has graded nothing.
   grade?: { turnId: string | null; taskClass: string; effort: string }
+  // When set, the next spawn answers this id: a message resumed that agent, which keeps its id.
+  resumes?: string
 }
 
 type On = Parameters<TestBody>[1]
@@ -111,7 +113,8 @@ const agentStubs = (on: On, seen: Seen) => {
       await seen.hold.release
     }
     seen.sent.push(e.model)
-    const agentId = `ag-${seen.sent.length}`
+    const agentId = seen.resumes ?? `ag-${seen.sent.length}`
+    seen.resumes = undefined
     seen.listed.push({ id: agentId, status: 'running' })
     return { model: e.model ?? 'sonnet', agentId }
   })

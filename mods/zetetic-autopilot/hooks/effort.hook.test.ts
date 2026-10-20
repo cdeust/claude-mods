@@ -114,9 +114,12 @@ scenario('I1: a resumed run of the agent, after its turn ended, keeps the decide
   await agentStep($, 'ag-1', 0)
   await $.turn.complete(done('ag-1'))
   // A message resumes it under the same id; the engine raises the spawn again with the message's call, not an Agent one.
+  seen.resumes = 'ag-1'
   await $.agent.spawn({ ...(spawn('general-purpose') as object), tool_use_id: 'send-1' } as never)
   await agentStep($, 'ag-1', 0)
   expect(sentFor(steps, 'ag-1')).toEqual(['medium', 'medium'])
+  // The resume's record names the effort the steps keep, not the unseen call's nothing.
+  expect(seen.spawns?.[1]).toMatchObject({ agentId: 'ag-1', effort: 'medium', effortReason: 'resumed', effortApplied: true })
 })
 
 scenario('I2: the Agent call\'s own effort stands', ENFORCE, async ($, seen, steps, tool) => {

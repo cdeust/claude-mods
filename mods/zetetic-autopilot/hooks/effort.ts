@@ -22,8 +22,9 @@ type Stands = 'call' | 'definition' | 'pinned' | 'fixed'
 type Undecided = 'unseen' | 'unread' | 'ungraded'
 
 // Why an agent's steps run at the effort they run at, the short code kept in its spawn record; `grade` is decided
-// here: the effort of the grade of main's turn (zetetic-genius, class -> effort).
-export type EffortReason = 'grade' | Stands | Undecided
+// here: the effort of the grade of main's turn (zetetic-genius, class -> effort); `resumed`, a spawn raised again
+// for an agent already held (a message resumed it): its steps keep the effort decided at its first spawn.
+export type EffortReason = 'grade' | 'resumed' | Stands | Undecided
 
 // What the spawn tells: `call` is the Agent call as tool.call saw it (undefined when none was seen), `definition`
 // what the agent's file sets (undefined when it could not be read), `grade` the effort of the grade bound to main's

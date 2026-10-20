@@ -58,7 +58,7 @@ export type SpawnRoute = {
   // the engine's stands; `effortReason` the rule, as a short code; `effortApplied` true when its steps are sent at it
   // (enforce), false when observe only logged it or nothing was decided. Absent on records written before 0.10.0.
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
-  effortReason?: 'grade' | 'call' | 'definition' | 'pinned' | 'fixed' | 'unseen' | 'unread' | 'ungraded'
+  effortReason?: 'grade' | 'resumed' | 'call' | 'definition' | 'pinned' | 'fixed' | 'unseen' | 'unread' | 'ungraded'
   effortApplied?: boolean
 }
 

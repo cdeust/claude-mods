@@ -375,7 +375,10 @@ async function spawnRouted(
   // No await before this: the agent's first step may come as soon as its spawn answered (ADR-9850).
   if (effort.effort !== undefined && r.deny === undefined && r.agentId !== undefined) holdEffort(r.agentId, effort.effort)
   if (effort.effort !== undefined && r.agentId !== undefined) await effortRow($, e.subagentType, cls, effort.effort, p.mode === 'enforce')
-  return placed($, e, r, routeOf(routed, applied, effort, p.mode === 'enforce'))
+  // A resumed agent's record names the effort its steps keep, the one held since its first spawn.
+  const held = effort.effort === undefined && r.agentId !== undefined ? decidedFor(r.agentId) : undefined
+  const kept: Decided = held === undefined ? effort : { effort: held, reason: 'resumed' }
+  return placed($, e, r, routeOf(routed, applied, kept, p.mode === 'enforce'))
 }
 
 // One row per spawn whose steps the mod sets the effort of; the steps themselves log none.
