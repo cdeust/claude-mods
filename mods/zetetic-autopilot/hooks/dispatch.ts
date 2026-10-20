@@ -92,6 +92,9 @@ export const CLASSIFIER_SYSTEM = [
   '',
   'review is true when the task is to review, audit or verify work that already exists (code, a diff, a pull request,',
   'a document, a list of findings) and to report on it; false when the task produces the work itself.',
+  // Measured 2026-10-20 (docs/verification/autopilot-dispatch-table-replay-2026-10-20.md): without this line haiku
+  // answered task_class "review" for 7 of 47 ledger prompts.
+  'A review is never a task_class: it takes the class of the work it reviews, and review is true.',
   'Grade the task the subagent is given, not the topic it touches.',
 ].join('\n')
 
