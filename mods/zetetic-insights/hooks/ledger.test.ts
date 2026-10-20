@@ -2,7 +2,6 @@ import { expect, test } from 'claude-code/testing'
 
 import type { TurnRecord } from '../types'
 import {
-  CLAIM_TTL_MS,
   FRICTIONS,
   FRICTION_BATCH,
   SESSION_PREFIXES,
