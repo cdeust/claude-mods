@@ -54,6 +54,13 @@ export type SpawnRoute = {
   ran: string
   reason: 'call' | 'definition' | 'kind' | 'inherit' | 'unread'
   applied: boolean
+  // The effort the mod decided for every step of the agent (hooks/effort.ts, ADR-9850): null when it decided none and
+  // the engine's stands; `effortReason` the rule, as a short code; `effortApplied` true once the mod passed a step of the
+  // agent's run down the chain at it (enforce), as `applied` means for the model: what the engine then sent is not
+  // seen from a hook. False before that, under observe, or when nothing was decided. Absent before 0.10.0.
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
+  effortReason?: 'grade' | 'resumed' | 'call' | 'definition' | 'pinned' | 'fixed' | 'unseen' | 'unread' | 'ungraded'
+  effortApplied?: boolean
 }
 
 export type PolicyState = {
