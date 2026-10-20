@@ -3,7 +3,7 @@
 // that question a delegation. Each predicate is written once, in flagsOf; pure, so the register and
 // the tests share it.
 
-import type { AgentRecord, DelegationFlag, DelegationRow, DelegationStats, OutcomeEvent, TurnRecord } from '../types'
+import type { AgentRecord, DelegationFlag, DelegationRow, DelegationStats, TurnRecord } from '../types'
 import { familyOf } from './models'
 import { eventsBySession, judge } from './outcome'
 
