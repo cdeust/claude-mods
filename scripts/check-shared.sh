@@ -21,10 +21,8 @@ while read -r file reference users; do
     fi
   done
 done <<'LIST'
-paths.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot cortex-cockpit zetetic-insights
-paths.test.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot cortex-cockpit zetetic-insights
-rules.ts cortex-guard cortex-cockpit
-rules.test.ts cortex-guard cortex-cockpit
+paths.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot zetetic-insights
+paths.test.ts harness-fleet cortex-guard zetetic-genius zetetic-autopilot zetetic-insights
 LIST
 [ "$status" -eq 0 ] && echo "every shared file is identical in all of its mods"
 exit "$status"

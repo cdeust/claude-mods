@@ -284,7 +284,7 @@ export type InsightsState = {
   calibration: Calibration
   calibrationError: string | null
   proposals: Proposal[]
-  // Why no proposal can come, per phase and effort, and the measured effect of each applied move (the cockpit can draw both).
+  // Why no proposal can come, per phase and effort, and the measured effect of each applied move (a pane can draw both).
   findings: Finding[]
   effects: Effect[]
   updatedAt: number | null

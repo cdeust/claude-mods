@@ -163,7 +163,7 @@ side of zero, else `benefit` if either lies on the good side, else `inconclusive
 rung moved to has no governed step yet; `no-baseline` when no governed step was frozen before the move. A
 calibration written under 0.8.x has `changes` but no `moves`: each such phase is read as a move with no
 baseline (`movesOf`), so its undo is decided by the rung evidence like any proposal. It is reported in the
-`/calibrate` text, in `InsightsState.effects` (for the cockpit and the mission-control pane to draw), and,
+`/calibrate` text, in `InsightsState.effects` (for the mission-control pane to draw), and,
 when credited, as a line of the self-calibration brief.
 
 **What could make "measured" wrong** (hardest first):

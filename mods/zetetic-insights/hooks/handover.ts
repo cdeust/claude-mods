@@ -40,7 +40,7 @@ const REMEMBER_TAGS = ['archival', 'self-calibration', 'zetetic-insights'] // so
 const REMEMBER_WRITE_CLASS = 'deliberate'
 const REMEMBER_SOURCE = 'tool' // source: Cortex mcp_server/handlers/remember_schema.py lines 205-226 (ADR-0442), `source` is an enum (session, tool, user, consolidation, import, distillation); the writer is named by origin_tool
 
-let server = 'plugin_hypermnesia-mcp_cortex' // source: cortex-cockpit plugin.json userConfig cortex_server default
+let server = 'plugin_hypermnesia-mcp_cortex' // source: mods/zetetic-insights/.claude-plugin/plugin.json userConfig cortex_server default
 let generation = 0
 let pushing = false
 

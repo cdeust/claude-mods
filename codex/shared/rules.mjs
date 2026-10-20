@@ -1,5 +1,5 @@
 // Generated from mods/cortex-guard/hooks/rules.ts; run npm run build:codex.
-// The facts cortex-guard enforces and cortex-cockpit reports against, once. Pure, no `$`.
+// The facts cortex-guard enforces, once. Pure, no `$`.
 //
 // This file exists in both mods (a mod cannot import a file from another mod: the engine refuses it,
 // "outside the plugin's folder") and the two copies are byte-identical; scripts/check-shared.sh fails

@@ -21,7 +21,6 @@ For development, give `marketplace add` the absolute repository path instead. St
 | cortex-wiki | `$wiki` renders a wiki Markdown file to a new PDF using existing pandoc/xelatex; it does not open it automatically |
 | zetetic-genius | `$genius` exposes the existing task classifier prompt and explicitly supplied installed pattern/routing tables; the running agent applies the guidance |
 | zetetic-autopilot | `$autopilot` reports the shared task-class → effort recommendation; advisory only |
-| cortex-cockpit | `$cortex` reads this plugin’s session hook observations; no persistent terminal pane, quota estimate or token usage claim |
 | harness-fleet | `$fleet [owner/repo ...]` reads Codex’s plugin catalog and the selected repositories’ PRs/issues; partial readings and errors stay explicit |
 
 Skills contain a `scripts/run.mjs` entrypoint. They can also be invoked directly:
@@ -41,7 +40,7 @@ The hygiene script is the existing `~/Developments/disk-hygiene/disk_hygiene.py`
 
 ## State and limits
 
-Hooks append minimal session observations to `PLUGIN_DATA/sessions/<sha256(session_id)>.jsonl`. They do not retain prompts, command bodies, tool results or the ambient environment. To read a report directly, supply the same PLUGIN_DATA and native session id to `cortex`. Missing or unreadable telemetry is an error, not an empty successful session.
+Hooks append minimal session observations to `PLUGIN_DATA/sessions/<sha256(session_id)>.jsonl`. They do not retain prompts, command bodies, tool results or the ambient environment. Missing or unreadable telemetry is an error, not an empty successful session.
 
 This adapter does not rewrite subagent model/fork arguments, automatically classify every prompt with a paid model, change root model/effort at each internal step, or replace arbitrary tool results. These Claude engine behaviors have no equivalent used here. The Codex app-server documents per-turn model/effort overrides, but this plugin does not own the host or implement an app-server controller.
 
