@@ -1,0 +1,27 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  tests:
+    uses: cdeust/Cortex/.github/workflows/shared-tests.yml@4f2e993b026ebb4d2e4de171f51cc422ebf26aef
+    with:
+      engine-ref: 4f2e993b026ebb4d2e4de171f51cc422ebf26aef
+      runners: '["ubuntu-latest"]'
+  release-tag:
+    needs: [tests]
+    if: always() && !cancelled() && needs.tests.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      actions: write
+    uses: cdeust/Cortex/.github/workflows/shared-release.yml@4f2e993b026ebb4d2e4de171f51cc422ebf26aef
+    with:
+      engine-ref: 4f2e993b026ebb4d2e4de171f51cc422ebf26aef

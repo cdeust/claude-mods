@@ -1,0 +1,23 @@
+{
+  "python_version": "3.12",
+  "node_version": "24.7.0",
+  "claude_version": "2.1.306",
+  "linux_packages": [
+    "jq"
+  ],
+  "version_source": "codex/.codex-plugin/plugin.json:version",
+  "tag_prefix": "v",
+  "schema_version": 1,
+  "source_sha": "e899dc0be0200444f478f3f918c66bbea1f2964e",
+  "postgres": false,
+  "runner": "ubuntu-latest",
+  "categories": {
+    "unit": "bash .github/ci/run.sh unit",
+    "regression": "bash .github/ci/run.sh regression",
+    "e2e": "bash .github/ci/run.sh e2e",
+    "environment": "bash .github/ci/run.sh environment",
+    "installation": "bash .github/ci/run.sh installation"
+  },
+  "release_workflows": [],
+  "environment_runners": []
+}
