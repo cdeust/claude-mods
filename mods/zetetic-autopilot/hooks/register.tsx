@@ -62,6 +62,45 @@ const phases = atom({ plugin: 'zetetic-autopilot', key: 'phases' } as const, emp
 
 const spawns = atom({ plugin: 'zetetic-autopilot', key: 'spawns' } as const, [] as SpawnRoute[])
 
+// The validator follows `$` only into functions declared in this file, never across an import. The modules
+// (definitions, measure, reads, records, gate, offloadrow, spawnrows) take the engine handle, so they are
+// handed this one: it forwards exactly the calls they make, each spelled $.noun.event(...) here, and nothing else.
+type Args<N extends keyof EngineInterface, E extends keyof EngineInterface[N]> = EngineInterface[N][E] extends (...a: infer A) => unknown ? A : never
+const engineOf = ($: EngineInterface): EngineInterface =>
+  ({
+    agent: { list: (...a: Args<'agent', 'list'>) => $.agent.list(...a) },
+    clock: { now: (...a: Args<'clock', 'now'>) => $.clock.now(...a) },
+    env: { get: (name: string) => (name === 'HOME' ? $.env.get('HOME') : name === 'USERPROFILE' ? $.env.get('USERPROFILE') : $.env.get('CLAUDE_CONFIG_DIR')) }, // the names expandHome reads
+    fs: {
+      exists: (...a: Args<'fs', 'exists'>) => $.fs.exists(...a),
+      read: (...a: Args<'fs', 'read'>) => $.fs.read(...a),
+      write: (...a: Args<'fs', 'write'>) => $.fs.write(...a),
+    },
+    model: { complete: (...a: Args<'model', 'complete'>) => $.model.complete(...a) },
+    plugin: {
+      get name() {
+        return $.plugin.name
+      },
+      get root() {
+        return $.plugin.root
+      },
+    },
+    session: {
+      cwd: (...a: Args<'session', 'cwd'>) => $.session.cwd(...a),
+      id: (...a: Args<'session', 'id'>) => $.session.id(...a),
+      model: (...a: Args<'session', 'model'>) => $.session.model(...a),
+      usage: (...a: Args<'session', 'usage'>) => $.session.usage(...a),
+    },
+    state: { get: () => $.state.get({ plugin: 'zetetic-genius', key: 'state' }) }, // the classifier's state, the only one the modules read
+    store: {
+      delete: (...a: Args<'store', 'delete'>) => $.store.delete(...a),
+      get: (...a: Args<'store', 'get'>) => $.store.get(...a),
+      keys: (...a: Args<'store', 'keys'>) => $.store.keys(...a),
+      set: (...a: Args<'store', 'set'>) => $.store.set(...a),
+    },
+    ui: { toast: (...a: Args<'ui', 'toast'>) => $.ui.toast(...a) },
+  }) as unknown as EngineInterface
+
 const decide = (p: PolicyState, d: PolicyDecision, charsOffloaded = 0): PolicyState => ({
   ...p,
   decisions: [...p.decisions, d].slice(-DECISIONS_CAP),
@@ -85,7 +124,7 @@ let ceilings: LoopCeilings = {}
 // The full read, with the window broken down as /context does it: at start.
 async function refreshContext($: EngineInterface): Promise<void> {
   const before = await read($, context)
-  const after = await readContext($, await $.session.usage({ breakdown: 'summary' }), before)
+  const after = await readContext(engineOf($), await $.session.usage({ breakdown: 'summary' }), before)
   await update($, context, () => after)
 }
 
@@ -137,19 +176,19 @@ async function placed(
   await update($, phases, (s) => spawned(s, { id, type: e.subagentType, description: e.description, model: r.model, at }))
   const record: SpawnRoute = clipped({ at, agentId: id, type: e.subagentType, ...route, ran: r.model })
   await update($, spawns, (s) => [...s, asWritten(record)].slice(-SPAWNS_CAP))
-  await keepRoute($, record, (subject, reason) => note($, subject, reason))
+  await keepRoute(engineOf($), record, (subject, reason) => note($, subject, reason))
   return r
 }
 
 // The first step of an agent's run passed down the chain at its decided effort: its records say so, in state and store.
 async function markCarried($: EngineInterface, id: string): Promise<void> {
   await update($, spawns, (s) => marked(s, id))
-  await rewriteRoutes($, (kept) => marked(kept, id), (subject, reason) => note($, subject, reason))
+  await rewriteRoutes(engineOf($), (kept) => marked(kept, id), (subject, reason) => note($, subject, reason))
 }
 
 const onMeasure: Hook<'session.measure'> = async ($, e, next) => {
   const before = await read($, context)
-  const after = await readContext($, e, before)
+  const after = await readContext(engineOf($), e, before)
   await update($, context, () => after)
   await update($, policy, (p) => ({ ...p, pressure: pressureOf(after.rateLimits, p.quotaPercent, after.band) }))
   const crossing = crossed(before, after)
@@ -174,10 +213,10 @@ const onStep: Hook<'turn.step'> = async function* ($, e, next) {
   if (e.agentId !== undefined) return yield* agentStep($, e, e.agentId, next)
   mainTurnId = e.turnId
   const p = await read($, policy)
-  const grade = await gradeOf($, (subject, reason) => note($, subject, reason))
+  const grade = await gradeOf(engineOf($), (subject, reason) => note($, subject, reason))
   const g = grade !== undefined && grade.turnId === e.turnId ? grade : undefined
   const have = currentEffort(e.model, e.effort)
-  if (e.index === 0) ceilings = await readCeilings($, (subject, reason) => note($, subject, reason))
+  if (e.index === 0) ceilings = await readCeilings(engineOf($), (subject, reason) => note($, subject, reason))
   const phase = (await read($, phases)).loops.find((l) => l.id === 'main')?.phase
   const loop = phase === undefined || phase === null || e.index === 0 ? undefined : ceilings[phase]
   let target = effortFor(e.model, e.index, e.effort, p.pressure, g?.effort, loop) ?? have
@@ -253,7 +292,7 @@ const gateSink = ($: EngineInterface): GateSink => ({
 const onSpawn: Hook<'agent.spawn'> = async ($, e, next) => {
   const p = await read($, policy)
   if (!inBudget(e)) return spawnRouted($, e, next, p)
-  const gate = await admit($, e, p, gateSink($))
+  const gate = await admit(engineOf($), e, p, gateSink($))
   if (gate.deny !== undefined) return { deny: gate.deny }
   try {
     const r = await spawnRouted($, e, next, p)
@@ -272,20 +311,20 @@ async function spawnRouted(
 ): Promise<AgentSpawnResult> {
   // The grade counts only for the main turn it was bound to: a later turn nobody graded (a slash
   // command, a notification) routes without one, as turn.step does.
-  const grade = e.parentAgentId === undefined ? await gradeOf($, (subject, reason) => note($, subject, reason)) : undefined
+  const grade = e.parentAgentId === undefined ? await gradeOf(engineOf($), (subject, reason) => note($, subject, reason)) : undefined
   const turnClass = grade !== undefined && grade.turnId !== null && grade.turnId === mainTurnId ? grade.taskClass : undefined
   // Read whatever the call says: the record names the definition's model beside the call's. A fork has no
   // definition: it runs as its parent, and the engine ignores a rewrite of its model or of a workflow agent's
   // content (AgentSpawnInput.model, .workflow), so neither is sent one; nor is a teammate given DESIGN or the table.
   const rewritable = !e.fork && e.workflow === undefined
   const fixed = !rewritable || e.isTeammate === true
-  const found = e.fork ? {} : await definitionOf($, e.subagentType)
+  const found = e.fork ? {} : await definitionOf(engineOf($), e.subagentType)
   if ('unread' in found && e.model === undefined) await note($, `${e.subagentType} definition`, found.unread)
   const definition = 'unread' in found ? undefined : found
   const call = callOf(e.tool_use_id)
   // A resume names its agent (2.1.304 `resume.agentId`): its new run has carried nothing, before that run can step.
   const resuming = (e as { resume?: { agentId?: unknown } }).resume?.agentId
-  const d = await dispatchOf($, e, { fixed, seen: call !== undefined, resumed: typeof resuming === 'string', callModel: e.model, definition })
+  const d = await dispatchOf(engineOf($), e, { fixed, seen: call !== undefined, resumed: typeof resuming === 'string', callModel: e.model, definition })
   for (const [subject, why] of d.refused) await note($, subject, why)
   const row = d.row
   if (row !== undefined) await update($, policy, (s) => decide(s, row))
@@ -419,7 +458,7 @@ const onAppend: Hook<'session.append'> = async ($, e, next) => {
     },
   }
   const options = { thresholdChars: p.offloadThresholdChars, previewChars: p.offloadPreviewChars }
-  const content = await offloadBlocks($, e.uuid, tool, e.message.content, { options, enforce: p.mode === 'enforce', transcriptPath, sink })
+  const content = await offloadBlocks(engineOf($), e.uuid, tool, e.message.content, { options, enforce: p.mode === 'enforce', transcriptPath, sink })
 
   return next(content === undefined ? e : { ...e, message: { ...e.message, content } })
 }
@@ -445,8 +484,8 @@ async function begin($: EngineInterface, mode: PolicyState['mode'], configured: 
   remindedTurn = undefined
   await update($, phases, () => emptyPhases())
   await update($, spawns, () => [])
-  await openRoutes($, (subject, reason) => note($, subject, reason))
-  await checkConfig($, mode, (subject, reason) => note($, subject, reason))
+  await openRoutes(engineOf($), (subject, reason) => note($, subject, reason))
+  await checkConfig(engineOf($), mode, (subject, reason) => note($, subject, reason))
   await update($, policy, configured)
   if (capProblem !== undefined) await note($, 'agent cap option', capProblem)
   await refreshContext($)

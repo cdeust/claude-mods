@@ -34,7 +34,8 @@ import { held, ledger, loadLedger, loaded, markEnded, markTranscript, note, save
 import { trends } from './trend'
 import type { BashResult } from './events'
 
-const insights = atom({ plugin: 'zetetic-insights', key: 'insights' } as const, INITIAL)
+const INSIGHTS_STATE = { plugin: 'zetetic-insights', key: 'insights' } as const
+const insights = atom(INSIGHTS_STATE, INITIAL)
 
 // The dependencies' state, as their contracts declare it; literals, as the validator lists them.
 const AUTOPILOT_PHASES = { plugin: 'zetetic-autopilot', key: 'phases' } as const
@@ -75,6 +76,30 @@ const remember = (agentId: string, design: Design | null): void => bounded(desig
 
 const BRIEF_SECTION = 'zetetic-insights:self-calibration'
 
+// The validator follows `$` only into functions declared in this file, never across an import. The modules
+// (store-io, handover, observe, shared) take the engine handle, so they are handed this one: it forwards
+// exactly the calls they make, each spelled $.noun.event(...) here, and nothing else.
+type Args<N extends keyof EngineInterface, E extends keyof EngineInterface[N]> = EngineInterface[N][E] extends (...a: infer A) => unknown ? A : never
+const engineOf = ($: EngineInterface): EngineInterface =>
+  ({
+    clock: { now: (...a: Args<'clock', 'now'>) => $.clock.now(...a), after: (...a: Args<'clock', 'after'>) => $.clock.after(...a) },
+    env: { get: (name: string) => (name === 'HOME' ? $.env.get('HOME') : name === 'USERPROFILE' ? $.env.get('USERPROFILE') : $.env.get('CLAUDE_CONFIG_DIR')) }, // the names expandHome reads
+    fs: {
+      exists: (...a: Args<'fs', 'exists'>) => $.fs.exists(...a),
+      read: (...a: Args<'fs', 'read'>) => $.fs.read(...a),
+      stat: (...a: Args<'fs', 'stat'>) => $.fs.stat(...a),
+    },
+    mcp: { call: (...a: Args<'mcp', 'call'>) => $.mcp.call(...a) },
+    session: { cwd: (...a: Args<'session', 'cwd'>) => $.session.cwd(...a), id: (...a: Args<'session', 'id'>) => $.session.id(...a) },
+    state: { get: () => $.state.get(INSIGHTS_STATE), set: (_ref: unknown, value: InsightsState) => $.state.set(INSIGHTS_STATE, value) }, // the insights atom, the only state the modules update
+    store: {
+      delete: (...a: Args<'store', 'delete'>) => $.store.delete(...a),
+      get: (...a: Args<'store', 'get'>) => $.store.get(...a),
+      keys: (...a: Args<'store', 'keys'>) => $.store.keys(...a),
+      set: (...a: Args<'store', 'set'>) => $.store.set(...a),
+    },
+  }) as unknown as EngineInterface
+
 
 // The outcomes /insights wrote for the ledger's last sessions. No facets folder is "never run",
 // not an error; an unreadable or malformed facet is skipped and named, the others are read.
@@ -84,7 +109,7 @@ async function loadOutcomes($: EngineInterface): Promise<string | null> {
   const failed: string[] = []
   let dir: string
   try {
-    dir = await expandHome($, FACETS_DIR)
+    dir = await expandHome(engineOf($), FACETS_DIR)
     if (!(await $.fs.exists(dir))) return null
   } catch (error) {
     return cut(error)
@@ -115,7 +140,7 @@ async function readGoals($: EngineInterface): Promise<{ goals: InsightsState['go
 
 async function readCalibration($: EngineInterface): Promise<{ calibration: Calibration; error: string | null }> {
   try {
-    const path = await expandHome($, CALIBRATION_PATH)
+    const path = await expandHome(engineOf($), CALIBRATION_PATH)
     if (!(await $.fs.exists(path))) return { calibration: emptyCalibration(), error: null }
     return { calibration: parseCalibration(await $.fs.read(path)), error: null }
   } catch (error) {
@@ -124,7 +149,7 @@ async function readCalibration($: EngineInterface): Promise<{ calibration: Calib
 }
 
 async function writeCalibration($: EngineInterface, c: Calibration): Promise<void> {
-  await $.fs.write(await expandHome($, CALIBRATION_PATH), `${JSON.stringify(c, null, 2)}\n`)
+  await $.fs.write(await expandHome(engineOf($), CALIBRATION_PATH), `${JSON.stringify(c, null, 2)}\n`)
 }
 
 // What the learning sessions' runs say under a calibration: the rows, the proposals, what held the others
@@ -191,7 +216,7 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
   pending = { agents: [], dropped: 0 }
   recorded.clear()
   note.frictionError = null
-  const ledgerError = await loadLedger($)
+  const ledgerError = await loadLedger(engineOf($))
   const facetsError = await loadOutcomes($)
   const g = await readGoals($)
   const c = await readCalibration($)
@@ -214,7 +239,7 @@ async function start($: EngineInterface, mode: InsightsState['mode']): Promise<v
     brief,
     frictions: recurringIn(held.layout, ledger(), held.ownSid),
   })
-  await schedulePush($, held.layout, ledgerError)
+  await schedulePush(engineOf($), held.layout, ledgerError)
 }
 
 // source: zetetic-autopilot hooks/register.tsx DECISIONS_CAP, the decisions its policy keeps (the newest;
@@ -241,7 +266,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
   const stuck = enforced ? policy.decisions.filter((d) => d.kind === 'stuck' && d.applied && d.at >= since) : []
   const graded = grade !== null && grade !== undefined && grade.turnId === phases.turnId ? grade : null
   const sid = await $.session.id()
-  if (!(await loaded($, sid))) return
+  if (!(await loaded(engineOf($), sid))) return
   const seen = takeObserved()
   // The autopilot's own count of the steps its stuck escalation raised (PhaseRun.escalated, 0.8.0) is read when the run has it.
   const timed = main.runs.map((r) => ({
@@ -279,7 +304,7 @@ async function recordTurn($: EngineInterface): Promise<void> {
     frictions: seen.frictions,
   }
   pending = { agents: [], dropped: 0 }
-  await saved($, sid, [...held.own, record])
+  await saved(engineOf($), sid, [...held.own, record])
 }
 
 
@@ -308,7 +333,7 @@ async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage
       : { tokensIn: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens, tokensOut: usage.output_tokens }),
   }
   const sid = await $.session.id()
-  if (!(await loaded($, sid))) return
+  if (!(await loaded(engineOf($), sid))) return
   const last = held.own[held.own.length - 1]
   if (last === undefined || phases.turnId === null || last.turnId !== phases.turnId) {
     pending = withAgent(pending, agent)
@@ -316,7 +341,7 @@ async function recordAgent($: EngineInterface, agentId: string, usage: TurnUsage
   }
   const joined = withAgent({ agents: last.agents, dropped: last.agentsDropped ?? 0 }, agent)
   const record = { ...last, agents: joined.agents, ...(joined.dropped > 0 ? { agentsDropped: joined.dropped } : {}) }
-  await saved($, sid, [...held.own.slice(0, -1), record])
+  await saved(engineOf($), sid, [...held.own.slice(0, -1), record])
   await recompute($)
 }
 
@@ -351,13 +376,13 @@ type On = Parameters<Register>[0]
 // Session lifecycle: the ledger is marked ended, loaded at start, reloaded after /clear, /resume and /branch.
 function onSession(on: On, mode: InsightsState['mode']): void {
   on('classic.SessionEnd', async ($, e, next) => {
-    await markTranscript($, e.session_id, e.transcript_path)
+    await markTranscript(engineOf($), e.session_id, e.transcript_path)
 
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
-    await markEnded($, e.sessionId)
+    await markEnded(engineOf($), e.sessionId)
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -399,7 +424,7 @@ function onTurn(on: On): void {
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     try {
-      await observeCall($, e as unknown as { tool: unknown; agentId?: string; command?: unknown }, ran as unknown as BashResult)
+      await observeCall(engineOf($), e as unknown as { tool: unknown; agentId?: string; command?: unknown }, ran as unknown as BashResult)
     } catch {
       // the observation failed: the turn simply shows fewer events, the call is unaffected
     }
