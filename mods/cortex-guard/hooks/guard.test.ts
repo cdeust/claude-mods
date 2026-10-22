@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { judgeCall, judgePath, worktreeAddPath } from './guard'
+import { judgeCall, judgePath, placeWorktreeAdds, shellSteps, worktreeAddPath, worktreeAdds } from './guard'
 
 test('refuses the generated ADR mirror and canonical wiki pages', () => {
   expect(judgePath('/r/docs/adr/ADR-1060-refuse-a-decision.md').allow).toBe(false)
@@ -67,13 +67,161 @@ test('a shell command that writes a Windows-spelled protected path is refused', 
   expect(judgeCall('Bash', { command: 'type docs\\adr\\ADR-1060-x.md' }).allow).toBe(true)
 })
 
-test('a worktree inside <repo>\\.claude\\worktrees\\ is allowed, one outside is refused with the path as typed', () => {
+// bash and zsh drop an unquoted backslash (`C:\x` is `C:x`, measured with printf), so a Windows path reaches git with its
+// backslashes only when it is quoted.
+test('a quoted worktree path inside <repo>\\.claude\\worktrees\\ is allowed, one outside is refused with the path as typed', () => {
   const inside = 'C:\\Users\\t\\repo\\.claude\\worktrees\\x'
-  expect(worktreeAddPath(`git worktree add ${inside}`)).toBe(inside)
-  expect(judgeCall('Bash', { command: `git worktree add -b f ${inside} main` }).allow).toBe(true)
-  expect(judgeCall('Bash', { command: 'git worktree add -b f C:\\Users\\t\\repo\\.Codex\\worktrees\\x' }).allow).toBe(true)
-  const outside = judgeCall('Bash', { command: 'git worktree add -b f C:\\temp\\wt main' })
+  expect(worktreeAddPath(`git worktree add "${inside}"`)).toBe(inside)
+  expect(judgeCall('Bash', { command: `git worktree add -b f '${inside}' main` }).allow).toBe(true)
+  expect(judgeCall('Bash', { command: 'git worktree add -b f "C:\\Users\\t\\repo\\.Codex\\worktrees\\x"' }).allow).toBe(true)
+  const outside = judgeCall('Bash', { command: "git worktree add -b f 'C:\\temp\\wt' main" })
   expect(outside.allow).toBe(false)
   expect(!outside.allow && outside.rule).toBe('worktree-inside-repo')
   expect(!outside.allow && outside.reason).toContain('C:\\temp\\wt')
+  // Unquoted, the shell hands git `C:Userstrepo.claudeworktreesx`: a relative name, not the worktree root.
+  expect(worktreeAddPath(`git worktree add ${inside}`)).toBe('C:Userstrepo.claudeworktreesx')
+  expect(judgeCall('Bash', { command: `git worktree add ${inside}` }).allow).toBe(false)
+})
+
+// The command text sent to the shell and the directory the shell starts in: where its first add lands (undefined:
+// no add a shell runs).
+const place = (command: string, cwd = '/s', agentId?: string): ReturnType<typeof placeWorktreeAdds>[number] | undefined =>
+  placeWorktreeAdds(worktreeAdds(command), cwd, agentId)[0]
+const unresolved = (command: string, cwd = '/s', agentId?: string): boolean => 'reason' in (place(command, cwd, agentId) ?? {})
+const refused = (command: string): boolean => !judgeCall('Bash', { command }).allow
+const W = './.claude/worktrees/f'
+
+test('a worktree path lands where the shell is when git runs, or the reason that is not known', () => {
+  expect(place('git worktree add /r/.claude/worktrees/f')).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place('cd /x && git worktree add "C:\\r\\.claude\\worktrees\\f"')).toEqual({ path: 'C:\\r\\.claude\\worktrees\\f' })
+  expect(place(`git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
+  expect(place(`cd /r && git worktree add -b f ${W} main`)).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`cd sub && git worktree add ${W}`)).toEqual({ path: '/s/sub/.claude/worktrees/f' })
+  expect(place(`cd /r && git worktree add ../r/.claude/worktrees/f`)).toEqual({ path: '/r/../r/.claude/worktrees/f' })
+  // `;` runs git even when the cd failed; a subshell, pushd, a later cd, git -C, ~ and an unreadable session
+  // directory each leave the start unknown.
+  for (const unknown of [
+    `cd /r; git worktree add ${W}`,
+    `(cd /r && git worktree add ${W})`,
+    `echo $(cd /r && git worktree add ${W} main)`,
+    `pushd /r && git worktree add ${W}`,
+    `true && cd /r && git worktree add ${W}`,
+    `cd ~ && git worktree add ${W}`,
+    `git -C /r worktree add ${W}`,
+    'git worktree add ~/r/.claude/worktrees/f',
+  ])
+    expect([unknown, unresolved(unknown)]).toEqual([unknown, true])
+  expect(placeWorktreeAdds(worktreeAdds(`git worktree add ${W}`), undefined)[0]).toEqual({
+    reason: `the path ${W} could not be resolved: the session's directory could not be read`,
+  })
+})
+
+// Round 1 of PR 30: a directory change is found on the text split at the shell's separators, not on whitespace.
+test('a directory change glued to a separator is still a directory change', () => {
+  expect(unresolved(`true;cd sub && git worktree add ../.claude/worktrees/w7 -b b7`)).toBe(true)
+  expect(unresolved(`echo x &&cd sub && git worktree add ../.claude/worktrees/w11 -b b11`)).toBe(true)
+  expect(unresolved(`true|cd sub && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`echo $(cd sub) && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`{ cd sub; git worktree add ${W}; }`)).toBe(true)
+  expect(unresolved(`if cd sub; then git worktree add ${W}; fi`)).toBe(true)
+  // The same words without a cd are not one.
+  expect(place(`echo cd && git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
+})
+
+test('a leading cd keeps its place only when git runs once every command after it succeeded and none moves the directory', () => {
+  // M9: `||` and a spaced `;` run git when the cd failed.
+  expect(unresolved(`cd /r || git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r ; git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r & git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r && echo a || git worktree add ${W}`)).toBe(true)
+  // M8: a second cd moves the shell again.
+  expect(unresolved(`cd /a && cd b && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /a && git fetch && cd b && git worktree add ${W}`)).toBe(true)
+  // M13: `cd -` goes to the previous directory.
+  expect(unresolved(`cd - && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd -P /r && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd "" && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r extra && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd "my dir" && git worktree add ${W}`)).toBe(true)
+  // Commands between the cd and git that move nothing leave the place known.
+  expect(place(`cd /r && git fetch && git worktree add -b f ${W} origin/main`)).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`cd /r && git fetch --prune && npm ci && git worktree add ${W}`)).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(unresolved(`cd /r && git fetch | cat && git worktree add ${W}`)).toBe(true)
+  expect(unresolved(`cd /r && (git worktree add ${W})`)).toBe(true)
+  // A command after the add, a `;` glued to the path and a redirect that holds an `&` change nothing.
+  expect(place(`git worktree add ${W}; echo done`)).toEqual({ path: '/s/.claude/worktrees/f' })
+  expect(place(`cd /r && git fetch 2>&1 && git worktree add ${W}`)).toEqual({ path: '/r/.claude/worktrees/f' })
+})
+
+test('a quoted path is resolved only when it has no space and its quote closes', () => {
+  expect(unresolved('git worktree add "./.claude/worktrees/w 5" -b b5')).toBe(true)
+  expect(unresolved("git worktree add '/r/.claude/worktrees/w 5'")).toBe(true)
+  expect(place('git worktree add "./.claude/worktrees/w5" -b b5')).toEqual({ path: '/s/.claude/worktrees/w5' })
+  // A quote that never closes: the split cannot be trusted, so the add is refused (in doubt), path fine or not.
+  expect(refused('git worktree add "./.claude/worktrees/w5 -b b5')).toBe(true)
+  expect(refused('git worktree add ./.claude/worktrees/w5 main "oops')).toBe(true)
+  expect(refused('echo "$(git worktree add ./.claude/worktrees/w5')).toBe(true)
+  // A quoted branch with a space no longer makes the next word the path.
+  expect(place('git worktree add -b "a b" ./.claude/worktrees/w5')).toEqual({ path: '/s/.claude/worktrees/w5' })
+})
+
+// The event of a subagent's loop carries `agentId`; the d.ts does not say which directory `$.session.cwd()` is
+// for that loop's shell, so a path that depends on it is not known.
+test('inside a subagent a path that depends on the session directory is not known', () => {
+  expect(unresolved(`git worktree add ${W}`, '/s', 'a1')).toBe(true)
+  expect(unresolved(`cd sub && git worktree add ${W}`, '/s', 'a1')).toBe(true)
+  expect(place(`git worktree add /r/.claude/worktrees/f`, '/s', 'a1')).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`cd /r && git worktree add ${W}`, '/s', 'a1')).toEqual({ path: '/r/.claude/worktrees/f' })
+  expect(place(`git worktree add ${W}`, '/s', undefined)).toEqual({ path: '/s/.claude/worktrees/f' })
+})
+
+test('text that only mentions the phrase is not an add; a command that may run its text is refused', () => {
+  const text = (command: string): void => {
+    expect([command, worktreeAdds(command).adds, worktreeAdds(command).doubt]).toEqual([command, [], undefined])
+    expect([command, refused(command)]).toEqual([command, false])
+  }
+  text(`cd /r && git commit -m "docs: git worktree add ${W} is now registered"`)
+  text(`git commit -m "git worktree add ${W}"`)
+  text(`echo "git worktree add ${W}"`)
+  text(`cd /r && grep -rn 'git worktree add' docs`)
+  text(`cd /r && gh pr create --title t --body "$(cat <<'EOF'\nrun git worktree add ../r/.claude/worktrees/x main\nEOF\n)"`)
+  text(`cd /r && cat > notes.md <<'EOF'\ngit worktree add ${W}\nEOF`)
+  // A comment is not a command, and not text either.
+  text(`echo hi # git worktree add ${W}`)
+  // Not text: the shell runs it, where the command does not say, so the call is refused (round 3, N1).
+  for (const run of [`sh -c "git worktree add ${W}"`, `bash <<'EOF'\ngit worktree add ${W}\nEOF`, `echo hi; eval "git worktree add ${W}"`])
+    expect([run, refused(run), worktreeAdds(run).doubt !== undefined]).toEqual([run, true, true])
+  // A real add after the text is still the add.
+  expect(place(`git commit -m "git worktree add ./a" && git worktree add ${W}`)).toEqual({ path: '/s/.claude/worktrees/f' })
+  // A mention names a path too, and it is judged: a file it wrote may be run by a later call.
+  expect(refused(`git commit -m "git worktree add /tmp/x"`)).toBe(true)
+})
+
+test('each add of a command has its own place, and a substitution keeps its add', () => {
+  expect(placeWorktreeAdds(worktreeAdds(`git worktree add ${W} && cd /r && git worktree add ./.claude/worktrees/g`), '/s')).toEqual([
+    { path: '/s/.claude/worktrees/f' },
+    { reason: "the path ./.claude/worktrees/g could not be resolved: the shell's directory is changed before git runs (cd)" },
+  ])
+  expect(worktreeAddPath('echo "$( git worktree add /r/.claude/worktrees/s)"')).toBe('/r/.claude/worktrees/s')
+  expect(worktreeAddPath('echo `git worktree add /r/.claude/worktrees/s`')).toBe('/r/.claude/worktrees/s')
+  expect(unresolved(`echo "$(git worktree add ${W})"`)).toBe(true)
+  // A substitution in the add's own words runs inside that step: the && chain from the cd to git is unbroken.
+  expect(place(`cd /r && git worktree add -b x ${W} "$(git rev-parse HEAD)"`)).toEqual({ path: '/r/.claude/worktrees/f' })
+})
+
+test('shellSteps splits at separators outside quotes and keeps a here-document with its command', () => {
+  const split = (command: string): string[] => shellSteps(command).steps.map((step) => `${step.sep}|${step.words.join(' ')}`)
+  expect(split('a;b&&c||d|e\nf')).toEqual(['|a', ';|b', '&&|c', '|||d', '||e', '\n|f'])
+  expect(split("a \"b;c\" 'd&&e' f")).toEqual(['|a b;c d&&e f'])
+  // A substitution's commands are steps of their own; its text stays in the word it is part of.
+  expect(split('(a) && $(b)')).toEqual(['(|a', '$(|b', '&&|$(b)'])
+  expect(split('echo "x $(b; c) y" `d`')).toEqual(['$(|b', ';|c', '`|d', '|echo x $(b; c) y `d`'])
+  // A redirection is not a word: its operator and its target are taken out.
+  expect(split('git worktree add p 2>&1 > out <in &>/dev/null')).toEqual(['|git worktree add p'])
+  expect(shellSteps('echo "x').open).toBe(true)
+  expect(shellSteps('echo "x"').open).toBe(false)
+  const doc = shellSteps('cat <<-EOF\n\ta; b\n\tEOF\nnext')
+  expect(doc.steps.map((step) => step.words.join(' '))).toEqual(['cat', 'next'])
+  expect(doc.steps[0]?.body).toContain('a; b')
 })
