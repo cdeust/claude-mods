@@ -22,7 +22,7 @@ type Seen = { toasts: string[]; argvs: string[][]; stats: string[]; nextToast: (
 // are those the call leaves on disk, by default the absolute path the add names (the add ran and created
 // it); `[]` is a call that created nothing. `cwd` is the session's directory. `gitfile` is what the `.git` file of
 // each of them says (a linked worktree's by default).
-type How = { call?: unknown; before?: string[]; makes?: string[]; cwd?: string; gitfile?: string }
+type How = { call?: unknown; before?: string[]; makes?: string[]; cwd?: string; gitfile?: string; remakes?: string[] }
 
 const nameOf = (dir: string): string => dir.slice(dir.lastIndexOf('/') + 1)
 
@@ -30,6 +30,7 @@ const nameOf = (dir: string): string => dir.slice(dir.lastIndexOf('/') + 1)
 const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: string }, scriptStat: unknown, how: How = {}): Seen => {
   const seen: Seen = { toasts: [], argvs: [], stats: [], nextToast: () => Promise.resolve('') }
   const worktrees = new Set(how.before ?? [])
+  const born = new Map<string, number>()
   let waiting: ((text: string) => void) | undefined
   seen.nextToast = () => new Promise((resolve) => (waiting = resolve))
   mock.clock(on, { now: 1_000_000 })
@@ -41,6 +42,8 @@ const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: s
   on('fs.stat', ($, e) => {
     seen.stats.push(e.path)
     if (e.path.endsWith('.py')) return scriptStat as never
+    if (e.path.endsWith('/.git') && worktrees.has(e.path.replace(/\/\.git$/, '')))
+      return { value: { kind: 'file', size: 1, mtimeMs: born.get(e.path.replace(/\/\.git$/, '')) ?? 0, isLink: false, realPath: e.path } as never }
     if (worktrees.has(e.path)) return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: e.path } as never }
     return { deny: `ENOENT: no such file or directory, stat '${e.path}'` }
   })
@@ -58,6 +61,8 @@ const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: s
   on('tool.call', ($, e) => {
     const named = worktreeAddPath(String((e as { command?: string }).command ?? ''))
     for (const dir of how.makes ?? (named?.startsWith('/') ? [named] : [])) worktrees.add(dir)
+    // A worktree removed and added again by the call: the same place and text, a newer `.git` file.
+    for (const dir of how.remakes ?? []) born.set(dir, 1)
     return (how.call ?? { result: 'ran' }) as never
   })
   return seen
@@ -370,6 +375,14 @@ test("a worktree that was there before the call is not this call's, and it is no
   expect(scriptRuns(seen)).toEqual([])
   expect(seen.toasts).toEqual([])
   expect(ran.context).toBeUndefined()
+})
+
+test("a worktree removed and added again at the same place by the call is this call's, and it is registered", async ($, on) => {
+  const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } }, { before: [NEW], makes: [], remakes: [NEW] })
+  okRuns(on, seen)
+  await $.tool.call({ ...ADD })
+  expect(scriptRuns(seen)).toHaveLength(1)
+  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
 })
 
 // A relative path is the shell's, and the shell starts where the session is (`$.session.cwd()`, read before

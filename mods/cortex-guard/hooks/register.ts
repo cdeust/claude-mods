@@ -132,12 +132,17 @@ async function registerWorktree($: EngineInterface, path: string): Promise<strin
 // `<repo>/.git/worktrees/<id>` (a submodule's names `.git/modules/`, a main checkout's `.git` is a directory).
 const WORKTREE_GITDIR = /^gitdir: .*[\\/]worktrees[\\/][^\\/]+\s*$/
 
-// Whether `dir` is a linked worktree on disk now: the state a registration is decided on, not the call's outcome.
-async function isWorktree($: EngineInterface, dir: string): Promise<boolean> {
+// The identity of the linked worktree at `dir` on disk now, or undefined when there is none: its `.git` file's text
+// and modification time. A worktree removed and added again at the same place has the same text and a newer time,
+// so it is told from the one that was there before the call. Never throws.
+async function identityOf($: EngineInterface, dir: string): Promise<string | undefined> {
   try {
-    return WORKTREE_GITDIR.test(await $.fs.read(`${dir}/.git`))
+    const text = await $.fs.read(`${dir}/.git`)
+    if (!WORKTREE_GITDIR.test(text)) return undefined
+    const mtime = await $.fs.stat(`${dir}/.git`).then((s) => s.mtimeMs, () => 0)
+    return `${text}@${mtime}`
   } catch {
-    return false
+    return undefined
   }
 }
 
@@ -162,13 +167,14 @@ const isBackgrounded = (ran: ToolCallResult): boolean => {
 // reported no error, was not denied and was not sent to the background, yet left nothing at the place computed,
 // is reported too: the place may be wrong (the shell was not where the text says), and a worktree that is
 // elsewhere is not registered. The cost is a report for an add whose failure the command masked (`|| true`).
-async function settleAdd($: EngineInterface, place: AddPlace, existed: boolean, ran: ToolCallResult): Promise<string | undefined> {
+async function settleAdd($: EngineInterface, place: AddPlace, before: string | undefined, ran: ToolCallResult): Promise<string | undefined> {
   if ('reason' in place) {
     $.ui.toast(`worktree NOT registered (${place.reason})`)
     return place.reason
   }
-  if (existed) return undefined
-  if (await isWorktree($, place.path)) return registerWorktree($, place.path)
+  const now = await identityOf($, place.path)
+  if (now !== undefined && now !== before) return registerWorktree($, place.path)
+  if (now !== undefined) return undefined
   const backgrounded = isBackgrounded(ran)
   if (!backgrounded && (ran.isError === true || ran.deny !== undefined)) return undefined
   const reason = backgrounded
@@ -207,16 +213,16 @@ export const register: Register = (on, options) => {
       // The adds the refusal just judged: judgeCall read the command with worktreeAdds too, and found no doubt.
       const adds = tool === 'Bash' && script !== '' ? worktreeAdds(input.command ?? '') : undefined
       if (adds === undefined || adds.adds.length === 0) return next(e)
-      // Looked at before the call: a worktree already there is not this call's to register.
+      // Looked at before the call: a worktree already there, unchanged after the call, is not this call's to register.
       const places = await placesOf($, adds, e.agentId)
-      const existed: boolean[] = []
-      for (const { place } of places) existed.push('path' in place && (await isWorktree($, place.path)))
+      const existed: (string | undefined)[] = []
+      for (const { place } of places) existed.push('path' in place ? await identityOf($, place.path) : undefined)
       const ran = await next(e)
       // Awaited: the result of this call is where Claude can be told a worktree is not covered.
       // A registration that throws must not turn a call that ran into a refusal: it is a reason, like any other.
       const told: string[] = []
       for (const [k, { place, named }] of places.entries()) {
-        const reason = await settleAdd($, place, existed[k] === true, ran).catch((error: unknown) => `registration failed: ${why(error)}`)
+        const reason = await settleAdd($, place, existed[k], ran).catch((error: unknown) => `registration failed: ${why(error)}`)
         if (reason !== undefined) told.push(unregistered(named, reason))
       }
       // A deny carries no `context` (the engine's ToolCallResult): the user's toast is the only channel then.
