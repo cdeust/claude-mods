@@ -1,5 +1,5 @@
 {
-  "unit": "npm install -g @anthropic-ai/claude-code@2.1.296 && for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\"; done && rm -rf .c8 && npx -y c8@12.0.0 --reporter=cobertura --reports-dir .c8 node --test codex/tests/*.test.mjs && mv .c8/cobertura-coverage.xml coverage.xml",
+  "unit": "npm install -g @anthropic-ai/claude-code@2.1.306 && for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\" || exit 1; done && rm -rf .c8 && npx -y c8@12.0.0 --reporter=cobertura --reports-dir .c8 node --test codex/tests/*.test.mjs && mv .c8/cobertura-coverage.xml coverage.xml",
   "regression": "sh scripts/check-shared.sh",
   "e2e": "bash -c 'echo \"e2e: no test exists yet (plan 2026-10-22)\"; exit 1'",
   "environment": "for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\"; done",
