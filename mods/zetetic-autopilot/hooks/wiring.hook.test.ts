@@ -9,7 +9,22 @@ import { CLIP } from './spawns'
 // each session start says so in a toast and in a POLICY row. The test engine has no $.plugin: the name is
 // plugin.json's, the root the folder holding it, which is this file's parent folder.
 const NAME = 'zetetic-autopilot'
-const ROOT = new URL('..', (import.meta as unknown as { url: string }).url).pathname
+const rootFromModuleUrl = (url: string): string => {
+  const path = decodeURIComponent(new URL('..', url).pathname).replace(/\/$/, '')
+  return /^\/[A-Za-z]:\//.test(path) ? path.slice(1).replace(/\//g, '\\') : path
+}
+const ROOT = rootFromModuleUrl((import.meta as unknown as { url: string }).url)
+
+// Expected local paths verified with Node's fileURLToPath(..., { windows }) outside the mod sandbox.
+test('the installed fixture uses a Windows file path, retaining its drive and decoding spaces', () => {
+  expect(rootFromModuleUrl('file:///D:/work/claude%20mods/mods/zetetic-autopilot/hooks/wiring.hook.test.ts'))
+    .toBe('D:\\work\\claude mods\\mods\\zetetic-autopilot')
+})
+
+test('the installed fixture decodes a POSIX file URL into the exact local directory', () => {
+  expect(rootFromModuleUrl('file:///Users/test/claude%20mods/mods/zetetic-autopilot/hooks/wiring.hook.test.ts'))
+    .toBe('/Users/test/claude mods/mods/zetetic-autopilot')
+})
 
 test('a bare key beside the running marketplace install: a toast and a named row at the start', { options: ENFORCE }, async ($, on) => {
   const seen = freshSeen()
