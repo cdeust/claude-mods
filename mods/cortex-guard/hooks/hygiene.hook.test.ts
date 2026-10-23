@@ -8,6 +8,14 @@ import type { TestBody } from 'claude-code/testing'
 // a failure can be told to Claude in the call's result (the audience tests at the end).
 
 const SCRIPT = '/home/t/Developments/disk-hygiene/disk_hygiene.py'
+// These fixtures start at /: Windows adds the current drive and uses backslashes.
+// Compare the full rooted path after removing only those platform differences.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+const registeredPath = (toast: string): string => {
+  const prefix = 'worktree registered: '
+  expect(toast.startsWith(prefix)).toBe(true)
+  return rootedPath(toast.slice(prefix.length))
+}
 const ADD = { tool: 'Bash', command: 'git worktree add -b f /r/.claude/worktrees/f main' } as const
 
 // `lib` names no DOM, so the timer is reached through the global object.
@@ -27,7 +35,7 @@ const stubs = (on: Parameters<TestBody>[1], home: string | undefined | { deny: s
   on('session.id', () => ({ value: 'test-session' }))
   on('fs.stat', ($, e) => {
     seen.stats.push(e.path)
-    return e.path === SCRIPT ? (scriptStat as never) : ({ value: { kind: 'file', size: 1, mtimeMs: 0, realPath: e.path } as never })
+    return rootedPath(e.path) === SCRIPT ? (scriptStat as never) : ({ value: { kind: 'file', size: 1, mtimeMs: 0, realPath: e.path } as never })
   })
   on('ui.toast', ($, e) => {
     seen.toasts.push(e.text)
@@ -55,7 +63,7 @@ test('the default script is placed under the running user home, and a missing fi
   expect((await $.tool.call({ tool: 'Bash', command: 'git worktree add -b g /r/.claude/worktrees/g main' })).result).toBe('ran')
   await new Promise<void>((resolve) => later(resolve, 0))
   expect(seen.toasts).toHaveLength(1)
-  expect(seen.stats.filter((path) => path === SCRIPT)).toHaveLength(1)
+  expect(seen.stats.filter((path) => rootedPath(path) === SCRIPT)).toHaveLength(1)
   expect(seen.argvs).toEqual([])
 })
 
@@ -70,7 +78,7 @@ test('the script that exists is run with python3 and the registration is toasted
   })
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
-  expect(await done).toBe('worktree registered: /r/.claude/worktrees/f')
+  expect(registeredPath(await done)).toBe('/r/.claude/worktrees/f')
   expect(scriptRuns(seen)[0]?.slice(0, 2)).toEqual(['python3', SCRIPT])
   expect(scriptRuns(seen)[0]).toContain('register-worktree')
 })
@@ -109,7 +117,7 @@ test('python3 that exits non-zero and python that is absent leave py, which then
   })
   const done = seen.nextToast()
   await $.tool.call({ ...ADD })
-  expect(await done).toBe('worktree registered: /r/.claude/worktrees/f')
+  expect(registeredPath(await done)).toBe('/r/.claude/worktrees/f')
   expect(seen.argvs.slice(0, 3)).toEqual([['python3', '--version'], ['python', '--version'], ['py', '--version']])
   expect(scriptRuns(seen)[0]?.slice(0, 2)).toEqual(['py', SCRIPT])
 })
@@ -186,7 +194,7 @@ test('an explicitly empty option disables registration with no toast and no look
   const seen = stubs(on, '/home/t', { deny: 'would be missing' })
   expect((await $.tool.call({ ...ADD })).result).toBe('ran')
   expect(seen.toasts).toEqual([])
-  expect(seen.stats.filter((path) => path === SCRIPT)).toEqual([])
+  expect(seen.stats.filter((path) => rootedPath(path) === SCRIPT)).toEqual([])
 })
 
 test('an absolute path in the option is used as given', { options: { hygiene_script: '/opt/h.py' } }, async ($, on) => {
@@ -238,7 +246,7 @@ test('a worktree that is registered tells Claude nothing', async ($, on) => {
   const seen = stubs(on, '/home/t', { value: { kind: 'file', size: 1, mtimeMs: 0 } })
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Python 3.12.1', stderr: '' } as never }))
   const ran = await $.tool.call({ ...ADD })
-  expect(seen.toasts).toEqual(['worktree registered: /r/.claude/worktrees/f'])
+  expect(seen.toasts.map(registeredPath)).toEqual(['/r/.claude/worktrees/f'])
   expect(ran.context).toBeUndefined()
 })
 
