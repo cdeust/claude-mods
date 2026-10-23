@@ -5,6 +5,10 @@ type Engine = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) 
 
 import { FleetView } from './fleetview'
 
+// POSIX-root fixtures acquire the runner's drive on Windows (run 39900938464).
+const slashPath = (path: string): string => path.replace(/\\/g, '/')
+const rootedPath = (path: string): string => slashPath(path).replace(/^[A-Za-z]:(?=\/)/, '')
+
 const INSTALLED = JSON.stringify({ plugins: { 'hypermnesia-mcp@cortex-plugins': [{ version: '4.23.4' }] } })
 const MARKETPLACES = JSON.stringify({
   'cortex-plugins': { source: { source: 'github', repo: 'cdeust/cortex' }, installLocation: '/m/cortex', lastUpdated: '2026-09-22T22:53:29Z' },
@@ -424,9 +428,9 @@ test('CLAUDE_CONFIG_DIR relocates the engine records, whatever HOME says', async
   const reads: string[] = []
   const ui = await refreshed($, on, { env: { HOME: '/home/t', CLAUDE_CONFIG_DIR: '/work/cfg' }, reads })
   expect(await ui.find({ type: 'Text', text: /hypermnesia-mcp 4\.23\.4 → 4\.24\.0 offered/ })).toBeDefined()
-  expect(reads).toContain('/work/cfg/plugins/installed_plugins.json')
-  expect(reads).toContain('/work/cfg/plugins/known_marketplaces.json')
-  expect(reads.some((r) => r.startsWith('/home/t'))).toBe(false)
+  expect(reads.map(rootedPath)).toContain('/work/cfg/plugins/installed_plugins.json')
+  expect(reads.map(rootedPath)).toContain('/work/cfg/plugins/known_marketplaces.json')
+  expect(reads.map(rootedPath).some((r) => r.startsWith('/home/t'))).toBe(false)
   await ui.unmount()
 })
 
@@ -434,8 +438,8 @@ test('without HOME the home is USERPROFILE (a Windows machine)', async ($, on) =
   const reads: string[] = []
   const ui = await refreshed($, on, { env: { USERPROFILE: 'C:\\Users\\t' }, reads })
   expect(await ui.find({ type: 'Text', text: /hypermnesia-mcp 4\.23\.4 → 4\.24\.0 offered/ })).toBeDefined()
-  // This engine is POSIX and resolves the Windows spelling against the working directory; the tail is the mod's.
-  expect(reads.some((r) => r.endsWith('C:\\Users\\t/.claude/plugins/installed_plugins.json'))).toBe(true)
+  // POSIX resolves this Windows fixture against cwd; Windows keeps its C: drive.
+  expect(reads.map(slashPath).some((r) => r.endsWith('C:/Users/t/.claude/plugins/installed_plugins.json'))).toBe(true)
   await ui.unmount()
 })
 

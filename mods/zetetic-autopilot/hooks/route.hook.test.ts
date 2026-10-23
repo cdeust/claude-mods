@@ -5,6 +5,8 @@ import type { TestBody } from 'claude-code/testing'
 // keep the effort the engine sends them (the definition's).
 
 const FABLE = 'claude-fable-5-1'
+// The disk below uses POSIX-root fixtures; Windows adds its runner drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
 const ZETETIC = '/c/zetetic/2.44.0'
 const INSTALLED = JSON.stringify({ plugins: { 'zetetic-team-subagents@zetetic-marketplace': [{ installPath: ZETETIC }] } })
 const FILES: Record<string, string> = {
@@ -27,9 +29,9 @@ const stubs = (on: Parameters<TestBody>[1], seen: Seen, genius: 'absent' | 'thro
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never }))
   on('session.model', () => ({ value: FABLE }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
-  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path ?? '') in d.files }))
+  on('fs.exists', ($, e) => ({ value: rootedPath(String((e as { path?: string }).path ?? '')) in d.files }))
   on('fs.read', ($, e) => {
-    const path = String((e as { path?: string }).path ?? '')
+    const path = rootedPath(String((e as { path?: string }).path ?? ''))
     d.reads.push(path)
     if (d.failing.has(path)) return { deny: 'EIO: i/o error' }
     const text = d.files[path]
@@ -185,7 +187,7 @@ test(
     await $.agent.spawn(spawn('dispatch'))
     noRead(d, '/.claude/agents/dispatch.md')
     expect(seen.policy?.decisions.find((x) => x.kind === 'unread')?.to).toMatch(/^no file at /)
-    const named = seen.policy?.decisions.find((x) => x.kind === 'unread')?.to.replace('no file at ', '').split(', ')
+    const named = seen.policy?.decisions.find((x) => x.kind === 'unread')?.to.replace('no file at ', '').split(', ').map(rootedPath)
     expect(named).toEqual(['/r/pkg/.claude/agents/dispatch.md', '/r/.claude/agents/dispatch.md', '/home/t/.claude/agents/dispatch.md'])
   },
 )
