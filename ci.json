@@ -1,8 +1,8 @@
 {
-  "unit": "npm install -g @anthropic-ai/claude-code@2.1.296 && for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\"; done && rm -rf .c8 && npx -y c8@12.0.0 --reporter=cobertura --reports-dir .c8 node --test codex/tests/*.test.mjs && mv .c8/cobertura-coverage.xml coverage.xml",
+  "unit": "npm install -g @anthropic-ai/claude-code@2.1.306 && for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\" || exit 1; done && rm -rf .c8 && npx -y c8@12.0.0 --reporter=cobertura --reports-dir .c8 node --test codex/tests/*.test.mjs && mv .c8/cobertura-coverage.xml coverage.xml",
   "regression": "sh scripts/check-shared.sh",
-  "e2e": "bash -c 'echo \"e2e: no test exists yet (plan 2026-10-22)\"; exit 1'",
-  "environment": "for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\"; done",
-  "install": "claude plugin marketplace add \"${GITHUB_WORKSPACE:-$PWD}\" && for m in cortex-guard cortex-wiki zetetic-genius zetetic-autopilot zetetic-insights mission-control harness-fleet; do claude plugin install \"$m@claude-mods\"; done && claude plugin list",
+  "e2e": "node scripts/ci-e2e.mjs",
+  "environment": "for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\" || exit 1; done",
+  "install": "claude plugin marketplace add \"${GITHUB_WORKSPACE:-$PWD}\" && for m in cortex-guard cortex-wiki zetetic-genius zetetic-autopilot zetetic-insights mission-control harness-fleet; do claude plugin install \"$m@claude-mods\" || exit 1; done && claude plugin list",
   "version_file": ".claude-plugin/marketplace.json"
 }

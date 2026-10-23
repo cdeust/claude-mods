@@ -1,6 +1,9 @@
 import { mock } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+// These fixtures use POSIX roots; Windows engine paths include the current drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
 // The fake machine the spawn wiring tests share: a disk with the zetetic agents' definitions, a store, the
 // engine's agent list, and a spawn that answers `ag-<n>` once it started. Not a test file: the tests import it.
 
@@ -67,9 +70,9 @@ const machineStubs = (on: On, seen: Seen) => {
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1_000_000 }, rateLimits: seen.rateLimits, cost: { usd: 0 } } as never }))
   on('session.model', () => ({ value: FABLE }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
-  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path ?? '') in seen.files }))
+  on('fs.exists', ($, e) => ({ value: rootedPath(String((e as { path?: string }).path ?? '')) in seen.files }))
   on('fs.read', ($, e) => {
-    const path = String((e as { path?: string }).path ?? '')
+    const path = rootedPath(String((e as { path?: string }).path ?? ''))
     const text = seen.files[path]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })

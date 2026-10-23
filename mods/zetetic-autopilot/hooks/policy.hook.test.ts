@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+// These fixtures use POSIX roots; Windows engine paths include the current drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
 // Wiring tests: the policy hooks on turn.step, agent.spawn and session.append, observed then
 // enforced, with the genius grade read from the dependency's state.
 
@@ -22,7 +25,7 @@ const stubs = (on: Parameters<TestBody>[1], seen: { effort?: unknown }[], grade:
   const vars = world.env ?? { HOME: '/home/t' }
   on('env.get', ($, e) => ({ value: vars[String((e as { name?: string }).name ?? '')] as never }))
   on('fs.read', ($, e) => {
-    world.reads?.push(String((e as { path?: string }).path ?? ''))
+    world.reads?.push(rootedPath(String((e as { path?: string }).path ?? '')))
     const file = world.thresholds ?? { deny: 'absent' }
 
     return typeof file === 'string' ? { value: file } : file
@@ -135,11 +138,11 @@ const diskOf = (on: Parameters<TestBody>[1], refuse?: string): Disk => {
   const disk: Disk = { written: {}, processes: [], refuse, rows: [] }
   on('session.id', () => ({ value: SESSION }))
   on('classic.SessionStart', () => ({}) as never)
-  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in disk.written }))
+  on('fs.exists', ($, e) => ({ value: rootedPath(String((e as { path?: string }).path)) in disk.written }))
   on('fs.write', ($, e) => {
     if (disk.refuse !== undefined) return { deny: disk.refuse }
     const { path, text } = e as unknown as { path: string; text: string }
-    disk.written[path] = text
+    disk.written[rootedPath(path)] = text
 
     return { value: undefined as never }
   })

@@ -3,6 +3,9 @@ import type { TestBody } from 'claude-code/testing'
 
 import { FRICTION_MAX_BYTES } from './friction'
 
+// The fake disk uses POSIX-root fixtures, independent of the runner's drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
 // Wiring: a main turn's runs go to the ledger, the evidence becomes a proposal, /calibrate apply
 // writes the file the autopilot reads; enforced, the file is written at once.
 
@@ -44,13 +47,13 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
   on('session.cwd', () => ({ value: '/r' }))
   on('session.id', () => (w.sidDenied !== undefined ? { deny: w.sidDenied } : { value: w.sid ?? 'sess-1' }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
-  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in w.files }))
+  on('fs.exists', ($, e) => ({ value: rootedPath(String((e as { path?: string }).path)) in w.files }))
   on('fs.stat', ($, e) => {
-    const path = String((e as { path?: string }).path)
+    const path = rootedPath(String((e as { path?: string }).path))
     return !(path in w.files) ? { deny: 'ENOENT' } : { value: { kind: 'file', size: w.sizes?.[path] ?? 1, mtimeMs: 0, isLink: false } as never }
   })
   on('fs.read', ($, e) => {
-    const path = String((e as { path?: string }).path)
+    const path = rootedPath(String((e as { path?: string }).path))
     w.onRead?.(path)
     if (w.readErrors?.[path] !== undefined) return { deny: w.readErrors[path]! }
     const text = w.files[path]
@@ -58,8 +61,8 @@ const stubs = (on: Parameters<TestBody>[1], w: World, phases: unknown = PHASES, 
   })
   on('fs.write', ($, e) => {
     const { path, text } = e as unknown as { path: string; text: string }
-    w.written[path] = text
-    w.files[path] = text
+    w.written[rootedPath(path)] = text
+    w.files[rootedPath(path)] = text
     return { value: undefined as never }
   })
   on('store.get', ($, e) => {
