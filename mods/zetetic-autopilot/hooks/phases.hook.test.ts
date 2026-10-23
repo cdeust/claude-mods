@@ -3,6 +3,9 @@ import type { TestBody } from 'claude-code/testing'
 
 import type { PhasesState, PolicyDecision } from '../types'
 
+// These fixtures use POSIX roots; Windows engine paths include the current drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
 // Wiring tests: the phases row of main and of a subagent, filled from the steps' results.
 
 const seenPhases = (on: Parameters<TestBody>[1], files: Record<string, string> = {}): { value?: PhasesState; decisions?: PolicyDecision[] } => {
@@ -13,9 +16,9 @@ const seenPhases = (on: Parameters<TestBody>[1], files: Record<string, string> =
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
-  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in files }))
+  on('fs.exists', ($, e) => ({ value: rootedPath(String((e as { path?: string }).path)) in files }))
   on('fs.read', ($, e) => {
-    const text = files[String((e as { path?: string }).path)]
+    const text = files[rootedPath(String((e as { path?: string }).path))]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
   on('state.get', ($, e, next) =>

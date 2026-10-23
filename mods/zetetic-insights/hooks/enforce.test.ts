@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+// These fixtures use POSIX roots; Windows engine paths include the current drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
 // Wiring of the measured moves: what a turn records of why its runs sat on their rung, and that the
 // automated path (enforce) freezes a move's pre statistics like /calibrate apply does.
 
@@ -21,16 +24,16 @@ const stubs = (on: Parameters<TestBody>[1], w: World, scene: Scene) => {
   on('session.cwd', () => ({ value: '/r' }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? '/home/t' : undefined) as never }))
-  on('fs.exists', ($, e) => ({ value: String((e as { path?: string }).path) in w.files }))
-  on('fs.stat', ($, e) => (String((e as { path?: string }).path) in w.files ? { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false } as never } : { deny: 'ENOENT' }))
+  on('fs.exists', ($, e) => ({ value: rootedPath(String((e as { path?: string }).path)) in w.files }))
+  on('fs.stat', ($, e) => (rootedPath(String((e as { path?: string }).path)) in w.files ? { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false } as never } : { deny: 'ENOENT' }))
   on('fs.read', ($, e) => {
-    const text = w.files[String((e as { path?: string }).path)]
+    const text = w.files[rootedPath(String((e as { path?: string }).path))]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
   on('fs.write', ($, e) => {
     const { path, text } = e as unknown as { path: string; text: string }
-    w.written[path] = text
-    w.files[path] = text
+    w.written[rootedPath(path)] = text
+    w.files[rootedPath(path)] = text
     return { value: undefined as never }
   })
   on('store.get', ($, e) => ({ value: w.store[String((e as { key?: string }).key)] as never }))

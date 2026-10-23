@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+// These fixtures use POSIX roots; Windows engine paths include the current drive.
+const rootedPath = (path: string): string => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
+
 // Wiring: prompt.submit grades the request and, enforced, attaches the pattern; turn.start binds.
 
 const TABLE = [
@@ -38,7 +41,7 @@ const stubs = (on: Parameters<TestBody>[1], answer: string, seen: Seen, world: W
   const vars = world.env ?? { HOME: '/home/t' }
   on('env.get', ($, e) => ({ value: vars[String((e as { name?: string }).name ?? '')] as never }))
   on('fs.read', ($, e) => {
-    const path = String((e as { path?: string }).path ?? '')
+    const path = rootedPath(String((e as { path?: string }).path ?? ''))
     world.reads?.push(path)
     if (path.endsWith('skill-routing-table.md')) return { value: TABLE }
     if (path.endsWith('installed_plugins.json')) return { value: world.installed ?? INSTALLED }
