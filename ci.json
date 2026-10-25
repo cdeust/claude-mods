@@ -4,5 +4,38 @@
   "e2e": "node scripts/ci-e2e.mjs",
   "environment": "for m in mods/*/; do claude plugin validate \"$m\" && claude plugin test \"$m\" || exit 1; done",
   "install": "claude plugin marketplace add \"${GITHUB_WORKSPACE:-$PWD}\" && for m in cortex-guard cortex-wiki zetetic-genius zetetic-autopilot zetetic-insights mission-control harness-fleet; do claude plugin install \"$m@claude-mods\" || exit 1; done && claude plugin list",
-  "version_file": ".claude-plugin/marketplace.json"
+  "release_packages": [
+    {
+      "version_file": "mods/cortex-guard/.claude-plugin/plugin.json",
+      "tag_prefix": "cortex-guard/v"
+    },
+    {
+      "version_file": "mods/cortex-wiki/.claude-plugin/plugin.json",
+      "tag_prefix": "cortex-wiki/v"
+    },
+    {
+      "version_file": "mods/harness-fleet/.claude-plugin/plugin.json",
+      "tag_prefix": "harness-fleet/v"
+    },
+    {
+      "version_file": "mods/mission-control/.claude-plugin/plugin.json",
+      "tag_prefix": "mission-control/v"
+    },
+    {
+      "version_file": "mods/zetetic-autopilot/.claude-plugin/plugin.json",
+      "tag_prefix": "zetetic-autopilot/v"
+    },
+    {
+      "version_file": "mods/zetetic-genius/.claude-plugin/plugin.json",
+      "tag_prefix": "zetetic-genius/v"
+    },
+    {
+      "version_file": "mods/zetetic-insights/.claude-plugin/plugin.json",
+      "tag_prefix": "zetetic-insights/v"
+    },
+    {
+      "version_file": "codex/.codex-plugin/plugin.json",
+      "tag_prefix": "claude-mods/v"
+    }
+  ]
 }
