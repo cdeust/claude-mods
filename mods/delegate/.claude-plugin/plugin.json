@@ -1,0 +1,22 @@
+{
+  "name": "delegate",
+  "version": "0.1.0",
+  "description": "The main loop only delegates; each delegation names the model and effort its task needs. Explore, web and search work runs on haiku at low effort, implementation on sonnet, review and design on opus.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "main_mode": {
+      "type": "string",
+      "title": "Main loop mode",
+      "description": "block (default): the main loop's own work tools are refused with a message that says to delegate. warn: allowed, with a toast. off: the mod only routes subagents.",
+      "default": "block",
+      "options": ["block", "warn", "off"]
+    },
+    "main_allow": {
+      "type": "string",
+      "title": "Extra tools the main loop may use",
+      "description": "Comma-separated tool names the main loop keeps besides the orchestration tools. A trailing * matches a prefix (mcp__my_server__*).",
+      "default": ""
+    }
+  },
+  "author": { "name": "cdeust" }
+}
