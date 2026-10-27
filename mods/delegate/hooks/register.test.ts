@@ -35,7 +35,7 @@ test('an Agent call without model or effort is routed, a named one is kept', asy
 })
 
 const TRANSCRIPT = '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-a1.jsonl'
-const LIFT = 'python3 /Users/x/.claude/plugins/reflection_ledger.py --cwd /Users/x/repo lift abc123 --memory-id 42'
+const LIFT = 'python3 /Users/x/.claude/plugins/cache/m/p/1.0.0/tools/reflection_ledger.py --cwd /Users/x/repo lift abc123 --memory-id 42'
 
 test('block: the main loop may read a subagent transcript and run one lift, no more', async ($, on) => {
   on('tool.call', () => ({ result: {} }))

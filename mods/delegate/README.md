@@ -37,9 +37,10 @@ hook needs and nothing else:
 
 - `Read` of a file whose absolute path contains `/.claude/projects/`, then `/subagents/`, ends in `.jsonl` and has
   no `..` segment;
-- `Bash` of exactly `python3 <script>/reflection_ledger.py --cwd <dir> lift <hex> --memory-id <digits>`, the whole
-  command matching `^python3 \S+/reflection_ledger\.py --cwd \S+ lift [a-f0-9]+ --memory-id [0-9]+$`, with none of
-  `; & | ` $ ( ) < > ' " \ { } * ? [ ] ! # ~` or a line break anywhere in it.
+- `Bash` of exactly `python3 <script> --cwd <dir> lift <hex> --memory-id <digits>`, where `<script>` is
+  `/Users/<user>/.claude/plugins/cache/.../tools/reflection_ledger.py` (or `/home/<user>/...`), `<dir>` is an absolute
+  path, neither holds a `..` segment, and the whole command has none of `; & | ` $ ( ) < > ' " \ { } * ? [ ] ! # ~` or
+  a line break anywhere in it.
 
 ## Routing table
 

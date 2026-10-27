@@ -20,7 +20,10 @@ test('the extra list matches a name or a prefix', () => {
   expect(isOrchestration('Edit', extra)).toBe(false)
 })
 
-const LIFT = 'python3 /Users/x/.claude/plugins/reflection_ledger.py --cwd /Users/x/repo lift abc123 --memory-id 42'
+const SCRIPT = '/Users/x/.claude/plugins/cache/m/p/1.0.0/tools/reflection_ledger.py'
+const LIFT = `python3 ${SCRIPT} --cwd /Users/x/repo lift abc123 --memory-id 42`
+const REAL =
+  'python3 /Users/cdeust/.claude/plugins/cache/zetetic-marketplace/zetetic-team-subagents/2.45.1/tools/reflection_ledger.py --cwd /Users/cdeust/Developments/anthropic-partnership/claude-mods lift ab52aa3ac5e98f4f1 --memory-id 4407125'
 const TRANSCRIPT = '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-a1.jsonl'
 
 test('the transcript of a subagent may be read, nothing else', () => {
@@ -43,6 +46,7 @@ test('the transcript of a subagent may be read, nothing else', () => {
 
 test('only the ledger lift may be run, as one plain command', () => {
   expect(isLiftCommand(LIFT)).toBe(true)
+  expect(isLiftCommand(REAL)).toBe(true)
   for (const c of [
     `${LIFT}; rm -rf /`,
     `${LIFT} && id`,
@@ -65,6 +69,17 @@ test('only the ledger lift may be run, as one plain command', () => {
     LIFT.replace('lift', 'drop'),
     LIFT.replace('python3', 'python3 -c'),
     LIFT.replace('reflection_ledger.py', 'other.py'),
+    LIFT.replace(SCRIPT, '/tmp/x/reflection_ledger.py'), // outside the home directory
+    LIFT.replace(SCRIPT, '/tmp/x/.claude/plugins/cache/m/p/1.0.0/tools/reflection_ledger.py'),
+    LIFT.replace(SCRIPT, '/Users/x/.claude/plugins/cache/../../../evil/tools/reflection_ledger.py'), // a `..` segment
+    LIFT.replace(SCRIPT, '/Users/x/.claude/plugins/cache/m/../../../tools/reflection_ledger.py'),
+    LIFT.replace(SCRIPT, '/Users/x/.claude/plugins/reflection_ledger.py'), // not under cache, not in tools/
+    LIFT.replace(SCRIPT, '/Users/x/.claude/plugins/cache/m/p/1.0.0/reflection_ledger.py'), // not in tools/
+    LIFT.replace(SCRIPT, '/Users/x/repo/tools/reflection_ledger.py'), // outside .claude/plugins/cache
+    LIFT.replace(SCRIPT, 'Users/x/.claude/plugins/cache/m/p/tools/reflection_ledger.py'), // relative
+    LIFT.replace('--cwd /Users/x/repo', '--cwd ..'),
+    LIFT.replace('--cwd /Users/x/repo', '--cwd /Users/x/../..'),
+    LIFT.replace('--cwd /Users/x/repo', '--cwd repo'), // relative
     ` ${LIFT}`,
     `${LIFT} `,
     undefined,

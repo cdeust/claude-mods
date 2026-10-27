@@ -31,13 +31,21 @@ export function isSubagentTranscript(path: unknown): boolean {
   return path.indexOf('/subagents/', root + marker.length - 1) >= 0 && path.endsWith('.jsonl')
 }
 
-export const LIFT_COMMAND = /^python3 \S+\/reflection_ledger\.py --cwd \S+ lift [a-f0-9]+ --memory-id [0-9]+$/
+// The script is the plugin cache's copy: an absolute path under a home directory, `/.claude/plugins/cache/`, then
+// `/tools/reflection_ledger.py`; `--cwd` is an absolute path. Neither may hold a `..` segment (checked in isLiftCommand).
+export const LIFT_COMMAND =
+  /^python3 \/(?:Users|home)\/[^\s/]+\/\.claude\/plugins\/cache\/\S+\/tools\/reflection_ledger\.py --cwd \/\S* lift [a-f0-9]+ --memory-id [0-9]+$/
 // The metacharacters the owner named (; & | ` $ ( ) < > newline), then the ones that still change what a word
 // means to the shell (quotes, backslash, braces, globs, !, #, ~) or end a line (carriage return).
 const SHELL_META = /[;&|`$()<>\r\n'"\\{}*?[\]!#~]/
 
 export function isLiftCommand(command: unknown): boolean {
-  return typeof command === 'string' && !SHELL_META.test(command) && LIFT_COMMAND.test(command)
+  return (
+    typeof command === 'string' &&
+    !SHELL_META.test(command) &&
+    LIFT_COMMAND.test(command) &&
+    !command.split(' ').some((word) => word.split('/').includes('..'))
+  )
 }
 
 export function isReflectionCall(call: { tool: string; file_path?: unknown; command?: unknown }): boolean {
