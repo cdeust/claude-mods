@@ -32,7 +32,7 @@ To turn the guard off: `main_mode` = `off`. To remove the mod: `/plugin uninstal
 
 The orchestration tools (`Agent`, `SendMessage`, `AskUserQuestion`, `Skill`, `ToolSearch`, `TaskStop`, the task
 and plan tools, scheduling and notification tools), the Cortex and zetetic memory servers (`recall`, `remember`:
-a lookup, not a task), and what `main_allow` names. Plus, in `block` and `warn`, two calls the Stop reflection
+a lookup, not a task), and what `main_allow` names. Plus, in `block` and `warn`, four calls the Stop reflection
 hook needs and nothing else:
 
 - `Read` of a file whose absolute path contains `/.claude/projects/`, then `/subagents/`, ends in `.jsonl` and has
@@ -40,7 +40,13 @@ hook needs and nothing else:
 - `Bash` of exactly `python3 <script> --cwd <dir> lift <hex> --memory-id <digits>`, where `<script>` is
   `/Users/<user>/.claude/plugins/cache/.../tools/reflection_ledger.py` (or `/home/<user>/...`), `<dir>` is an absolute
   path, neither holds a `..` segment, and the whole command has none of `; & | ` $ ( ) < > ' " \ { } * ? [ ] ! # ~` or
-  a line break anywhere in it.
+  a line break anywhere in it;
+- `Bash` of exactly `python3 <script> --cwd <dir> list` (same script and `--cwd` rules; it only prints the pending
+  reflections);
+- `Bash` of one `grep [flags] [-e PATTERN | PATTERN] FILE...` over subagent transcripts: flags are clusters of
+  `c o E F i n h H` and `-m|-A|-B|-C <digits>`; the pattern is a plain word (letters, digits and `_ . : = , @ % + ^ / -`;
+  no quotes, so no spaces); every `FILE` is a transcript as defined above. No pipe, chaining, redirection,
+  substitution or glob (the metacharacters above are refused), no `-r`, no `-f`, no other command.
 
 ## Routing table
 

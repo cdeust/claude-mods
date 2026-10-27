@@ -1,6 +1,6 @@
 {
   "name": "delegate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The main loop only delegates; each delegation names the model and effort its task needs. Explore, web and search work runs on haiku at low effort, implementation on sonnet, review and design on opus.",
   "types": "./types/index.d.ts",
   "userConfig": {

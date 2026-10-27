@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { isLiftCommand, isOrchestration, isReflectionCall, isSubagentTranscript, parseAllow } from './guard'
+import { isGrepCommand, isLiftCommand, isListCommand, isOrchestration, isReflectionCall, isSubagentTranscript, parseAllow } from './guard'
 
 test('orchestration tools stay, work tools go', () => {
   for (const t of ['Agent', 'SendMessage', 'AskUserQuestion', 'Skill', 'ToolSearch']) expect(isOrchestration(t)).toBe(true)
@@ -94,4 +94,68 @@ test('a reflection call is a Read of a transcript or a lift, by tool', () => {
   expect(isReflectionCall({ tool: 'Read', command: LIFT })).toBe(false)
   expect(isReflectionCall({ tool: 'Write', file_path: TRANSCRIPT })).toBe(false)
   expect(isReflectionCall({ tool: 'Grep', file_path: TRANSCRIPT })).toBe(false)
+})
+
+const LIST = `python3 ${SCRIPT} --cwd /Users/x/repo list`
+
+test('the ledger list may be run, as one plain command', () => {
+  expect(isListCommand(LIST)).toBe(true)
+  for (const c of [
+    `${LIST}; id`, `${LIST} | sh`, `${LIST} > /tmp/x`, `${LIST} extra`, `${LIST}\nid`, `${LIST} $(id)`,
+    LIST.replace('list', 'lift abc --memory-id 1'),
+    LIST.replace('--cwd /Users/x/repo', '--cwd ..'),
+    LIST.replace('--cwd /Users/x/repo', '--cwd /Users/x/../..'),
+    LIST.replace(SCRIPT, '/tmp/x/reflection_ledger.py'),
+    LIST.replace(SCRIPT, '/Users/x/.claude/plugins/cache/../../evil/tools/reflection_ledger.py'),
+    `python3 -c ${LIST.slice(8)}`,
+    undefined,
+  ])
+    expect(isListCommand(c)).toBe(false)
+  expect(isReflectionCall({ tool: 'Bash', command: LIST })).toBe(true)
+})
+
+test('one read-only grep over subagent transcripts may be run', () => {
+  const T2 = '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-b2.jsonl'
+  for (const c of [
+    `grep -c tool_use ${TRANSCRIPT}`,
+    `grep -o -E tool_use ${TRANSCRIPT}`,
+    `grep -ci tool_use ${TRANSCRIPT} ${T2}`,
+    `grep -n -m 5 -e tool_use ${TRANSCRIPT}`,
+    `grep -A 2 -B 3 -C 4 error ${TRANSCRIPT}`,
+    `grep -F -e a.b ${TRANSCRIPT}`,
+  ])
+    expect(isGrepCommand(c)).toBe(true)
+  expect(isReflectionCall({ tool: 'Bash', command: `grep -c tool_use ${TRANSCRIPT}` })).toBe(true)
+  for (const c of [
+    `grep -c tool_use ${TRANSCRIPT} | head`,
+    `grep -c tool_use ${TRANSCRIPT}; id`,
+    `grep -c tool_use ${TRANSCRIPT} && id`,
+    `grep -c tool_use ${TRANSCRIPT} > /tmp/x`,
+    `grep -c tool_use < ${TRANSCRIPT}`,
+    `grep -c $(id) ${TRANSCRIPT}`,
+    `grep -c \`id\` ${TRANSCRIPT}`,
+    `grep -c "tool use" ${TRANSCRIPT}`,
+    `grep -c 'a' ${TRANSCRIPT}`,
+    `grep -c tool_use ${TRANSCRIPT}\nid`,
+    `grep -c tool_use /Users/x/.claude/projects/*/s1/subagents/*.jsonl`,
+    `grep -c tool_use /Users/x/.claude/projects/-Users-x-repo/s1/subagents/../../../../notes/a.jsonl`,
+    `grep -c tool_use /Users/x/notes.txt`,
+    `grep -c tool_use /Users/x/.claude/projects/-Users-x-repo/s1.jsonl`,
+    `grep -c tool_use ${TRANSCRIPT} /etc/passwd`,
+    `grep -c tool_use`,
+    `grep -c ${TRANSCRIPT}`,
+    `grep -r tool_use /Users/x/.claude/projects/-Users-x-repo/s1/subagents`,
+    `grep -rc tool_use ${TRANSCRIPT}`,
+    `grep -f /etc/passwd ${TRANSCRIPT}`,
+    `grep -c -m x tool_use ${TRANSCRIPT}`,
+    `grep -c -- tool_use ${TRANSCRIPT}`,
+    `grep --include=x tool_use ${TRANSCRIPT}`,
+    `grep -c tool_use ${TRANSCRIPT} -r`,
+    `grep -e -v ${TRANSCRIPT}`,
+    `egrep tool_use ${TRANSCRIPT}`,
+    `cat ${TRANSCRIPT}`,
+    ` grep -c tool_use ${TRANSCRIPT}`,
+    undefined,
+  ])
+    expect(isGrepCommand(c)).toBe(false)
 })
