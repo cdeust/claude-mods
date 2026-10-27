@@ -51,6 +51,16 @@ test('block: the main loop may read a subagent transcript and run one lift, no m
   expect((await $.tool.call({ tool: 'Write', file_path: TRANSCRIPT, content: 'x' })).deny).toMatch(/delegate/)
 })
 
+test('block: a read-only grep of a transcript and the ledger list pass, other Bash is refused', async ($, on) => {
+  on('tool.call', () => ({ result: {} }))
+  const LIST = 'python3 /Users/x/.claude/plugins/cache/m/p/1.0.0/tools/reflection_ledger.py --cwd /Users/x/repo list'
+  expect((await $.tool.call({ tool: 'Bash', command: `grep -c tool_use ${TRANSCRIPT}` })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Bash', command: LIST })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Bash', command: `grep -c tool_use ${TRANSCRIPT} | sh` })).deny).toMatch(/delegate/)
+  expect((await $.tool.call({ tool: 'Bash', command: 'grep -c tool_use /etc/hosts' })).deny).toMatch(/delegate/)
+  expect((await $.tool.call({ tool: 'Bash', command: `${LIST}; id` })).deny).toMatch(/delegate/)
+})
+
 test('warn: the two reflection calls pass without a toast or a count, any other work tool is counted', { options: { main_mode: 'warn' } }, async ($, on) => {
   const toasts: string[] = []
   on('ui.toast', (_, e) => {

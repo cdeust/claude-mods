@@ -17,8 +17,8 @@ export function isOrchestration(tool: string, extra: readonly string[] = []): bo
   return extra.some((x) => (x.endsWith('*') ? tool.startsWith(x.slice(0, -1)) : x === tool))
 }
 
-// The two things the main loop keeps besides orchestration, for the Stop reflection hook and nothing else:
-// reading a subagent's transcript, and lifting one reflection memory with the ledger script. Both are matched
+// What the main loop keeps besides orchestration, for the Stop reflection hook and nothing else: reading a
+// subagent's transcript (Read, or one read-only grep), and listing or lifting reflections with the ledger script. Both are matched
 // strictly, on the whole string; anything else stays a subagent's work.
 
 // A subagent's transcript: <...>/.claude/projects/<...>/subagents/<...>.jsonl, absolute, no `..` segment.
@@ -33,24 +33,56 @@ export function isSubagentTranscript(path: unknown): boolean {
 
 // The script is the plugin cache's copy: an absolute path under a home directory, `/.claude/plugins/cache/`, then
 // `/tools/reflection_ledger.py`; `--cwd` is an absolute path. Neither may hold a `..` segment (checked in isLiftCommand).
-export const LIFT_COMMAND =
-  /^python3 \/(?:Users|home)\/[^\s/]+\/\.claude\/plugins\/cache\/\S+\/tools\/reflection_ledger\.py --cwd \/\S* lift [a-f0-9]+ --memory-id [0-9]+$/
+const LEDGER = String.raw`python3 \/(?:Users|home)\/[^\s/]+\/\.claude\/plugins\/cache\/\S+\/tools\/reflection_ledger\.py --cwd \/\S*`
+export const LIFT_COMMAND = new RegExp(`^${LEDGER} lift [a-f0-9]+ --memory-id [0-9]+$`)
+// `list` only prints the pending reflections (reflection_ledger.py: `list` calls pending() and print(); no write).
+export const LIST_COMMAND = new RegExp(`^${LEDGER} list$`)
 // The metacharacters the owner named (; & | ` $ ( ) < > newline), then the ones that still change what a word
 // means to the shell (quotes, backslash, braces, globs, !, #, ~) or end a line (carriage return).
 const SHELL_META = /[;&|`$()<>\r\n'"\\{}*?[\]!#~]/
 
-export function isLiftCommand(command: unknown): boolean {
-  return (
-    typeof command === 'string' &&
-    !SHELL_META.test(command) &&
-    LIFT_COMMAND.test(command) &&
-    !command.split(' ').some((word) => word.split('/').includes('..'))
-  )
+const plainCommand = (command: unknown): command is string =>
+  typeof command === 'string' && !SHELL_META.test(command) && !command.split(' ').some((word) => word.split('/').includes('..'))
+
+export const isLiftCommand = (command: unknown): boolean => plainCommand(command) && LIFT_COMMAND.test(command)
+export const isListCommand = (command: unknown): boolean => plainCommand(command) && LIST_COMMAND.test(command)
+
+// One read-only `grep` over subagent transcripts: `grep [flags] [-e PATTERN | PATTERN] FILE...`, options first.
+// Flags: clusters of c o E F i n h H, and `-m|-A|-B|-C <digits>`. A pattern is a plain word (no quotes, so no
+// spaces, and no shell metacharacter, so no `|` or `$`); every file is a subagent transcript. No `-r`, no `-f`.
+const GREP_CLUSTER = /^-[coEFinhH]+$/
+const GREP_COUNTED = /^-[mABC]$/
+const GREP_PATTERN = /^[A-Za-z0-9_.:=,@%+^/][A-Za-z0-9_.:=,@%+^/-]*$/
+
+export function isGrepCommand(command: unknown): boolean {
+  if (!plainCommand(command)) return false
+  const words = command.split(' ')
+  if (words[0] !== 'grep') return false
+  let i = 1
+  let hasE = false
+  for (; i < words.length; i++) {
+    const w = words[i] ?? ''
+    if (GREP_CLUSTER.test(w)) continue
+    if (GREP_COUNTED.test(w)) {
+      if (!/^[0-9]+$/.test(words[i + 1] ?? '')) return false
+      i++
+    } else if (w === '-e') {
+      if (!GREP_PATTERN.test(words[i + 1] ?? '')) return false
+      hasE = true
+      i++
+    } else break
+  }
+  if (!hasE) {
+    if (!GREP_PATTERN.test(words[i] ?? '')) return false
+    i++
+  }
+  const files = words.slice(i)
+  return files.length > 0 && files.every(isSubagentTranscript)
 }
 
 export function isReflectionCall(call: { tool: string; file_path?: unknown; command?: unknown }): boolean {
   if (call.tool === 'Read') return isSubagentTranscript(call.file_path)
-  if (call.tool === 'Bash') return isLiftCommand(call.command)
+  if (call.tool === 'Bash') return isLiftCommand(call.command) || isListCommand(call.command) || isGrepCommand(call.command)
   return false
 }
 
