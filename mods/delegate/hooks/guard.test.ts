@@ -1,6 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
-import { isGrepCommand, isLiftCommand, isListCommand, isOrchestration, isReflectionCall, isSubagentTranscript, parseAllow } from './guard'
+import {
+  GREP_MAX, isGrepCommand, isLiftCommand, isListCommand, isOrchestration, isReflectionCall, isSubagentTranscript,
+  isTranscriptOnDisk, parseAllow, projectsDir, shellWords,
+} from './guard'
 
 test('orchestration tools stay, work tools go', () => {
   for (const t of ['Agent', 'SendMessage', 'AskUserQuestion', 'Skill', 'ToolSearch']) expect(isOrchestration(t)).toBe(true)
@@ -24,10 +27,11 @@ const SCRIPT = '/Users/x/.claude/plugins/cache/m/p/1.0.0/tools/reflection_ledger
 const LIFT = `python3 ${SCRIPT} --cwd /Users/x/repo lift abc123 --memory-id 42`
 const REAL =
   'python3 /Users/cdeust/.claude/plugins/cache/zetetic-marketplace/zetetic-team-subagents/2.45.1/tools/reflection_ledger.py --cwd /Users/cdeust/Developments/anthropic-partnership/claude-mods lift ab52aa3ac5e98f4f1 --memory-id 4407125'
+const HOME = '/Users/x'
 const TRANSCRIPT = '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-a1.jsonl'
 
 test('the transcript of a subagent may be read, nothing else', () => {
-  expect(isSubagentTranscript(TRANSCRIPT)).toBe(true)
+  expect(isSubagentTranscript(TRANSCRIPT, HOME)).toBe(true)
   for (const p of [
     '/Users/x/.claude/projects/-Users-x-repo/s1.jsonl', // the main transcript, not a subagent's
     '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-a1.json',
@@ -41,7 +45,7 @@ test('the transcript of a subagent may be read, nothing else', () => {
     undefined,
     42,
   ])
-    expect(isSubagentTranscript(p)).toBe(false)
+    expect(isSubagentTranscript(p, HOME)).toBe(false)
 })
 
 test('only the ledger lift may be run, as one plain command', () => {
@@ -88,12 +92,12 @@ test('only the ledger lift may be run, as one plain command', () => {
 })
 
 test('a reflection call is a Read of a transcript or a lift, by tool', () => {
-  expect(isReflectionCall({ tool: 'Read', file_path: TRANSCRIPT })).toBe(true)
-  expect(isReflectionCall({ tool: 'Bash', command: LIFT })).toBe(true)
-  expect(isReflectionCall({ tool: 'Bash', file_path: TRANSCRIPT })).toBe(false)
-  expect(isReflectionCall({ tool: 'Read', command: LIFT })).toBe(false)
-  expect(isReflectionCall({ tool: 'Write', file_path: TRANSCRIPT })).toBe(false)
-  expect(isReflectionCall({ tool: 'Grep', file_path: TRANSCRIPT })).toBe(false)
+  expect(isReflectionCall({ tool: 'Read', file_path: TRANSCRIPT }, HOME)).toBe(true)
+  expect(isReflectionCall({ tool: 'Bash', command: LIFT }, HOME)).toBe(true)
+  expect(isReflectionCall({ tool: 'Bash', file_path: TRANSCRIPT }, HOME)).toBe(false)
+  expect(isReflectionCall({ tool: 'Read', command: LIFT }, HOME)).toBe(false)
+  expect(isReflectionCall({ tool: 'Write', file_path: TRANSCRIPT }, HOME)).toBe(false)
+  expect(isReflectionCall({ tool: 'Grep', file_path: TRANSCRIPT }, HOME)).toBe(false)
 })
 
 const LIST = `python3 ${SCRIPT} --cwd /Users/x/repo list`
@@ -111,21 +115,22 @@ test('the ledger list may be run, as one plain command', () => {
     undefined,
   ])
     expect(isListCommand(c)).toBe(false)
-  expect(isReflectionCall({ tool: 'Bash', command: LIST })).toBe(true)
+  expect(isReflectionCall({ tool: 'Bash', command: LIST }, HOME)).toBe(true)
 })
 
 test('one read-only grep over subagent transcripts may be run', () => {
   const T2 = '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-b2.jsonl'
   for (const c of [
     `grep -c tool_use ${TRANSCRIPT}`,
-    `grep -o -E tool_use ${TRANSCRIPT}`,
+    `grep -m 3 -o -E tool_use ${TRANSCRIPT}`,
     `grep -ci tool_use ${TRANSCRIPT} ${T2}`,
     `grep -n -m 5 -e tool_use ${TRANSCRIPT}`,
-    `grep -A 2 -B 3 -C 4 error ${TRANSCRIPT}`,
-    `grep -F -e a.b ${TRANSCRIPT}`,
+    `grep -m 1 -A 2 -B 1 -C 0 error ${TRANSCRIPT}`,
+    `grep -c -F -e a.b ${TRANSCRIPT}`,
+    `grep -c .. ${TRANSCRIPT}`,
   ])
-    expect(isGrepCommand(c)).toBe(true)
-  expect(isReflectionCall({ tool: 'Bash', command: `grep -c tool_use ${TRANSCRIPT}` })).toBe(true)
+    expect(isGrepCommand(c, HOME)).toBe(true)
+  expect(isReflectionCall({ tool: 'Bash', command: `grep -c tool_use ${TRANSCRIPT}` }, HOME)).toBe(true)
   for (const c of [
     `grep -c tool_use ${TRANSCRIPT} | head`,
     `grep -c tool_use ${TRANSCRIPT}; id`,
@@ -144,18 +149,91 @@ test('one read-only grep over subagent transcripts may be run', () => {
     `grep -c tool_use ${TRANSCRIPT} /etc/passwd`,
     `grep -c tool_use`,
     `grep -c ${TRANSCRIPT}`,
-    `grep -r tool_use /Users/x/.claude/projects/-Users-x-repo/s1/subagents`,
+    `grep -c -r tool_use /Users/x/.claude/projects/-Users-x-repo/s1/subagents`,
     `grep -rc tool_use ${TRANSCRIPT}`,
-    `grep -f /etc/passwd ${TRANSCRIPT}`,
+    `grep -c -f /etc/passwd ${TRANSCRIPT}`,
     `grep -c -m x tool_use ${TRANSCRIPT}`,
     `grep -c -- tool_use ${TRANSCRIPT}`,
-    `grep --include=x tool_use ${TRANSCRIPT}`,
+    `grep -c --include=x tool_use ${TRANSCRIPT}`,
     `grep -c tool_use ${TRANSCRIPT} -r`,
-    `grep -e -v ${TRANSCRIPT}`,
-    `egrep tool_use ${TRANSCRIPT}`,
+    `grep -c -e -v ${TRANSCRIPT}`,
+    `egrep -c tool_use ${TRANSCRIPT}`,
     `cat ${TRANSCRIPT}`,
     ` grep -c tool_use ${TRANSCRIPT}`,
     undefined,
   ])
-    expect(isGrepCommand(c)).toBe(false)
+    expect(isGrepCommand(c, HOME)).toBe(false)
+})
+
+// The tokenizer: the words the guard checks are the argv zsh and bash build (they split on space, tab and newline
+// only; checked over every character 0x01 to 0x7f and the Unicode spaces), so any other form is refused.
+test('the guard reads a command as the shell does, or not at all', () => {
+  expect(shellWords(`grep -c tool_use ${TRANSCRIPT}`)).toEqual(['grep', '-c', 'tool_use', TRANSCRIPT])
+  const spaces = [
+    '\t', '\n', '\v', '\f', '\r', '\u0085', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    ' ', ' ', ' ', ' ', ' ', ' ', '​', ' ', ' ', ' ', ' ',
+    '　', '﻿', '\u0000', '\u001b', '\u007f',
+  ]
+  for (const s of spaces) {
+    expect(shellWords(`grep -c x${s}${TRANSCRIPT}`)).toBeUndefined()
+    expect(shellWords(`grep${s}-c x ${TRANSCRIPT}`)).toBeUndefined()
+    expect(shellWords(`grep -c x ${TRANSCRIPT}${s}`)).toBeUndefined()
+    expect(shellWords(`${s}grep -c x ${TRANSCRIPT}`)).toBeUndefined()
+  }
+  for (const c of ['grep  -c x y', ' grep -c x y', 'grep -c x y ', 'grep -c ^x y', 'grep -c é y', 'grep -c x;id y', ''])
+    expect(shellWords(c)).toBeUndefined()
+  expect(shellWords(undefined)).toBeUndefined()
+})
+
+test('a transcript belongs to this HOME, and HOME is canonical', () => {
+  expect(isSubagentTranscript(TRANSCRIPT, HOME)).toBe(true)
+  expect(isSubagentTranscript(TRANSCRIPT, '/Users/y')).toBe(false)
+  for (const home of [undefined, '', '/', '/Users/x/', 'Users/x', '/Users//x', '/Users/./x', '/Users/x/..', 42])
+    expect(isSubagentTranscript(TRANSCRIPT, home)).toBe(false)
+  for (const p of [
+    `/${TRANSCRIPT}`,
+    TRANSCRIPT.replace('/s1/', '/./s1/'),
+    TRANSCRIPT.replace('/s1/', '//s1/'),
+    TRANSCRIPT.replace('agent-a1', '.agent-a1'),
+    TRANSCRIPT.replace('agent-a1', 'agent\ta1'),
+    '/tmp/evil/.claude/projects/-Users-x-repo/s1/subagents/agent-a1.jsonl',
+    `${TRANSCRIPT}/`,
+  ])
+    expect(isSubagentTranscript(p, HOME)).toBe(false)
+})
+
+test('on disk, a transcript is a regular file where its path says', () => {
+  const projects = { kind: 'dir', isLink: false, realPath: projectsDir(HOME) }
+  const file = { kind: 'file', isLink: false, realPath: TRANSCRIPT }
+  expect(isTranscriptOnDisk(file, projects, TRANSCRIPT, HOME)).toBe(true)
+  // the owner's ~/.claude may itself be a link: what counts is the place under the real projects folder
+  const moved = { kind: 'dir', isLink: false, realPath: '/Volumes/d/claude/projects' }
+  expect(isTranscriptOnDisk({ ...file, realPath: '/Volumes/d/claude/projects/-Users-x-repo/s1/subagents/agent-a1.jsonl' }, moved, TRANSCRIPT, HOME)).toBe(true)
+  expect(isTranscriptOnDisk({ ...file, kind: 'dir' }, projects, TRANSCRIPT, HOME)).toBe(false) // a directory
+  expect(isTranscriptOnDisk({ ...file, kind: 'other' }, projects, TRANSCRIPT, HOME)).toBe(false) // a dangling link, a fifo
+  expect(isTranscriptOnDisk({ ...file, isLink: true }, projects, TRANSCRIPT, HOME)).toBe(false) // a link, even to itself
+  expect(isTranscriptOnDisk({ ...file, realPath: '/tmp/s/secret.txt' }, projects, TRANSCRIPT, HOME)).toBe(false) // a linked folder
+  expect(isTranscriptOnDisk({ kind: 'file', isLink: false }, projects, TRANSCRIPT, HOME)).toBe(false) // not resolved
+  expect(isTranscriptOnDisk(file, { kind: 'dir', isLink: false }, TRANSCRIPT, HOME)).toBe(false)
+  expect(isTranscriptOnDisk(file, { ...projects, kind: 'file' }, TRANSCRIPT, HOME)).toBe(false)
+  expect(isTranscriptOnDisk(file, projects, '/tmp/s/secret.txt', HOME)).toBe(false)
+})
+
+test('a grep is bounded: -m or -c, small context, few files', () => {
+  expect(GREP_MAX).toEqual({ lines: 10, context: 2, files: 5 })
+  const files = (n: number): string => Array.from({ length: n }, () => TRANSCRIPT).join(' ')
+  expect(isGrepCommand(`grep -c x ${files(5)}`, HOME)).toBe(true)
+  expect(isGrepCommand(`grep -c x ${files(6)}`, HOME)).toBe(false)
+  expect(isGrepCommand(`grep -m 10 -C 2 x ${TRANSCRIPT}`, HOME)).toBe(true)
+  for (const c of [
+    `grep x ${TRANSCRIPT}`,
+    `grep -o . ${TRANSCRIPT}`,
+    `grep -m 11 x ${TRANSCRIPT}`,
+    `grep -m 0 x ${TRANSCRIPT}`,
+    `grep -m 100 x ${TRANSCRIPT}`,
+    `grep -m 1 -C 3 x ${TRANSCRIPT}`,
+    `grep -m 1 -A 99999999 x ${TRANSCRIPT}`,
+    `grep -C 99999999 x ${TRANSCRIPT}`,
+  ])
+    expect(isGrepCommand(c, HOME)).toBe(false)
 })

@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
 import type { Blocked, Row } from '../types'
-import { isOrchestration, isReflectionCall, parseAllow, refusal } from './guard'
+import { isLedgerCall, isOrchestration, isTranscriptOnDisk, parseAllow, projectsDir, refusal, transcriptsRead } from './guard'
+import type { Call } from './guard'
 import { route } from './route'
 import { family, firstSteps, ROWS_CAP, STEPS_CAP, tint } from './steps'
 
@@ -56,8 +57,26 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
     return ran
   }
   if (mode === 'off' || isOrchestration(e.tool, extra)) return next(e)
-  // The Stop reflection hook's two calls (a subagent's transcript, one ledger lift): see guard.ts.
-  if (isReflectionCall(e as unknown as { tool: string; file_path?: unknown; command?: unknown })) return next(e)
+  // The Stop reflection hook's four calls (a ledger lift or list; a Read or a grep of subagent transcripts): the
+  // shapes are guard.ts's. A transcript must also be, under the real HOME, a regular file where its path says.
+  // Anything that faults (HOME unset, a stat refused or missing) refuses here, since this hook's .catch fails open.
+  const call = e as unknown as Call
+  const isReflection = async (): Promise<boolean> => {
+    if (isLedgerCall(call)) return true
+    try {
+      const home = await $.env.get('HOME')
+      const paths = transcriptsRead(call, home)
+      if (paths === undefined || home === undefined) return false
+      const projects = await $.fs.stat(projectsDir(home), { resolve: true })
+      for (const path of paths) {
+        if (!isTranscriptOnDisk(await $.fs.stat(path, { resolve: true }), projects, path, home)) return false
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (await isReflection()) return next(e)
   const how = mode === 'warn' ? 'warn' : 'block'
   await update($, blocked, (list) => [...list, { tool: e.tool, mode: how } as Blocked].slice(-ROWS_CAP))
   if (how === 'warn') {
