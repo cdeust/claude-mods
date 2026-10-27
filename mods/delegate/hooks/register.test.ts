@@ -65,7 +65,8 @@ const DISK: Record<string, Stat> = {
 function disk(on: On, home: Record<string, string> = { HOME }): void {
   mock.env(on, home)
   on('fs.stat', (_, e) => {
-    const stat = DISK[e.path]
+    // The kit resolves a path against the platform (D:\Users\x on Windows); the disk here is keyed by POSIX path.
+    const stat = DISK[e.path.replace(/^[A-Za-z]:/, '').replaceAll('\\', '/')]
     if (stat === undefined) throw new Error(`ENOENT: no such file or directory, stat '${e.path}'`)
     return { value: stat }
   })
