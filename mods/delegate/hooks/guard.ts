@@ -61,7 +61,7 @@ export function isGrepCommand(command: unknown): boolean {
   let i = 1
   let hasE = false
   for (; i < words.length; i++) {
-    const w = words[i]
+    const w = words[i] ?? ''
     if (GREP_CLUSTER.test(w)) continue
     if (GREP_COUNTED.test(w)) {
       if (!/^[0-9]+$/.test(words[i + 1] ?? '')) return false
