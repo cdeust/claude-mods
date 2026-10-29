@@ -1,15 +1,15 @@
 {
   "name": "delegate",
-  "version": "0.2.3",
-  "description": "The main loop only delegates; the mod decides each subagent's model and effort from its brief, with Apple's on-device model and a keyword fallback. Lookups run on haiku at low effort, implementation on sonnet, review and measurement on opus.",
+  "version": "0.3.1",
+  "description": "The main loop only delegates; the mod decides each subagent's model and effort from its brief, with Apple's on-device model and, when a key is set, TypeSafe Jev (the higher class wins). When no model answers it asks you. Lookups run on haiku at low effort, implementation on sonnet, review and measurement on opus.",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "classifier": {
+    "typesafe_api_key": {
       "type": "string",
-      "title": "Subagent classifier",
-      "description": "fm (default): the on-device model reads each Agent brief and names its class; any failure falls back to the keyword rules and is recorded. regex: keyword rules only.",
-      "default": "fm",
-      "options": ["fm", "regex"]
+      "title": "TypeSafe API key (optional)",
+      "description": "With a key, Jev (TypeSafe) reads each Agent brief beside the on-device model and the higher class wins; it also answers when the on-device model cannot. Without a key Jev is skipped. The brief, which may contain code, is sent to TypeSafe when a key is set. Stored in secure storage.",
+      "default": "",
+      "sensitive": true
     },
     "main_mode": {
       "type": "string",
