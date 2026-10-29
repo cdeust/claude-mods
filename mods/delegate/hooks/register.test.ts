@@ -5,7 +5,7 @@ test('the main loop is refused a work tool, a subagent is not', async ($, on) =>
 
   expect((await $.tool.call({ tool: 'Bash', command: 'ls' })).deny).toMatch(/delegate/)
   expect((await $.tool.call({ tool: 'Edit', file_path: '/x', old_string: 'a', new_string: 'b' })).deny).toMatch(/delegate/)
-  expect((await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' } as never)).deny).toBeUndefined()
 })
 
 test('warn mode lets the main loop through', { options: { main_mode: 'warn' } }, async ($, on) => {
@@ -18,19 +18,20 @@ test('off mode touches nothing', { options: { main_mode: 'off' } }, async ($, on
   expect((await $.tool.call({ tool: 'Bash', command: 'ls' })).deny).toBeUndefined()
 })
 
-test('an Agent call without model or effort is routed, a named one is kept', async ($, on) => {
+test('an Agent call gets the mod\'s decision, a named pair is only a request, a fork is untouched', async ($, on) => {
   const seen: Array<{ model?: string; effort?: string }> = []
   on('tool.call', (_, e) => {
     if (e.tool === 'Agent') seen.push({ model: e.model, effort: e.effort })
     return { result: {} }
   })
 
+  // no fm in this test: the regex decides
   await $.tool.call({ tool: 'Agent', description: 'Crawl the docs', prompt: 'p' })
   await $.tool.call({ tool: 'Agent', description: 'Crawl the docs', prompt: 'p', model: 'opus', effort: 'max' })
   await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'p', subagent_type: 'fork' })
 
   expect(seen[0]).toEqual({ model: 'haiku', effort: 'low' })
-  expect(seen[1]).toEqual({ model: 'opus', effort: 'max' })
+  expect(seen[1]).toEqual({ model: 'haiku', effort: 'low' })
   expect(seen[2]).toEqual({ model: undefined, effort: undefined })
 })
 
