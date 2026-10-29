@@ -140,6 +140,39 @@ test('a call waiting behind a hung one gives up when what is left would not cove
   void first
 })
 
+test('a waiter that gave up does not free the slot: a later call still waits for the one running', async () => {
+  const g = newGate()
+  const m = manual()
+  let running = 0
+  let peak = 0
+  let finish: () => void = () => undefined
+  const slow: Run = () => {
+    running++
+    peak = Math.max(peak, running)
+    return new Promise((r) => {
+      finish = () => {
+        running--
+        r({ exitCode: 0, stdout: '{"class":"read","reason":"r"}', stderr: '' })
+      }
+    })
+  }
+  const first = classify(g, slow, never, 's', task)
+  const second = classify(g, said, m.sleep, 's', task)
+  m.fire()
+  expect(await second).toEqual({ ok: false, failure: 'fm-busy' })
+  const third = classify(g, slow, never, 's', task)
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(running).toBe(1)
+  finish()
+  expect(await first).toMatchObject({ ok: true })
+  await Promise.resolve()
+  await Promise.resolve()
+  finish()
+  expect(await third).toMatchObject({ ok: true })
+  expect(peak).toBe(1)
+})
+
 test('a warming model is busy', async () => {
   const g = newGate()
   g.warming = true

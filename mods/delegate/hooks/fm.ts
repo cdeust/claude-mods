@@ -145,6 +145,7 @@ export async function classify(
     return await attempt(run, sleep, schema, task, left)
   } finally {
     gate.ahead--
-    release()
+    // A waiter that gave up must not free the slot while the call ahead still runs: the next call chains on it.
+    void before.then(release)
   }
 }
