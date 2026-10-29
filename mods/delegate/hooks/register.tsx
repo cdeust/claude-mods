@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { Hook, Register } from 'claude-code'
+import type { Hook, MatchedHook, Register } from 'claude-code'
 
 import type { Blocked, Decision, Row } from '../types'
 import { classify, failureOf, FM, newGate } from './fm'
-import { isOrchestration, isReflectionCall, parseAllow, refusal } from './guard'
+import { isLedgerCall, isOrchestration, isTranscriptOnDisk, parseAllow, projectsDir, refusal, transcriptsRead } from './guard'
+import type { Call } from './guard'
 import { bound, CLASSES, guess, pinned } from './route'
 import { family, firstSteps, ROWS_CAP, STEPS_CAP, tint } from './steps'
 
@@ -71,56 +72,80 @@ const logFault = ($: Parameters<Hook<'tool.call'>>[0], text: string): void => {
   }
 }
 
+type Dollar = Parameters<Hook<'tool.call'>>[0]
+type ToolCall = Parameters<Hook<'tool.call'>>[1]
+type Next = Parameters<Hook<'tool.call'>>[2]
+
+// The Stop reflection hook's four calls (a ledger lift or list; a Read or a grep of subagent transcripts): the
+// shapes are guard.ts's. A transcript must also be, under the real HOME, a regular file where its path says.
+// Anything that faults (HOME unset, a stat refused or missing) refuses here, since this hook's .catch fails open.
+async function isReflectionOnDisk($: Dollar, call: Call): Promise<boolean> {
+  if (isLedgerCall(call)) return true
+  try {
+    const home = await $.env.get('HOME')
+    const paths = transcriptsRead(call, home)
+    if (paths === undefined || home === undefined) return false
+    const projects = await $.fs.stat(projectsDir(home), { resolve: true })
+    for (const path of paths) {
+      if (!isTranscriptOnDisk(await $.fs.stat(path, { resolve: true }), projects, path, home)) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The Agent call: the mod decides model and effort; what the caller named is kept as `asked`.
+async function agentCalled($: Dollar, e: ToolCall & { tool: 'Agent' }, next: Next) {
+  const asked = { model: e.model, effort: e.effort }
+  const keep = pinned(e)
+  const decided: Decision = keep
+    ? { model: e.model ?? 'inherited', effort: e.effort ?? 'default', by: 'caller', reason: 'fork or custom type: not decided by the mod' }
+    : await decide($, e)
+  if (fmAbsent && !absentSaid) {
+    absentSaid = true
+    try {
+      $.ui.log(`delegate: ${FM} cannot start; the regex decides for this session`, { to: 'debug' })
+    } catch {
+      // the record is in each row's reason
+    }
+  }
+  const entry: Row = {
+    id: e.tool_use_id,
+    description: e.description,
+    type: e.subagent_type ?? 'general-purpose',
+    model: decided.model,
+    effort: decided.effort,
+    asked,
+    decided,
+    status: 'running',
+  }
+  // Recording the row is not the decision: if it fails, the decided pair still applies and the failure is logged.
+  try {
+    await update($, rows, (list) => [...list, entry].slice(-ROWS_CAP))
+  } catch (err) {
+    logFault($, `the row could not be recorded (${String(err)}); the decision still applies`)
+  }
+  const ran = await next(keep ? e : { ...e, model: decided.model as 'haiku' | 'sonnet' | 'opus', effort: decided.effort as 'low' | 'medium' | 'high' | 'xhigh' })
+  if (ran.deny !== undefined) {
+    try {
+      await update($, rows, (list) => list.map((x) => (x.id === entry.id ? { ...x, status: 'refused' as const } : x)))
+    } catch (err) {
+      // the call already ran: a failure here must not run it again through the fault handler
+      logFault($, `the row could not be marked refused (${String(err)})`)
+    }
+  }
+  return ran
+}
+
 // One hook, not two: the engine refuses a second unmatched `tool.call`, and one filtered by `{ tool: 'Agent' }`
 // does not compile with typescript 5.6.3 (TS2589), so the Agent call is told apart here. A subagent's calls carry
 // an agentId and are never touched.
 const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
   if (e.agentId !== undefined) return next(e)
-  // The Agent call: the mod decides model and effort; what the caller named is kept as `asked`.
-  if (e.tool === 'Agent') {
-    const asked = { model: e.model, effort: e.effort }
-    const keep = pinned(e)
-    const decided: Decision = keep
-      ? { model: e.model ?? 'inherited', effort: e.effort ?? 'default', by: 'caller', reason: 'fork or custom type: not decided by the mod' }
-      : await decide($, e)
-    if (fmAbsent && !absentSaid) {
-      absentSaid = true
-      try {
-        $.ui.log(`delegate: ${FM} cannot start; the regex decides for this session`, { to: 'debug' })
-      } catch {
-        // the record is in each row's reason
-      }
-    }
-    const entry: Row = {
-      id: e.tool_use_id,
-      description: e.description,
-      type: e.subagent_type ?? 'general-purpose',
-      model: decided.model,
-      effort: decided.effort,
-      asked,
-      decided,
-      status: 'running',
-    }
-    // Recording the row is not the decision: if it fails, the decided pair still applies and the failure is logged.
-    try {
-      await update($, rows, (list) => [...list, entry].slice(-ROWS_CAP))
-    } catch (err) {
-      logFault($, `the row could not be recorded (${String(err)}); the decision still applies`)
-    }
-    const ran = await next(keep ? e : { ...e, model: decided.model as 'haiku' | 'sonnet' | 'opus', effort: decided.effort as 'low' | 'medium' | 'high' | 'xhigh' })
-    if (ran.deny !== undefined) {
-      try {
-        await update($, rows, (list) => list.map((x) => (x.id === entry.id ? { ...x, status: 'refused' as const } : x)))
-      } catch (err) {
-        // the call already ran: a failure here must not run it again through the fault handler
-        logFault($, `the row could not be marked refused (${String(err)})`)
-      }
-    }
-    return ran
-  }
+  if (e.tool === 'Agent') return agentCalled($, e, next)
   if (mode === 'off' || isOrchestration(e.tool, extra)) return next(e)
-  // The Stop reflection hook's two calls (a subagent's transcript, one ledger lift): see guard.ts.
-  if (isReflectionCall(e as unknown as { tool: string; file_path?: unknown; command?: unknown })) return next(e)
+  if (await isReflectionOnDisk($, e as unknown as Call)) return next(e)
   const how = mode === 'warn' ? 'warn' : 'block'
   await update($, blocked, (list) => [...list, { tool: e.tool, mode: how } as Blocked].slice(-ROWS_CAP))
   if (how === 'warn') {
@@ -168,6 +193,57 @@ const completed: Hook<'turn.complete'> = async ($, e, next) => {
   return next(e)
 }
 
+const sessionStarted: Hook<'session.start'> = async ($, e, next) => {
+  await $.command.register({ name: 'delegate', description: 'Show the delegation pane' })
+  void $.ui.open({ id: PANE, title: 'Delegation' })
+  // The first fm call after boot takes 7-19 s (measured 2026-10-29): wake the model now, not on the first Agent
+  // call. Fire and forget; a failure is the first classification's to report.
+  // While it runs, a spawn is `fm-busy` and does not wait behind it.
+  if (classifier === 'fm') {
+    gate.warming = true
+    try {
+      void $.process
+        .run([FM, 'respond', '--no-stream', '--greedy', 'ok'], { timeoutMs: 30000 })
+        .catch((err: unknown) => {
+          if (failureOf(err) === 'fm-absent') fmAbsent = true
+        })
+        .finally(() => {
+          gate.warming = false
+        })
+    } catch {
+      // an engine without `$.process`: the first classification says so (fm-absent)
+      gate.warming = false
+    }
+  }
+  return next(e)
+}
+
+// The pane: one line per delegation, `asked → ran` for the model and for the effort (`?` until a step is seen).
+const PANE_RENDER = { component: 'Pane', requestId: PANE } as const
+const rendered: MatchedHook<'ui.render', typeof PANE_RENDER> = async ($, e) => {
+  const { Box, Text } = $.ui.resolve(e)
+  const list = await read($, rows)
+  const stops = await read($, blocked)
+  const room = Math.max(1, Math.floor(((e.viewport?.rows ?? 24) - 6) / 2))
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>main · delegates only · {mode}</Text>
+      <Text dimColor>refused on main: {stops.filter((b) => b.mode === 'block').length}</Text>
+      {list.length === 0 && <Text dimColor>No delegation yet.</Text>}
+      {list.slice(-room).map((x) => (
+        <Box flexDirection="column">
+          <Text dimColor={x.status !== 'running'}>
+            {x.status === 'running' ? '●' : x.status === 'done' ? '✓' : '✗'} <Text color={tint(x.model)}>{x.model}</Text> → {x.ranModel === undefined ? '?' : family(x.ranModel)} · {x.effort} → {x.ranEffort ?? '?'} · {x.description} [{x.decided.by}]
+            {askedNote(x)}
+          </Text>
+          <Text dimColor>  ↳ {x.decided.reason}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 export const register: Register = (on, options) => {
   mode = options.main_mode === 'warn' || options.main_mode === 'off' ? options.main_mode : 'block'
   extra = parseAllow(typeof options.main_allow === 'string' ? options.main_allow : '')
@@ -176,30 +252,7 @@ export const register: Register = (on, options) => {
   absentSaid = false
   gate = newGate()
 
-  on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'delegate', description: 'Show the delegation pane' })
-    void $.ui.open({ id: PANE, title: 'Delegation' })
-    // The first fm call after boot takes 7-19 s (measured 2026-10-29): wake the model now, not on the first Agent
-    // call. Fire and forget; a failure is the first classification's to report.
-    // While it runs, a spawn is `fm-busy` and does not wait behind it.
-    if (classifier === 'fm') {
-      gate.warming = true
-      try {
-        void $.process
-          .run([FM, 'respond', '--no-stream', '--greedy', 'ok'], { timeoutMs: 30000 })
-          .catch((err: unknown) => {
-            if (failureOf(err) === 'fm-absent') fmAbsent = true
-          })
-          .finally(() => {
-            gate.warming = false
-          })
-      } catch {
-        // an engine without `$.process`: the first classification says so (fm-absent)
-        gate.warming = false
-      }
-    }
-    return next(e)
-  })
+  on('session.start', sessionStarted)
 
   on('command.run', { command: 'delegate' }, async ($) => {
     await $.ui.open({ id: PANE, title: 'Delegation' })
@@ -225,28 +278,5 @@ export const register: Register = (on, options) => {
   on('agent.spawn', spawned).catch(($, e, next) => next(e))
   on('turn.step', stepped)
   on('turn.complete', completed)
-  // The pane: one line per delegation, `asked → ran` for the model and for the effort (`?` until a step is seen).
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
-    const list = await read($, rows)
-    const stops = await read($, blocked)
-    const room = Math.max(1, Math.floor(((e.viewport?.rows ?? 24) - 6) / 2))
-
-    return (
-      <Box flexDirection="column">
-        <Text bold>main · delegates only · {mode}</Text>
-        <Text dimColor>refused on main: {stops.filter((b) => b.mode === 'block').length}</Text>
-        {list.length === 0 && <Text dimColor>No delegation yet.</Text>}
-        {list.slice(-room).map((x) => (
-          <Box flexDirection="column">
-            <Text dimColor={x.status !== 'running'}>
-              {x.status === 'running' ? '●' : x.status === 'done' ? '✓' : '✗'} <Text color={tint(x.model)}>{x.model}</Text> → {x.ranModel === undefined ? '?' : family(x.ranModel)} · {x.effort} → {x.ranEffort ?? '?'} · {x.description} [{x.decided.by}]
-              {askedNote(x)}
-            </Text>
-            <Text dimColor>  ↳ {x.decided.reason}</Text>
-          </Box>
-        ))}
-      </Box>
-    )
-  })
+  on('ui.render', PANE_RENDER, rendered)
 }
