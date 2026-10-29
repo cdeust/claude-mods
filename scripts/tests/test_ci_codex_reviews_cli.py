@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from codex_resume_fixtures import with_claude
 from test_ci_codex_reviews import (
     SHA,
     OTHER,
@@ -68,7 +69,7 @@ class CodexCliTests(unittest.TestCase):
         stale = comment(state(OTHER))
         current = comment(comment_id=2, updated="2026-10-26T22:01:00Z")
         code, out, err, calls = self.invoke(
-            [pull(), summary_pages([[stale], [current]]), pull()]
+            [pull(), summary_pages([[stale], with_claude([current])]), pull()]
         )
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["comment_id"], 2)
@@ -87,7 +88,7 @@ class CodexCliTests(unittest.TestCase):
     def test_changed_head_after_comment_read_blocks(self):
         changed = pull()
         changed["head"]["sha"] = OTHER
-        code, out, err, _ = self.invoke([pull(), summary_pages([[comment()]]), changed])
+        code, out, err, _ = self.invoke([pull(), summary_pages([with_claude([comment()])]), changed])
         self.assertEqual(code, 1)
         self.assertNotIn('"state": "success"', out)
         self.assertIn("head", err)
@@ -161,12 +162,13 @@ class CodexCliTests(unittest.TestCase):
             path = Path(directory) / "output"
             with patch.dict(os.environ, {"GITHUB_OUTPUT": str(path)}):
                 code, _, err, _ = self.invoke(
-                    [pull(), summary_pages([[comment()]]), pull()], ["--github-output"]
+                    [pull(), summary_pages([with_claude([comment()])]), pull()], ["--github-output"]
                 )
             self.assertEqual(code, 0, err)
             self.assertEqual(
                 path.read_text(),
-                f"ready=true\nstate=success\nsha={SHA}\ncomment_id=1\n",
+                f"ready=true\nstate=success\nsha={SHA}\ncomment_id=1\n"
+                "reason=reviews_complete\ncauses=\n",
             )
 
     def test_complete_findings_can_reach_fix_without_passing_strict_gate(self):
@@ -174,7 +176,7 @@ class CodexCliTests(unittest.TestCase):
         data["security_review"].update(
             has_any_findings=True, has_unresolved_findings=True
         )
-        responses = [pull(), summary_pages([[comment(data)]]), pull()]
+        responses = [pull(), summary_pages([with_claude([comment(data)])]), pull()]
         strict, _, _, _ = self.invoke(responses)
         ready, out, err, _ = self.invoke(responses, ["--require-complete"])
         self.assertEqual(strict, 1)
@@ -186,8 +188,12 @@ class CodexCliTests(unittest.TestCase):
         for status in ("running", "failed", "unknown"):
             data = state()
             data["security_review"]["status"] = status
+            if status == "running":
+                data["security_review"].update(
+                    has_any_findings=None, has_unresolved_findings=None
+                )
             code, _, _, _ = self.invoke(
-                [pull(), summary_pages([[comment(data)]]), pull()],
+                [pull(), summary_pages([with_claude([comment(data)])]), pull()],
                 ["--require-complete"],
             )
             self.assertEqual(code, 2 if status == "running" else 1)
@@ -199,7 +205,7 @@ class CodexCliTests(unittest.TestCase):
             path = Path(directory) / "output"
             with patch.dict(os.environ, {"GITHUB_OUTPUT": str(path)}):
                 code, _, err, _ = self.invoke(
-                    [pull(), summary_pages([[comment(data)]]), pull()],
+                    [pull(), summary_pages([with_claude([comment(data)])]), pull()],
                     ["--require-complete", "--github-output"],
                 )
             self.assertEqual(code, 0, err)
@@ -208,7 +214,7 @@ class CodexCliTests(unittest.TestCase):
     def test_missing_github_output_is_blocked(self):
         with patch.dict(os.environ, {}, clear=True):
             code, out, err, _ = self.invoke(
-                [pull(), summary_pages([[comment()]]), pull()], ["--github-output"]
+                [pull(), summary_pages([with_claude([comment()])]), pull()], ["--github-output"]
             )
         self.assertEqual(code, 1)
         self.assertIn("output", err)
