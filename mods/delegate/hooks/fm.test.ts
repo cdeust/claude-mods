@@ -145,30 +145,34 @@ test('a waiter that gave up does not free the slot: a later call still waits for
   const m = manual()
   let running = 0
   let peak = 0
-  let finish: () => void = () => undefined
+  const finishers: Array<() => void> = []
+  const began: Array<() => void> = []
+  const begun = (n: number) => new Promise<void>((r) => (finishers.length >= n ? r() : began.push(r)))
   const slow: Run = () => {
     running++
     peak = Math.max(peak, running)
     return new Promise((r) => {
-      finish = () => {
+      finishers.push(() => {
         running--
         r({ exitCode: 0, stdout: '{"class":"read","reason":"r"}', stderr: '' })
-      }
+      })
+      began.splice(0).forEach((f) => f())
     })
   }
   const first = classify(g, slow, never, 's', task)
+  await begun(1)
   const second = classify(g, said, m.sleep, 's', task)
-  m.fire()
+  m.fire() // the second one's wait for its turn runs out while the first still runs
   expect(await second).toEqual({ ok: false, failure: 'fm-busy' })
   const third = classify(g, slow, never, 's', task)
-  await Promise.resolve()
-  await Promise.resolve()
-  expect(running).toBe(1)
-  finish()
+  for (let i = 0; i < 20; i++) await Promise.resolve() // far more ticks than the chain of continuations is long
+  expect(running).toBe(1) // the third waits for the first, it was not let in by the second giving up
+  expect(finishers).toHaveLength(1)
+  finishers[0]?.()
   expect(await first).toMatchObject({ ok: true })
-  await Promise.resolve()
-  await Promise.resolve()
-  finish()
+  await begun(2) // the third runs once the first is done
+  expect(running).toBe(1)
+  finishers[1]?.()
   expect(await third).toMatchObject({ ok: true })
   expect(peak).toBe(1)
 })
