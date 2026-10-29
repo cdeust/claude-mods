@@ -17,12 +17,10 @@ export type Row = {
 // by: 'fm' the on-device classifier, 'regex' the keyword fallback (reason starts with why fm did not answer), 'default'
 // the fallback's own default, 'caller' a fork or a custom type, which the mod does not decide.
 export type Decision = { model: string; effort: string; by: 'fm' | 'regex' | 'default' | 'caller'; reason: string }
-// The classifier's learned character budget; 0 until an overflow taught one. It only shrinks.
-export type FmState = { budget: number }
 export type Blocked = { tool: string; mode: 'block' | 'warn' }
 
 declare module 'claude-code' {
   interface PluginState {
-    delegate: { rows: Shaped<Row[]>; blocked: Shaped<Blocked[]>; fm: Shaped<FmState> }
+    delegate: { rows: Shaped<Row[]>; blocked: Shaped<Blocked[]> }
   }
 }

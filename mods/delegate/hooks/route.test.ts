@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CLASSES, guess, route } from './route'
+import { bound, CLASSES, guess, route } from './route'
 
 const of = (subagent_type: string | undefined, description: string, prompt = '') => route({ subagent_type, description, prompt })
 
@@ -20,14 +20,26 @@ test('measurement and experiment are judgment, not lookup', () => {
   expect(of('general-purpose', 'Experiment with greedy decoding')).toMatchObject({ model: 'opus', effort: 'high' })
 })
 
-test('every class has one pair, and the regex never answers critical', () => {
+test('bound: Explore is capped at build, Plan floored at judge, a judge keyword is a floor, nothing else moves', () => {
+  expect(bound('critical', { subagent_type: 'Explore', description: 'Find it' })).toEqual({ cls: 'build', note: 'fm-capped' })
+  expect(bound('read', { subagent_type: 'Explore', description: 'Find it' })).toEqual({ cls: 'read' })
+  expect(bound('read', { subagent_type: 'Plan', description: 'x' })).toEqual({ cls: 'judge', note: 'fm-floored' })
+  expect(bound('read', { description: 'Security audit' })).toEqual({ cls: 'judge', note: 'fm-floored' })
+  expect(bound('build', { description: 'Irreversible migration' })).toEqual({ cls: 'critical', note: 'fm-floored' })
+  expect(bound('critical', { description: 'Review it' })).toEqual({ cls: 'critical' })
+  expect(bound('read', { description: 'Implement it' })).toEqual({ cls: 'read' })
+  expect(bound('critical', { description: 'Do the thing' })).toEqual({ cls: 'critical' })
+})
+
+test('every class has one pair, and an irreversible brief is critical for the regex too', () => {
   expect(CLASSES).toEqual({
     read: { model: 'haiku', effort: 'low' },
     build: { model: 'sonnet', effort: 'medium' },
     judge: { model: 'opus', effort: 'high' },
     critical: { model: 'opus', effort: 'xhigh' },
   })
-  expect(guess({ description: 'Irreversible production migration, critical' }).cls).not.toBe('critical')
+  expect(guess({ description: 'Irreversible production migration' }).cls).toBe('critical')
+  expect(guess({ description: 'Review the design' }).cls).toBe('judge')
 })
 
 test('the default is tagged default, a keyword hit regex', () => {

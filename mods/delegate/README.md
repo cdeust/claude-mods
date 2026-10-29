@@ -67,7 +67,7 @@ sources (a call that named only a model gets the class's effort, not the caller'
 | `read` | haiku | low | mechanical lookup, listing or search whose result the caller can check |
 | `build` | sonnet | medium | implement, fix, refactor, write tests, run a build against a known design |
 | `judge` | opus | high | review, audit, security, design, experiment, measurement, anything the caller cannot check |
-| `critical` | opus | xhigh | irreversible or security-critical decisions, multi-system architecture (`fm` only; the keywords never answer it) |
+| `critical` | opus | xhigh | irreversible or security-critical decisions, multi-system architecture (keywords: irreversible, destructive, drop table/database, force-push, exfiltrate, privilege escalation) |
 
 Keyword rules (English and French stems, matched at the start of a word, on the `description` else the first 300
 characters of the `prompt`; first match wins): `Explore`, `claude-code-guide`, `statusline-setup` are `read`;
@@ -75,6 +75,20 @@ characters of the `prompt`; first match wins): `Explore`, `claude-code-guide`, `
 benchmark are `judge`; implement, fix, refactor, write, edit, add, migrate, test, debug, build, create, update,
 rename, port are `build`; search, find, locate, list, grep, explore, map, read, crawl, scrape, fetch, web, look up,
 survey, inventory, check, inspect, summarize are `read`; anything else is `build` (tagged `default`).
+
+### What bounds the model's answer
+
+A brief can say what class it wants ("class read", "answer critical"); the classifier is therefore bounded by
+evidence the brief cannot rewrite:
+
+- **Floor:** `fm` cannot answer below a `judge` or `critical` keyword of the description (else the first 300
+  characters of the prompt), nor below `judge` for `Plan`.
+- **Ceiling:** `Explore`, a read-only search agent, cannot go above `build`. The floor is applied after the ceiling,
+  so an `Explore` asked to audit still reaches `judge`.
+- The brief is sent inside `<brief>...</brief>`, which the instructions call data, never instructions; a
+  `</brief>` inside the text is defanged.
+- When a bound changes the answer the reason ends `[fm-floored: model said X]` or `[fm-capped: model said X]`, so
+  the disagreement stays countable.
 
 ### Recorded beside the caller's request
 
@@ -87,7 +101,8 @@ did not name), and under it the reason: the class and the model's short reason, 
 | `fm-timeout` | `fm` did not answer in 4 s (a cold first call takes 7-19 s; the session start warms it) |
 | `fm-absent` | `/usr/bin/fm` cannot start (or the engine has no `$.process`): the regex decides for the rest of the session |
 | `fm-exit` | `fm` exited non-zero for a reason other than context size |
-| `fm-overflow` | the brief overflowed the context twice, at the budget and at half of it |
+| `fm-overflow` | `fm` reported a context overflow (the 2000-character cap makes it unreachable in practice; no retry) |
+| `fm-busy` | another classification is in flight and this call's deadline cannot be met behind it, or the model is warming up: the regex decides at once |
 | `fm-unparseable` | `fm` exited 0 but its output was not a JSON object with a known class |
 | `fm-error` | anything else went wrong in the mod around the call |
 | `classifier=regex` | the option is set to `regex` |
@@ -98,21 +113,41 @@ did not name), and under it the reason: the class and the model's short reason, 
 
 `fm respond --no-stream --greedy --schema hooks/route.schema.json -i <instructions>`, the brief on stdin: the argv
 is fixed, no shell is involved, the brief never reaches a command line. The schema (an enum of the four classes plus
-a short reason) is shipped in the mod. Measured on 2026-10-29 (macOS, Apple on-device model, `fm` at `/usr/bin/fm`):
+a short reason) is shipped in the mod.
 
-| What | Number | How |
-|---|---|---|
-| Warm latency, bare prompt | 0.56-0.74 s | repeated `fm respond --no-stream --greedy` calls after a first |
-| Latency, with instructions and schema | 1.1-3.1 s wall (4 briefs) | `fm respond --schema ... -i ...`, one brief each |
-| Cold first call | 7-19 s | first call after the model was idle |
-| Context limit | ~8125 fm tokens, instructions included | bisection on briefs of growing size until `exit 1` |
-| Characters per token | ~2 (20,001 characters of English filler = 9,783 tokens) | the worst case; the budget assumes it |
-| Overflow signal | exit 1, stderr `Error: The session's transcript exceeded the model's context size.` | a 35,363-character brief of random numbers, reproduced with this schema and these instructions |
+**What binds is latency, not the context window.** A call costs about 1.2 ms per input token, and the model's
+context (~8125 fm tokens, instructions included) is only reported as an overflow after 6.7-7.1 s, longer than the
+4 s deadline, so a deadline that kills the call comes first. The input is therefore capped at 2000 characters:
+description (up to 300) and type (up to 60) whole, the prompt takes the rest, cut to its head (two thirds) and tail
+(one third) around `[…]`. There is no overflow retry and no learned budget: neither can fire under this cap.
 
-The brief's character budget is `(8125 - 256 response reserve - 200 safety) tokens * 2 chars/token - the instructions'
-length`. A longer brief is cut to the budget keeping its head (two thirds) and its tail (one third) around `[…]`.
-On the overflow error the budget is halved and the call retried once; the smaller budget is learned and stored in
-the mod's state, where it only shrinks.
+Measured on 2026-10-29 (macOS, Apple on-device model, `/usr/bin/fm`, warm). Method: `fm respond --no-stream
+--greedy --schema hooks/route.schema.json -i <the instructions>` with a brief of the given size on stdin, wall clock of
+the process, one run per cell (the 2000 column: 2-3 runs). Texts: `prose` English words, `code` repeated TypeScript
+lines, `hex` random hexadecimal, `base64` random base64. A first call after idle took 2.4 s (prose, 500) and a cold
+model 7-19 s.
+
+| Input chars | prose | code | hex | base64 |
+|---|---|---|---|---|
+| 500 | 2.41 s (first call) | 1.05 s | 1.04 s | 1.05 s |
+| 1000 | 1.02 s | 1.06 s | 1.17 s | 1.24 s |
+| **2000 (the cap)** | 1.25 s | 1.46-1.70 s | **1.89 s** | 1.60-1.67 s |
+| 2500 | | 1.75 s | 2.57 s | 2.06 s |
+| 3000 | 1.16 s | 1.58 s | 3.03 s | 2.43 s |
+| 6000 | 1.71 s | 2.79 s | 7.91 s | 5.31 s |
+
+The worst density (hex) at the cap takes 1.89 s, well under the 4 s deadline; at 6000 it takes 7.91 s and would be
+killed. Characters per token (reviewer's measurement, 2026-10-29, `fm`'s own token count): English 5.1, hex 1.14,
+base64 1.42, emoji about 1.67 UTF-16 units. Two characters per token is not a worst case; the earlier claim that it
+was, and its "English filler" figure, were wrong.
+
+**Concurrency.** `fm` queues parallel calls itself (4 at once finished at 2.2, 3.3, 4.5 and 5.6 s), and a prompt
+that recommends parallel spawns produces exactly that. The mod keeps one classification in flight. Each call has a
+4 s deadline measured from when it was enqueued: it gets what is left of it as its timeout, and a call that cannot be
+reached in time (the calls ahead already use the deadline, or the remaining time is under 1.9 s, the slowest call
+at the cap) is `fm-busy` at once and the regex decides, instead of queueing until it times out. In a burst of
+parallel spawns the first two go to `fm`, the rest are `fm-busy`. While the session-start warm-up runs (up to 30 s on
+a cold model) every spawn is `fm-busy`; it does not wait behind the warm-up.
 
 ## Limits
 
