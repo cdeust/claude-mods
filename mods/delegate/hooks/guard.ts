@@ -18,7 +18,7 @@ export function isOrchestration(tool: string, extra: readonly string[] = []): bo
 }
 
 // What the main loop keeps besides orchestration, for the Stop reflection hook and nothing else: reading a
-// subagent's transcript (Read, or one read-only grep), and listing or lifting reflections with the ledger script. Both are matched
+// subagent's transcript (Read, or one read-only grep), and listing or lifting reflections with the ledger script (lifts may be chained). Both are matched
 // strictly, on the whole string; anything else stays a subagent's work.
 
 // A subagent's transcript: <...>/.claude/projects/<...>/subagents/<...>.jsonl, absolute, no `..` segment.
@@ -37,14 +37,26 @@ const LEDGER = String.raw`python3 \/(?:Users|home)\/[^\s/]+\/\.claude\/plugins\/
 export const LIFT_COMMAND = new RegExp(`^${LEDGER} lift [a-f0-9]+ --memory-id [0-9]+$`)
 // `list` only prints the pending reflections (reflection_ledger.py: `list` calls pending() and print(); no write).
 export const LIST_COMMAND = new RegExp(`^${LEDGER} list$`)
-// The metacharacters the owner named (; & | ` $ ( ) < > newline), then the ones that still change what a word
-// means to the shell (quotes, backslash, braces, globs, !, #, ~) or end a line (carriage return).
+// A NUL byte is refused (the spawn rejects it). The metacharacters the owner named (; & | ` $ ( ) < > newline), then
+// the ones that still change what a word means to the shell (quotes, backslash, braces, globs, !, #, ~) or end a
+// line (carriage return).
 const SHELL_META = /[;&|`$()<>\r\n'"\\{}*?[\]!#~]/
 
 const plainCommand = (command: unknown): command is string =>
-  typeof command === 'string' && !SHELL_META.test(command) && !command.split(' ').some((word) => word.split('/').includes('..'))
+  typeof command === 'string' && !command.includes('\0') && !SHELL_META.test(command) && !command.split(' ').some((word) => word.split('/').includes('..'))
 
-export const isLiftCommand = (command: unknown): boolean => plainCommand(command) && LIFT_COMMAND.test(command)
+const liftSegment = (segment: string): boolean => plainCommand(segment) && LIFT_COMMAND.test(segment)
+
+// A chain of lifts: the Stop reflection hook asks for every pending reflection to be lifted by the main loop, often
+// in one command. Segments are separated by `&&` (at most one space each side) and each one is a lift, matched as
+// above on its own. `&&` is the only separator: after `;` the exit status is the last segment's, so a refused lift
+// would be reported as done. No assignment is accepted: an assignment of an exported name reaches the child process,
+// zsh acts on some names (`UID`, `PPID`, `X_id==ls`), and `$` stays refused, so nothing could read a variable anyway.
+// The metacharacter check runs per segment, so a pipe, a redirection, a substitution, a lone `&`, a `;`, a newline or
+// an empty segment (`&&&&`, a trailing `&&`) is refused.
+export function isLiftCommand(command: unknown): boolean {
+  return typeof command === 'string' && command.split(/ ?&& ?/).every(liftSegment)
+}
 export const isListCommand = (command: unknown): boolean => plainCommand(command) && LIST_COMMAND.test(command)
 
 // One read-only `grep` over subagent transcripts: `grep [flags] [-e PATTERN | PATTERN] FILE...`, options first.
