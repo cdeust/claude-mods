@@ -1,0 +1,11 @@
+{
+  "title": "Route",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["class", "reason"],
+  "x-order": ["class", "reason"],
+  "properties": {
+    "class": { "type": "string", "enum": ["read", "build", "judge", "critical"] },
+    "reason": { "type": "string" }
+  }
+}

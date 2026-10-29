@@ -9,11 +9,14 @@ export type Row = {
   // Absent until a step is seen; the pane shows `?`.
   ranModel?: string
   ranEffort?: string
-  // 'main' when the Agent call named the model, 'mod' when the router filled it
-  by: 'main' | 'mod'
-  rule: string
+  // What the Agent call named (absent fields: not named) beside what the mod decided and which instrument decided it.
+  asked: { model?: string; effort?: string }
+  decided: Decision
   status: 'running' | 'done' | 'refused'
 }
+// by: 'fm' the on-device classifier, 'regex' the keyword fallback (reason starts with why fm did not answer), 'default'
+// the fallback's own default, 'caller' a fork or a custom type, which the mod does not decide.
+export type Decision = { model: string; effort: string; by: 'fm' | 'regex' | 'default' | 'caller'; reason: string }
 export type Blocked = { tool: string; mode: 'block' | 'warn' }
 
 declare module 'claude-code' {

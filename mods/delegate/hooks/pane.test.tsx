@@ -13,7 +13,7 @@ test('the pane shows a routed delegation, on every surface', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /Crawl the docs/ }))?.text).toMatch(/haiku → \? · low → \? · Crawl the docs \(routed\)/)
+    expect((await ui.find({ type: 'Text', text: /Crawl the docs/ }))?.text).toMatch(/haiku → \? · low → \? · Crawl the docs \[regex\]/)
     await ui.unmount()
   }
 })
