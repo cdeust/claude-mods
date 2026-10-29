@@ -103,20 +103,60 @@ test('only the ledger lift may be run, as one plain command', () => {
     expect(isLiftCommand(c)).toBe(false)
 })
 
-test('lifts chained by ; or && are one command, assignments of ids allowed, nothing else', () => {
+test('lifts chained by && are one command, nothing else', () => {
   const other = LIFT.replace('abc123', 'def456').replace('42', '43')
-  for (const c of [
-    `${LIFT}; ${other}`,
-    `${LIFT} && ${other}`,
-    `${LIFT};${other}`,
-    `${LIFT}&&${other}`,
-    `${LIFT}; ${other}; ${REAL}`,
-    `AGENT_ID=abc123; MEMORY_ID=42; ${LIFT}`,
-    `agentId=abc123 && ${LIFT} && ${other}`,
-  ]) {
+  for (const c of [`${LIFT} && ${other}`, `${LIFT}&&${other}`, `${LIFT} && ${other} && ${REAL}`]) {
     expect(isLiftCommand(c)).toBe(true)
     expect(isReflectionCall({ tool: 'Bash', command: c })).toBe(true)
   }
+})
+
+// F2 (review of #57): after `;` the exit status is the last segment's, so a refused first lift would be reported as
+// done. `&&` stops at the first failure and reports it, so it is the only separator.
+test('a chain separated by ; is refused: it would hide the failure of an earlier lift', () => {
+  const other = LIFT.replace('abc123', 'def456').replace('42', '43')
+  for (const c of [`${LIFT}; ${other}`, `${LIFT};${other}`, `${LIFT}; ${other}; ${REAL}`, `${LIFT} && ${other}; ${REAL}`])
+    expect(isLiftCommand(c)).toBe(false)
+})
+
+// F1 (review of #57): an assignment of a name that is already exported reaches the child process (`CLAUDE_PID=1; ...`
+// changed what python3 and git received), zsh acts on some names (`UID=0` calls setuid, `X_id==ls` expands `=ls`),
+// and nothing can read a variable that `$` stays refused for. No assignment is a segment.
+test('no segment is an assignment, whatever the name', () => {
+  for (const a of [
+    'CLAUDE_PID=1',
+    'CLAUDE_CODE_SESSION_ID=forged',
+    'AGENT_ID=abc123',
+    'agentId=abc123',
+    'SECURITYSESSIONID=forged',
+    'SUDO_UID=0',
+    'UID=0',
+    'EUID=0',
+    'GID=0',
+    'EGID=0',
+    'PPID=1',
+    'X_id==ls',
+    'ID=1',
+  ])
+    for (const c of [`${a} && ${LIFT}`, `${LIFT} && ${a}`, `${a}&&${LIFT}`, `${a}; ${LIFT}`, `${a} ${LIFT}`]) {
+      expect(isLiftCommand(c)).toBe(false)
+      expect(isReflectionCall({ tool: 'Bash', command: c })).toBe(false)
+    }
+})
+
+// F3 and F4 (review of #57): at most one space on each side of `&&`, and no NUL anywhere in the command.
+test('two spaces around && and a NUL byte are refused', () => {
+  const other = LIFT.replace('abc123', 'def456').replace('42', '43')
+  expect(isLiftCommand(`${LIFT}  &&  ${other}`)).toBe(false)
+  expect(isLiftCommand(`${LIFT} &&  ${other}`)).toBe(false)
+  expect(isLiftCommand(`${LIFT}  && ${other}`)).toBe(false)
+  expect(isLiftCommand(`${LIFT.replace('--cwd /Users/x/repo', '--cwd /Users/x/re\u0000po')}`)).toBe(false)
+  expect(isLiftCommand(`${LIFT} && ${other.replace('def456', 'def\u0000456')}`)).toBe(false)
+  expect(isListCommand(`python3 /Users/x/.claude/plugins/cache/m/p/1.0.0/tools/reflection_ledger.py --cwd /Users/x/re\u0000po list`)).toBe(false)
+  expect(isGrepCommand(`grep tool_use ${TRANSCRIPT}\u0000`)).toBe(false)
+})
+
+test('a reflection call is a lift and nothing else', () => {
   expect(isReflectionCall({ tool: 'Bash', command: `${LIFT}; rm -rf x` })).toBe(false)
   expect(isReflectionCall({ tool: 'Bash', command: `${LIFT} | sh` })).toBe(false)
   expect(isReflectionCall({ tool: 'Bash', command: 'ls' })).toBe(false)

@@ -42,9 +42,11 @@ hook needs and nothing else:
 - `Bash` of exactly `python3 <script> --cwd <dir> lift <hex> --memory-id <digits>`, where `<script>` is
   `/Users/<user>/.claude/plugins/cache/.../tools/reflection_ledger.py` (or `/home/<user>/...`), `<dir>` is an absolute
   path, neither holds a `..` segment, and the whole command has none of `; & | ` $ ( ) < > ' " \ { } * ? [ ] ! # ~` or
-  a line break anywhere in it. Several such lifts may be chained with `;` or `&&` (and id-named assignments such as
-  `AGENT_ID=abc`), because the Stop hook asks for every pending reflection at once; each segment is checked on its
-  own, so a pipe, redirection, substitution, lone `&`, empty segment or any other command refuses the whole line;
+  a line break or NUL byte anywhere in it. Several such lifts may be chained with `&&` (one space at most on each
+  side; `;` is refused because it would hide the failure of an earlier lift behind the exit status of the last one),
+  because the Stop hook asks for every pending reflection at once; each segment is checked on its own and must be a
+  lift, so a pipe, redirection, substitution, lone `&`, empty segment, variable assignment or any other command
+  refuses the whole line;
 - `Bash` of exactly `python3 <script> --cwd <dir> list` (same script and `--cwd` rules; it only prints the pending
   reflections);
 - `Bash` of one `grep [flags] [-e PATTERN | PATTERN] FILE...` over subagent transcripts: flags are clusters of
