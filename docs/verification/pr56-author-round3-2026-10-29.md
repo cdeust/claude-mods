@@ -19,8 +19,9 @@ Method: the new tests were written first (`hooks/review3.test.ts`) and run on th
 | C1 (Codex, `fm.ts:157`) | **not reproduced on 32cf9df.** `release` is chained on the call ahead (`void before.then(release)`), so a waiter that times out does not free the slot. | `C1` replays Codex's scenario (first call running, second times out, third arrives): `running` stays 1, peak 1, the third starts only after the first ends. It passes on the unchanged source (98 pass includes it); the older `fm.test.ts` test of the same property exists too. |
 
 Left as it was (not in this round's list): the performance thread on the `asks` write per Agent call, the
-`AskUserQuestion` fault path that resends the raw call (`.catch` for non-Agent calls goes to `next(e)`; nothing is
-captured, so it fails safe), S7/S8 (design, liveness only).
+`AskUserQuestion` fault path (`.catch` for non-Agent calls goes to `next(e)`. Corrected in round 4, R4-4: this does
+not resend the raw call. Per the 2.1.306 d.ts, l.1201-1225, in a `.catch` `next` replays the last result without
+reading its argument; nothing is captured, so it fails safe), S7/S8 (design, liveness only).
 
 ## Gates after the fixes (real output, files in the session scratchpad)
 Engine 2.1.306: `2.1.306 (Claude Code)`, `Validation passed`, 107 pass, 0 fail, Ran 107 tests across 12 files, exit 0.
