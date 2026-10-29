@@ -176,3 +176,103 @@ Ran 90 tests across 10 files. [1.62s]
   Expected: 1
   Received: 2
 ```
+
+# Round 2 (review of 75a391f): `docs/verification/pr56-review-round2-2026-10-29.md`
+
+All four findings were verified at the source by the reviewer in the 2.1.306 d.ts and binary (input schema declares
+`answers?: {}`, `call()` returns the input's answers, `afkTimeoutMs` on the output, `TurnStartInput` fires for
+subagents) and are accepted. Tests: `hooks/review2.test.ts` (R1, R1b, R2, R2b, R3, R4). Deviation from the reviewer's R3:
+after the fix the user may legitimately pick `fable`, so R3 asserts what reaches the dialog (the mod's text, all
+options, no "cancel") instead of an empty `sent`.
+
+| # | Fix | Where |
+|---|---|---|
+| M1 | `turned` returns `next(e)` when `agentId` is defined | `register.tsx` `turned` |
+| M2 | `canonical` strips `answers`, `annotations`, `response`, `afkTimeoutMs` from the call; nothing is captured when the call carried any | `register.tsx` `canonical`, `toolCalled` |
+| M3 | marked questions are rewritten to `canonicalQuestion` (text, options) before `next` | `register.tsx` `canonicalQuestion`, `canonical` |
+| L1 | a result carrying `afkTimeoutMs` is not captured | `register.tsx` `captured` |
+
+README: the turn-boundary and "Other" statements are replaced by what the binary shows; the "narrowed choice" caveat is
+gone. Not verified live: the whole path in an interactive session; that the engine accepts a rewritten `questions`
+(the test engine does; the schema allows 2-4 options with a description each, which the canonical questions respect).
+
+### Before (75a391f source, new tests), engine 306
+```
+2.1.306 (Claude Code)
+(fail) R1 a subagent turn.start after the user answered does not drop the answer [111.19ms]
+  AssertionError: expect(received).toBeUndefined()
+  Expected: undefined
+  Received: "delegate: no model could classify this agent (fm: fm-absent; jev: jev-nokey). Call AskUserQuestion with two questions, worded exactly: \"Which model for the agent \"Review the guard\"? (haiku, sonnet, opus, fable) [ask 2npex0g:model]\" and \"Which effort for the agent \"Review the guard\"? (low, medium, high, xhigh, max) [ask 2npex0g:effort]\". Then call Agent again with the same description: the mod applies the model and the effort the user chose, whatever that call names."
+(fail) R1b a subagent turn.start between the refusal and the AskUserQuestion does not drop the ask [68.00ms]
+  AssertionError: expect(received).toEqual()
+  Expected: [{ model: "sonnet", effort: "high" }]
+  Received: []
+(fail) R2 answers the main loop wrote into the AskUserQuestion input are not the user's choice [93.25ms]
+  AssertionError: expect(received).toEqual()
+  Expected: []
+  Received: [{ model: "fable", effort: "max" }]
+(fail) R2b nor are annotations or a response the main loop wrote [115.66ms]
+  AssertionError: expect(received).toEqual()
+  Expected: []
+  Received: [{ model: "fable", effort: "max" }]
+(fail) R3 a reworded, narrowed question reaches the user as the mod worded it, with every option [172.39ms]
+  AssertionError: expect(received).toEqual()
+  Expected: [
+  Received: [
+(fail) R4 an AskUserQuestion that auto-resolved on idle (afkTimeoutMs) is not a choice [75.64ms]
+  AssertionError: expect(received).toEqual()
+  Expected: []
+  Received: [{ model: "opus", effort: "high" }]
+ 90 pass
+ 6 fail
+Ran 96 tests across 11 files. [1.58s]
+```
+### After, exact CI command, engine 306
+```
+2.1.306 (Claude Code)
+✔ Validation passed
+test exit 0
+ 96 pass
+ 0 fail
+Ran 96 tests across 11 files. [1.36s]
+```
+### Before (75a391f source, new tests), engine 312
+```
+2.1.312 (Claude Code)
+(fail) R1 a subagent turn.start after the user answered does not drop the answer [109.22ms]
+  AssertionError: expect(received).toBeUndefined()
+  Expected: undefined
+  Received: "delegate: no model could classify this agent (fm: fm-absent; jev: jev-nokey). Call AskUserQuestion with two questions, worded exactly: \"Which model for the agent \"Review the guard\"? (haiku, sonnet, opus, fable) [ask 2f9r1t4:model]\" and \"Which effort for the agent \"Review the guard\"? (low, medium, high, xhigh, max) [ask 2f9r1t4:effort]\". Then call Agent again with the same description: the mod applies the model and the effort the user chose, whatever that call names."
+(fail) R1b a subagent turn.start between the refusal and the AskUserQuestion does not drop the ask [70.26ms]
+  AssertionError: expect(received).toEqual()
+  Expected: [{ model: "sonnet", effort: "high" }]
+  Received: []
+(fail) R2 answers the main loop wrote into the AskUserQuestion input are not the user's choice [93.04ms]
+  AssertionError: expect(received).toEqual()
+  Expected: []
+  Received: [{ model: "fable", effort: "max" }]
+(fail) R2b nor are annotations or a response the main loop wrote [101.53ms]
+  AssertionError: expect(received).toEqual()
+  Expected: []
+  Received: [{ model: "fable", effort: "max" }]
+(fail) R3 a reworded, narrowed question reaches the user as the mod worded it, with every option [80.72ms]
+  AssertionError: expect(received).toEqual()
+  Expected: [
+  Received: [
+(fail) R4 an AskUserQuestion that auto-resolved on idle (afkTimeoutMs) is not a choice [42.02ms]
+  AssertionError: expect(received).toEqual()
+  Expected: []
+  Received: [{ model: "opus", effort: "high" }]
+ 90 pass
+ 6 fail
+Ran 96 tests across 11 files. [1.15s]
+```
+### After, exact CI command, engine 312
+```
+2.1.312 (Claude Code)
+✔ Validation passed
+test exit 0
+ 96 pass
+ 0 fail
+Ran 96 tests across 11 files. [1.20s]
+```
