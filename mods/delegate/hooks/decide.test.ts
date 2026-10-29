@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { MAX_BRIEF, OVERFLOW } from './fm'
+import { DEADLINE_MS, MAX_BRIEF, OVERFLOW } from './fm'
 
 // `$.process.run` is stubbed through its own event, the bottom of the chain: what the mod passes to it arrives here
 // with its argv and its stdin. Replies go in order and the last repeats; an Error is a rejection (the stub's `deny`),
@@ -57,7 +57,9 @@ const pane = async ($: Dollar) => {
 
 test('fm decides over a caller-named pair, and both are recorded', async ($, on) => {
   const { calls, sent } = setup(on, [answer('judge', 'measures an effect')])
+  const started = Date.now()
   await spawn($, { description: 'Look up the latency', model: 'haiku', effort: 'low' })
+  const elapsed = Date.now() - started
 
   expect(sent).toEqual([{ model: 'opus', effort: 'high' }])
   const { lines, reasons } = await pane($)
@@ -66,7 +68,11 @@ test('fm decides over a caller-named pair, and both are recorded', async ($, on)
   expect(calls).toHaveLength(1)
   expect(calls[0]?.argv.slice(0, 4)).toEqual(['/usr/bin/fm', 'respond', '--no-stream', '--greedy'])
   expect(calls[0]?.argv).toContain('--schema')
-  expect(calls[0]?.timeoutMs).toBe(4000)
+  // The deadline runs from the enqueue (fm.test.ts): fm gets what is left of it, never more, and at most the
+  // wall time this call took is gone. An exact 4000 fails whenever a millisecond passes (CI run 40852365808: 3999).
+  const timeoutMs = calls[0]?.timeoutMs ?? 0
+  expect(timeoutMs).toBeLessThanOrEqual(DEADLINE_MS)
+  expect(DEADLINE_MS - elapsed).toBeLessThanOrEqual(timeoutMs)
 })
 
 test('the brief goes to fm on stdin, not on argv', async ($, on) => {
