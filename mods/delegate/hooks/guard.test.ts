@@ -50,6 +50,22 @@ test('only the ledger lift may be run, as one plain command', () => {
   for (const c of [
     `${LIFT}; rm -rf /`,
     `${LIFT} && id`,
+    `${LIFT}; rm -rf x`,
+    `${LIFT} | sh`,
+    `${LIFT};`,
+    `${LIFT};;${LIFT}`,
+    `${LIFT} &&& ${LIFT}`,
+    `${LIFT} & ${LIFT}`,
+    `${LIFT}\n${LIFT}`,
+    `${LIFT}; ls`,
+    `PATH=/tmp; ${LIFT}`,
+    `ID=$(id); ${LIFT}`,
+    `ID=\`id\`; ${LIFT}`,
+    `A_ID=1 ${LIFT}`,
+    `${LIFT}; ${LIFT} > /tmp/x`,
+    `${LIFT}; ${LIFT} | sh`,
+    `${LIFT}; ${LIFT} ; rm x`,
+    'ID=1',
     `${LIFT} | sh`,
     `${LIFT} & id`,
     `${LIFT}\nid`,
@@ -85,6 +101,26 @@ test('only the ledger lift may be run, as one plain command', () => {
     undefined,
   ])
     expect(isLiftCommand(c)).toBe(false)
+})
+
+test('lifts chained by ; or && are one command, assignments of ids allowed, nothing else', () => {
+  const other = LIFT.replace('abc123', 'def456').replace('42', '43')
+  for (const c of [
+    `${LIFT}; ${other}`,
+    `${LIFT} && ${other}`,
+    `${LIFT};${other}`,
+    `${LIFT}&&${other}`,
+    `${LIFT}; ${other}; ${REAL}`,
+    `AGENT_ID=abc123; MEMORY_ID=42; ${LIFT}`,
+    `agentId=abc123 && ${LIFT} && ${other}`,
+  ]) {
+    expect(isLiftCommand(c)).toBe(true)
+    expect(isReflectionCall({ tool: 'Bash', command: c })).toBe(true)
+  }
+  expect(isReflectionCall({ tool: 'Bash', command: `${LIFT}; rm -rf x` })).toBe(false)
+  expect(isReflectionCall({ tool: 'Bash', command: `${LIFT} | sh` })).toBe(false)
+  expect(isReflectionCall({ tool: 'Bash', command: 'ls' })).toBe(false)
+  expect(isReflectionCall({ tool: 'Write', command: LIFT })).toBe(false)
 })
 
 test('a reflection call is a Read of a transcript or a lift, by tool', () => {

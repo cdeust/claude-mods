@@ -1,6 +1,6 @@
 {
   "name": "delegate",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "The main loop only delegates; the mod decides each subagent's model and effort from its brief, with Apple's on-device model and a keyword fallback. Lookups run on haiku at low effort, implementation on sonnet, review and measurement on opus.",
   "types": "./types/index.d.ts",
   "userConfig": {

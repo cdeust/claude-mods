@@ -18,7 +18,7 @@ export function isOrchestration(tool: string, extra: readonly string[] = []): bo
 }
 
 // What the main loop keeps besides orchestration, for the Stop reflection hook and nothing else: reading a
-// subagent's transcript (Read, or one read-only grep), and listing or lifting reflections with the ledger script. Both are matched
+// subagent's transcript (Read, or one read-only grep), and listing or lifting reflections with the ledger script (lifts may be chained). Both are matched
 // strictly, on the whole string; anything else stays a subagent's work.
 
 // A subagent's transcript: <...>/.claude/projects/<...>/subagents/<...>.jsonl, absolute, no `..` segment.
@@ -44,7 +44,20 @@ const SHELL_META = /[;&|`$()<>\r\n'"\\{}*?[\]!#~]/
 const plainCommand = (command: unknown): command is string =>
   typeof command === 'string' && !SHELL_META.test(command) && !command.split(' ').some((word) => word.split('/').includes('..'))
 
-export const isLiftCommand = (command: unknown): boolean => plainCommand(command) && LIFT_COMMAND.test(command)
+const liftSegment = (segment: string): boolean => plainCommand(segment) && LIFT_COMMAND.test(segment)
+
+// A chain of lifts: the Stop reflection hook asks for every pending reflection to be lifted by the main loop, often
+// in one command. Segments are separated by `;` or `&&` (one optional space each side) and each one is either a
+// lift (matched as above, on its own) or a plain assignment of an id-like variable, which nothing can reference
+// since `$` stays refused. At least one lift is required. The metacharacter check runs per segment, so a pipe, a
+// redirection, a substitution, a lone `&`, a newline or an empty segment (`;;`, a trailing `;`) is refused.
+const ASSIGNMENT = /^[A-Za-z][A-Za-z0-9_]*(?:ID|Id|_id|id)=[A-Za-z0-9_.,:=@/+-]*$/
+
+export function isLiftCommand(command: unknown): boolean {
+  if (typeof command !== 'string') return false
+  const segments = command.split(/ ?(?:;|&&) ?/)
+  return segments.every((s) => liftSegment(s) || (plainCommand(s) && ASSIGNMENT.test(s))) && segments.some(liftSegment)
+}
 export const isListCommand = (command: unknown): boolean => plainCommand(command) && LIST_COMMAND.test(command)
 
 // One read-only `grep` over subagent transcripts: `grep [flags] [-e PATTERN | PATTERN] FILE...`, options first.
