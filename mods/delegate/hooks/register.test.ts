@@ -1,5 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
+import { fmSays, wire } from './stub'
+
 test('the main loop is refused a work tool, a subagent is not', async ($, on) => {
   on('tool.call', () => ({ result: {} }))
 
@@ -19,20 +21,15 @@ test('off mode touches nothing', { options: { main_mode: 'off' } }, async ($, on
 })
 
 test('an Agent call gets the mod\'s decision, a named pair is only a request, a fork is untouched', async ($, on) => {
-  const seen: Array<{ model?: string; effort?: string }> = []
-  on('tool.call', (_, e) => {
-    if (e.tool === 'Agent') seen.push({ model: e.model, effort: e.effort })
-    return { result: {} }
-  })
+  const { sent } = wire(on, { fm: [fmSays('read')] })
 
-  // no fm in this test: the regex decides
   await $.tool.call({ tool: 'Agent', description: 'Crawl the docs', prompt: 'p' })
   await $.tool.call({ tool: 'Agent', description: 'Crawl the docs', prompt: 'p', model: 'opus', effort: 'max' })
   await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'p', subagent_type: 'fork' })
 
-  expect(seen[0]).toEqual({ model: 'haiku', effort: 'low' })
-  expect(seen[1]).toEqual({ model: 'haiku', effort: 'low' })
-  expect(seen[2]).toEqual({ model: undefined, effort: undefined })
+  expect(sent[0]).toEqual({ model: 'haiku', effort: 'low' })
+  expect(sent[1]).toEqual({ model: 'haiku', effort: 'low' })
+  expect(sent[2]).toEqual({ model: undefined, effort: undefined })
 })
 
 const TRANSCRIPT = '/Users/x/.claude/projects/-Users-x-repo/s1/subagents/agent-a1.jsonl'
