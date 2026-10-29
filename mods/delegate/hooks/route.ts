@@ -1,6 +1,6 @@
 // Which model and effort a delegated task needs. Pure. Two instruments read the brief and name a class: the
 // on-device model (fm.ts) first, the regex below when it cannot answer. One table turns a class into the pair, so a
-// model and an effort never come from different sources.
+// model and an effort never come from different sources. The classifier is bounded by deterministic evidence (bound).
 
 export type Model = 'haiku' | 'sonnet' | 'opus'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh'
@@ -25,6 +25,7 @@ export const pinned = (task: Brief): boolean =>
 // Words are matched at the start of a word, so `fix` also matches `fixes`; French stems are written without the
 // accent, matched on the accent-stripped text.
 const word = (stems: string): RegExp => new RegExp(`(^|[^a-z])(${stems})`)
+const CRITICAL = word('irreversib|destructiv|drop table|drop database|force.push|exfiltrat|privilege escalat')
 const JUDGE = word('review|audit|secur|threat|architect|design|plan|critical|experiment|measur|benchmark|revue|conce|concev|menace|mesur')
 const BUILD = word('implement|fix|refactor|write|edit|add|migrat|test|debug|build|creat|updat|rename|port|ecri|corrig|ajout|cree|modifi|construi')
 const READ = word('search|find|locat|list|grep|explor|map|read|crawl|scrape|fetch|web|look up|lookup|survey|inventor|check|cherch|trouv|liste|lis |lire|recherch|inspect|summari|resum')
@@ -33,7 +34,17 @@ const plain = (s: string): string => s.normalize('NFD').replace(/[̀-ͯ]/g, '').
 
 export type Guess = { cls: Class; by: 'regex' | 'default'; rule: string }
 
-// The regex instrument. It never answers `critical`: that class is for the model's reading of the whole brief.
+// What the words alone say, whatever the type. null: no keyword matched.
+export function keywords(task: Brief): Guess | null {
+  const said = plain(task.description ?? '') || plain((task.prompt ?? '').slice(0, 300))
+  if (CRITICAL.test(said)) return { cls: 'critical', by: 'regex', rule: 'irreversible or destructive: critical' }
+  if (JUDGE.test(said)) return { cls: 'judge', by: 'regex', rule: 'review, design, measurement or security: judgment' }
+  if (BUILD.test(said)) return { cls: 'build', by: 'regex', rule: 'implementation' }
+  if (READ.test(said)) return { cls: 'read', by: 'regex', rule: 'search, web or read: no judgment needed' }
+  return null
+}
+
+// The regex instrument: the engine's own types first, then the words.
 export function guess(task: Brief): Guess {
   const type = task.subagent_type
   if (type === 'Explore') return { cls: 'read', by: 'regex', rule: 'Explore reads and locates' }
@@ -41,12 +52,30 @@ export function guess(task: Brief): Guess {
     return { cls: 'read', by: 'regex', rule: `${type} looks up and edits one setting` }
   }
   if (type === 'Plan') return { cls: 'judge', by: 'regex', rule: 'Plan designs' }
+  return keywords(task) ?? { cls: 'build', by: 'default', rule: 'default: unclassified task' }
+}
 
-  const said = plain(task.description ?? '') || plain((task.prompt ?? '').slice(0, 300))
-  if (JUDGE.test(said)) return { cls: 'judge', by: 'regex', rule: 'review, design, measurement or security: judgment' }
-  if (BUILD.test(said)) return { cls: 'build', by: 'regex', rule: 'implementation' }
-  if (READ.test(said)) return { cls: 'read', by: 'regex', rule: 'search, web or read: no judgment needed' }
-  return { cls: 'build', by: 'default', rule: 'default: unclassified task' }
+const RANK: readonly Class[] = ['read', 'build', 'judge', 'critical']
+const rank = (c: Class): number => RANK.indexOf(c)
+
+// What deterministic evidence allows the classifier. Ceiling: Explore, a read-only search agent, cannot go above
+// build. Floor: it cannot answer below a judge or critical keyword of the brief, nor below Plan's judge. The floor
+// is applied last, so a brief that asks an Explore to audit still reaches judge. `note` says a bound changed the
+// answer, so the disagreement stays measurable.
+export function bound(cls: Class, task: Brief): { cls: Class; note?: 'fm-capped' | 'fm-floored' } {
+  let out = cls
+  let note: 'fm-capped' | 'fm-floored' | undefined
+  if (task.subagent_type === 'Explore' && rank(out) > rank('build')) {
+    out = 'build'
+    note = 'fm-capped'
+  }
+  const said = keywords(task)?.cls
+  const floor: Class = task.subagent_type === 'Plan' ? (said === 'critical' ? 'critical' : 'judge') : said === 'judge' || said === 'critical' ? said : 'read'
+  if (rank(floor) > rank(out)) {
+    out = floor
+    note = 'fm-floored'
+  }
+  return note === undefined ? { cls: out } : { cls: out, note }
 }
 
 export type Route = Pair & { rule: string }

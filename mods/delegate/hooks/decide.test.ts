@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { initialBudget, OVERFLOW } from './fm'
+import { MAX_BRIEF, OVERFLOW } from './fm'
 
 // `$.process.run` is stubbed through its own event, the bottom of the chain: what the mod passes to it arrives here
 // with its argv and its stdin. Replies go in order and the last repeats; an Error is a rejection (the stub's `deny`),
@@ -122,46 +122,6 @@ test('an unclassified task with no fm answer is the default, not a regex hit', a
   setup(on, [{ exitCode: 1 }])
   await spawn($, { description: 'Do the thing' })
   expect((await pane($)).lines[0]).toMatch(/sonnet → \? · medium → \? · Do the thing \[default\]/)
-})
-
-test('the context overflow halves the budget, retries once, and the learned budget is kept', async ($, on) => {
-  const { calls, sent } = setup(on, [OVER, answer('read')])
-  const big = 'x'.repeat(40000)
-  await spawn($, { prompt: big })
-  expect(sent).toEqual([{ model: 'haiku', effort: 'low' }])
-
-  expect(calls).toHaveLength(2)
-  expect(calls[0]?.stdin?.length).toBe(initialBudget())
-  expect(calls[1]?.stdin?.length).toBe(Math.floor(initialBudget() / 2))
-
-  // the next brief starts from the learned budget, not from the initial one
-  await spawn($, { prompt: big })
-  expect(calls).toHaveLength(3)
-  expect(calls[2]?.stdin?.length).toBe(Math.floor(initialBudget() / 2))
-})
-
-test('a second overflow is final: fm-overflow, the regex decides, no third call', async ($, on) => {
-  const { calls, sent } = setup(on, [OVER])
-  await spawn($, { description: 'Search the repo', prompt: 'y'.repeat(40000) })
-  expect(calls).toHaveLength(2)
-  expect(sent).toEqual([{ model: 'haiku', effort: 'low' }])
-  expect((await pane($)).reasons[0]).toMatch(/↳ fm-overflow;/)
-})
-
-test('a long brief is cut to the budget, head and tail kept around a marker', async ($, on) => {
-  const { calls } = setup(on, [answer('build')])
-  await spawn($, { prompt: `HEAD${'m'.repeat(60000)}TAIL` })
-  const stdin = calls[0]?.stdin ?? ''
-  expect(stdin.length).toBe(initialBudget())
-  expect(stdin).toContain('[…]')
-  expect(stdin).toContain('description: Do the task')
-  expect(stdin.endsWith('TAIL')).toBe(true)
-})
-
-test('a short brief is sent whole', async ($, on) => {
-  const { calls } = setup(on, [answer('build')])
-  await spawn($, { prompt: 'short' })
-  expect(calls[0]?.stdin).toBe('description: Do the task\nsubagent_type: general-purpose\nprompt: short')
 })
 
 test('with no fm binary, the regex decides for the rest of the session and fm is not asked again', async ($, on) => {

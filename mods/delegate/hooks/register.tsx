@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { Blocked, Decision, FmState, Row } from '../types'
-import { classify, FM, initialBudget } from './fm'
+import type { Blocked, Decision, Row } from '../types'
+import { classify, failureOf, FM, newGate } from './fm'
 import { isOrchestration, isReflectionCall, parseAllow, refusal } from './guard'
-import { CLASSES, guess, pinned } from './route'
+import { bound, CLASSES, guess, pinned } from './route'
 import { family, firstSteps, ROWS_CAP, STEPS_CAP, tint } from './steps'
 
 type Mode = 'block' | 'warn' | 'off'
@@ -15,11 +15,12 @@ let classifier: 'fm' | 'regex' = 'fm'
 // Set once `/usr/bin/fm` cannot start: the regex decides for the rest of the session (recorded once).
 let fmAbsent = false
 let absentSaid = false
+// One classification in flight; the model warming up counts as busy (see fm.ts).
+let gate = newGate()
 
 const PANE = 'delegate'
 // Change the tag when a row's fields change: it declines what an earlier version stored.
 const rows = atom({ plugin: 'delegate', key: 'rows' } as const, [], { shape: 'rows-3' })
-const fmState = atom({ plugin: 'delegate', key: 'fm' } as const, { budget: 0 } as FmState, { shape: 'fm-1' })
 const blocked = atom({ plugin: 'delegate', key: 'blocked' } as const, [], { shape: 'blocked-1' })
 
 const SECTION = `# Delegation
@@ -31,15 +32,23 @@ A delegated result is data to check before you rely on it. Tasks that are indepe
 // why), the regex's default last. Model and effort come from one class, never from two sources.
 async function decide($: Parameters<Hook<'tool.call'>>[0], task: Parameters<typeof guess>[0]): Promise<Decision> {
   const g = guess(task)
-  const fallback = (why: string): Decision => ({ ...CLASSES[g.cls], by: g.by, reason: `${why}; ${g.rule}` })
+  // The keyword answer obeys the same bounds (an Explore told to audit is judge, not read).
+  const bounded = bound(g.cls, task)
+  const fallback = (why: string): Decision => ({
+    ...CLASSES[bounded.cls],
+    by: g.by,
+    reason: `${why}; ${g.rule}${bounded.note === undefined ? '' : ` [${bounded.note}: keywords said ${g.cls}]`}`,
+  })
   if (classifier === 'regex') return fallback('classifier=regex')
   if (fmAbsent) return fallback('fm-absent')
   try {
-    const stored = (await read($, fmState)).budget
-    const budget = stored > 0 ? Math.min(stored, initialBudget()) : initialBudget()
-    const out = await classify((argv, init) => $.process.run(argv, init), `${$.plugin.root}/hooks/route.schema.json`, task, budget)
-    if (out.budget < budget) await update($, fmState, () => ({ budget: out.budget }))
-    if (out.ok) return { ...CLASSES[out.cls], by: 'fm', reason: `${out.cls}: ${out.why}` }
+    const out = await classify(gate, (argv, init) => $.process.run(argv, init), `${$.plugin.root}/hooks/route.schema.json`, task)
+    if (out.ok) {
+      // The model's class is bounded by deterministic evidence; a bound that changed the answer is recorded.
+      const b = bound(out.cls, task)
+      const note = b.note === undefined ? '' : ` [${b.note}: model said ${out.cls}]`
+      return { ...CLASSES[b.cls], by: 'fm', reason: `${b.cls}: ${out.why}${note}` }
+    }
     if (out.failure === 'fm-absent') fmAbsent = true
     return fallback(out.failure)
   } catch {
@@ -52,6 +61,14 @@ const askedNote = (x: Row): string => {
   const { model, effort } = x.asked
   if ((model === undefined && effort === undefined) || (model === x.decided.model && effort === x.decided.effort)) return ''
   return ` (asked ${model ?? '-'}/${effort ?? '-'})`
+}
+
+const logFault = ($: Parameters<Hook<'tool.call'>>[0], text: string): void => {
+  try {
+    $.ui.log(`delegate: ${text}`, { to: 'debug' })
+  } catch {
+    // nowhere left to say it
+  }
 }
 
 // One hook, not two: the engine refuses a second unmatched `tool.call`, and one filtered by `{ tool: 'Agent' }`
@@ -84,10 +101,20 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
       decided,
       status: 'running',
     }
-    await update($, rows, (list) => [...list, entry].slice(-ROWS_CAP))
+    // Recording the row is not the decision: if it fails, the decided pair still applies and the failure is logged.
+    try {
+      await update($, rows, (list) => [...list, entry].slice(-ROWS_CAP))
+    } catch (err) {
+      logFault($, `the row could not be recorded (${String(err)}); the decision still applies`)
+    }
     const ran = await next(keep ? e : { ...e, model: decided.model as 'haiku' | 'sonnet' | 'opus', effort: decided.effort as 'low' | 'medium' | 'high' | 'xhigh' })
     if (ran.deny !== undefined) {
-      await update($, rows, (list) => list.map((x) => (x.id === entry.id ? { ...x, status: 'refused' as const } : x)))
+      try {
+        await update($, rows, (list) => list.map((x) => (x.id === entry.id ? { ...x, status: 'refused' as const } : x)))
+      } catch (err) {
+        // the call already ran: a failure here must not run it again through the fault handler
+        logFault($, `the row could not be marked refused (${String(err)})`)
+      }
     }
     return ran
   }
@@ -147,17 +174,28 @@ export const register: Register = (on, options) => {
   classifier = options.classifier === 'regex' ? 'regex' : 'fm'
   fmAbsent = false
   absentSaid = false
+  gate = newGate()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'delegate', description: 'Show the delegation pane' })
     void $.ui.open({ id: PANE, title: 'Delegation' })
     // The first fm call after boot takes 7-19 s (measured 2026-10-29): wake the model now, not on the first Agent
     // call. Fire and forget; a failure is the first classification's to report.
+    // While it runs, a spawn is `fm-busy` and does not wait behind it.
     if (classifier === 'fm') {
+      gate.warming = true
       try {
-        void $.process.run([FM, 'respond', '--no-stream', '--greedy', 'ok'], { timeoutMs: 30000 }).catch(() => undefined)
+        void $.process
+          .run([FM, 'respond', '--no-stream', '--greedy', 'ok'], { timeoutMs: 30000 })
+          .catch((err: unknown) => {
+            if (failureOf(err) === 'fm-absent') fmAbsent = true
+          })
+          .finally(() => {
+            gate.warming = false
+          })
       } catch {
         // an engine without `$.process`: the first classification says so (fm-absent)
+        gate.warming = false
       }
     }
     return next(e)
@@ -176,7 +214,14 @@ export const register: Register = (on, options) => {
 
   // A fault in a gating hook of this mod must not stop a session: its `.catch` lets the call go on as if the mod
   // were absent.
-  on('tool.call', toolCalled).catch(($, e, next) => next(e))
+  // A fault in the hook itself (after the decision, say) must not hand the call back with the caller's pair: an
+  // Agent call that the mod decides still gets the deterministic pair, and the fault is logged.
+  on('tool.call', toolCalled).catch(($, e, next) => {
+    if (e.tool !== 'Agent' || e.agentId !== undefined || pinned(e)) return next(e)
+    const pair = CLASSES[guess(e).cls]
+    logFault($, 'the tool.call hook failed; the keyword pair applies')
+    return next({ ...e, model: pair.model, effort: pair.effort })
+  })
   on('agent.spawn', spawned).catch(($, e, next) => next(e))
   on('turn.step', stepped)
   on('turn.complete', completed)
