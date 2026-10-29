@@ -113,12 +113,16 @@ What the retry names is ignored. The mod watches the `AskUserQuestion` call itse
 engine's answer) and keeps the user's answer to a marked question, if and only if the call was answered, the mark is
 one the mod issued, and the answer is a model (or an effort) from the lists above. The retry applies that stored
 pair, tagged `user`, and consumes it in one atomic state update, so of any number of parallel retries one is applied
-and the others are refused again. The pending entry is dropped at the start and at the end of the main loop's turn:
-an answer does not outlive the turn that asked. The invariant: a pair is applied tagged `user` only if the user chose
+and the others are refused again. The marked questions are **rewritten by the mod** before they reach the user: their text and options are the mod's
+(all four models, efforts low to xhigh, `max` under "Other"), whatever the main loop wrote, and `answers`, `annotations`,
+`response` and `afkTimeoutMs` written into the call are removed. Nothing is taken when the call carried any of them, when
+the result carries `afkTimeoutMs` (the dialog resolved on the user's idle time), or when the call was refused. The
+pending entry is dropped at the start and at the end of the main loop's turn (a subagent's `turn.start` does not drop
+it): an answer does not outlive the turn that asked. The invariant: a pair is applied tagged `user` only if the user chose
 it in a marked `AskUserQuestion` during the current turn, once. A refusal anyone can obtain (a burst, a warm-up, a `-p`
-run) opens nothing by itself: with no answer, a retry that names a pair is refused. What this does not prove: the
-main loop writes the question and its options, so it can offer the user a narrowed choice; the user's answer is what
-is applied, and the pane shows the pair and `[user]`.
+run) opens nothing by itself: with no answer, a retry that names a pair is refused. What this does not prove: that the
+engine's answer comes from a person (a hook or host beneath this mod that answers the dialog is trusted); the pane
+shows the pair and `[user]`.
 
 ### Recorded beside the caller's request
 
@@ -215,10 +219,10 @@ To configure it: `/config` and set `typesafe_api_key` for the delegate plugin, o
 - The recorded `ran` model and effort are what the engine sent at the agent's first step, as the hook saw them. The
   mod rewrites no step; the Agent call it rewrites is the one that carries the decided model and effort.
 - The user's answer is read from `answers[<question>]` of the `AskUserQuestion` result (2.1.306 declares it as question
-  text to answer string). A `max` effort typed under "Other" is captured only if the engine returns it there; if it came
-  back only as the free-text `response` field it is not captured and the retry is refused again (not verified in a live
-  session). The pending ask is dropped at `turn.start` and at the main loop's `turn.complete`; if the engine ended the
-  turn while the dialog waits, every retry after a marked answer would be refused (also not verified live).
+  text to answer string; the 2.1.306 binary puts text typed under "Other" there, so `max` is captured; with an image
+  pasted the value becomes `max (Image attached)` and is not captured: the retry is refused). Read in the binary, not
+  tried in a live session. `turn.complete` of the main loop arrives when its turn ends, which cannot happen while the
+  AskUserQuestion tool waits (except by interruption, which closes the dialog).
 - The pane keeps the last 30 delegations. The first step of an agent that arrives before its spawn is answered
   is held in memory for the row; a hot reload loses it and the pane then shows `?`.
 - The main-loop guard is a refusal at `tool.call`. It does not change permission prompts, and it does not stop a

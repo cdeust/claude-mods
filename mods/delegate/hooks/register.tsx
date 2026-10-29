@@ -69,6 +69,40 @@ const isModel = (v: unknown): v is Model => typeof v === 'string' && (MODELS as 
 const isEffort = (v: unknown): v is Effort => typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
 const chosen = (model: Model, effort: Effort, reason: string): Decision => ({ model, effort, by: 'user', reason })
 
+// The two questions of a refusal, worded here and nowhere else: a call of the main loop that carries the marks is rewritten
+// to these (text, options), so the user is always offered the whole lists, whatever the main loop wrote.
+const modelQuestion = (name: string, mark: string): string => `Which model for the agent "${name}"? (${MODELS.join(', ')}) [ask ${mark}:model]`
+const effortQuestion = (name: string, mark: string): string => `Which effort for the agent "${name}"? (${EFFORTS.join(', ')}) [ask ${mark}:effort]`
+const canonicalQuestion = (name: string, mark: string, field: 'model' | 'effort') => {
+  const labels: readonly string[] = field === 'model' ? MODELS : EFFORTS.slice(0, 4) // max: typed under "Other", as $.ui.ask
+  return {
+    question: field === 'model' ? modelQuestion(name, mark) : effortQuestion(name, mark),
+    header: field === 'model' ? 'Model' : 'Effort',
+    options: labels.map((label) => ({ label, description: label })),
+    multiSelect: false,
+  }
+}
+// What the main loop may not have written into the call, or what shows the dialog did not resolve on a person's choice.
+const FROM_ELSEWHERE = ['answers', 'annotations', 'response', 'afkTimeoutMs'] as const
+
+// The call, with its marked questions replaced by the mod's own; `clean` is false when it carried answers of its own
+// (the engine returns an input's `answers`), which then are neither sent on nor taken for the user's.
+async function canonical($: Ctx, e: object): Promise<{ input: object; clean: boolean }> {
+  const x = e as Record<string, unknown>
+  const marked = (q: unknown): RegExpExecArray | null => (typeof (q as { question?: unknown } | undefined)?.question === 'string' ? MARK.exec((q as { question: string }).question) : null)
+  if (!Array.isArray(x.questions) || !x.questions.some((q) => marked(q) !== null)) return { input: e, clean: false }
+  const list = await read($, asks)
+  const questions = x.questions.map((q) => {
+    const m = marked(q)
+    const entry = m === null ? undefined : list.find((a) => a.mark === m[1])
+    return m === null || entry === undefined ? q : canonicalQuestion(entry.key, entry.mark, m[2] as 'model' | 'effort')
+  })
+  const clean = !FROM_ELSEWHERE.some((k) => Object.hasOwn(x, k))
+  const input: Record<string, unknown> = { ...x, questions }
+  for (const k of FROM_ELSEWHERE) delete input[k]
+  return { input, clean }
+}
+
 // The pair the user chose for this description, in an AskUserQuestion that carried the mod's mark: taken once. Only the
 // user's answer, seen on that call, is ever applied; what the retry names is ignored. The take is one `update`, so of
 // any number of retries in parallel one wins (a version miss reruns `change`, and only the last run's `won` counts).
@@ -89,6 +123,8 @@ async function retried($: Ctx, task: Call): Promise<Decision | undefined> {
 // issued, an answer that is not one of the lists: nothing is kept.
 async function captured($: Ctx, e: { questions?: unknown }, ran: { deny?: string; isError?: true; result?: unknown }): Promise<void> {
   if (ran.deny !== undefined || ran.isError === true || !Array.isArray(e.questions)) return
+  // A dialog that resolved on the user's idle time (afkTimeoutMs) holds unconfirmed selections: not a choice.
+  if (typeof ran.result === 'object' && ran.result !== null && Object.hasOwn(ran.result, 'afkTimeoutMs')) return
   const said = (ran.result as { answers?: unknown } | undefined)?.answers
   if (typeof said !== 'object' || said === null) return
   const got: Array<{ mark: string; field: 'model' | 'effort'; value: string }> = []
@@ -125,7 +161,7 @@ async function askUser($: Ctx, task: Call, why: string): Promise<Resolved> {
   }
   return {
     decided: { model: '-', effort: '-', by: 'none', reason: `refused, the user is to choose: ${why}` },
-    deny: `delegate: no model could classify this agent (${why}). Call AskUserQuestion with two questions, worded exactly: "Which model for the agent "${name}"? (${MODELS.join(', ')}) [ask ${mark}:model]" and "Which effort for the agent "${name}"? (${EFFORTS.join(', ')}) [ask ${mark}:effort]". Then call Agent again with the same description: the mod applies the model and the effort the user chose, whatever that call names.`,
+    deny: `delegate: no model could classify this agent (${why}). Call AskUserQuestion with two questions, worded exactly: "${modelQuestion(name, mark)}" and "${effortQuestion(name, mark)}" (the mod sets their wording and options itself). Then call Agent again with the same description: the mod applies the model and the effort the user chose, whatever that call names.`,
   }
 }
 
@@ -161,9 +197,16 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
   if (e.agentId !== undefined) return next(e)
   // The user's answer to the questions a refusal named: seen as the engine returns it, never taken from a later call.
   if (e.tool === 'AskUserQuestion') {
-    const ran = await next(e)
+    let sent: object = e
+    let clean = false
     try {
-      await captured($, e as unknown as { questions?: unknown }, ran as { deny?: string; isError?: true; result?: unknown })
+      ;({ input: sent, clean } = await canonical($, e))
+    } catch (err) {
+      logFault($, `the questions could not be checked (${String(err)}); no answer will be taken`)
+    }
+    const ran = await next(sent as typeof e)
+    try {
+      if (clean) await captured($, sent as { questions?: unknown }, ran as { deny?: string; isError?: true; result?: unknown })
     } catch (err) {
       logFault($, `the answer could not be recorded (${String(err)}); the retry will be refused`)
     }
@@ -262,6 +305,8 @@ const expireAsks = async ($: Ctx): Promise<void> => {
 }
 
 const turned: Hook<'turn.start'> = async ($, e, next) => {
+  // Every run starts a turn, a subagent's, a teammate's and the engine's own forks too: only the main loop's ends the ask.
+  if (e.agentId !== undefined) return next(e)
   await expireAsks($)
   return next(e)
 }
