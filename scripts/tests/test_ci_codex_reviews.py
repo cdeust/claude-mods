@@ -13,6 +13,7 @@ import sys
 import unittest
 from itertools import product
 from pathlib import Path
+from codex_resume_fixtures import with_claude
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/ci_codex_reviews.py"
 SHA = "a" * 40
@@ -120,7 +121,8 @@ def module():
 
 class CodexEvidenceTests(unittest.TestCase):
     def evidence(self, comments):
-        return module().review_evidence(comments, SHA)
+        rows = with_claude(comments) if isinstance(comments, list) else comments
+        return module().review_evidence(rows, SHA)
 
     def test_both_current_reviews_are_required(self):
         for code_sha, security_sha in (
