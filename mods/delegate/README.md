@@ -214,6 +214,11 @@ To configure it: `/config` and set `typesafe_api_key` for the delegate plugin, o
   default.
 - The recorded `ran` model and effort are what the engine sent at the agent's first step, as the hook saw them. The
   mod rewrites no step; the Agent call it rewrites is the one that carries the decided model and effort.
+- The user's answer is read from `answers[<question>]` of the `AskUserQuestion` result (2.1.306 declares it as question
+  text to answer string). A `max` effort typed under "Other" is captured only if the engine returns it there; if it came
+  back only as the free-text `response` field it is not captured and the retry is refused again (not verified in a live
+  session). The pending ask is dropped at `turn.start` and at the main loop's `turn.complete`; if the engine ended the
+  turn while the dialog waits, every retry after a marked answer would be refused (also not verified live).
 - The pane keeps the last 30 delegations. The first step of an agent that arrives before its spawn is answered
   is held in memory for the row; a hot reload loses it and the pane then shows `?`.
 - The main-loop guard is a refusal at `tool.call`. It does not change permission prompts, and it does not stop a

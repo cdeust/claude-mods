@@ -27,9 +27,12 @@ events and fails on the old code (last block below).
 A probe module (scratch, not committed) called `$.process.run` from a `tool.call` hook under `claude plugin test`. On
 2.1.306 and on 2.1.312 alike the call reached the engine: `PROBE Error: no implementation for process.run`, an Error
 that names the event, not a TypeError. So the noun exists on the pinned engine, the comment "an engine without
-`$.process` (CI pins 2.1.306)" was false, and a TypeError is a fault in the call. The d.ts of 2.1.306 is compressed
-inside the binary and could not be read directly; the engine behaviour is the evidence. Absence is now only the
-engine's own "failed to start".
+`$.process` (CI pins 2.1.306)" was false, and a TypeError is a fault in the call. The 2.1.306 declarations, read in a copy the engine wrote for another mod
+(`.claude/worktrees/pr30-r2/mods/cortex-guard/.claude-plugin/types/claude-code/index.d.ts`, first line "Written by
+Claude Code 2.1.306."), declare `process: {` at line 3587, as the review said, and the `AskUserQuestion` result there
+types `answers` as "question text -> answer string" with a separate `response?: string` for free text typed instead of
+a structured option (see the README "Limits": not verified live whether "Other" text comes back in `answers`). Absence
+is now only the engine's own "failed to start".
 
 ### Finding 1: threat model (STRIDE)
 
@@ -167,11 +170,9 @@ Ran 90 tests across 10 files. [1.62s]
 ```
 ### Finding 2 alone: old `release()` restored on d648498 with the repaired test (engine 2.1.312)
 ```
-(fail) a waiter that gave up does not free the slot: a later call still waits for the one running [0.34ms]
+(fail) a waiter that gave up does not free the slot: a later call still waits for the one running [0.43ms]
   AssertionError: expect(received).toBe()
+  
   Expected: 1
-(pass) bad output and a failed request keep neither the body nor the error [0.23ms]
-(pass) Jev failing is Jev missing, no retry: a request error [47.03ms]
- 79 pass
- 1 fail
+  Received: 2
 ```

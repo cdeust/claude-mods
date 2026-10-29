@@ -35,7 +35,7 @@ test('the refusal carries a mark in each question, and the pair the retry names 
   expect(w.sent).toEqual([{ model: 'sonnet', effort: 'high' }])
 })
 
-test('the user\'s answer is applied once, tagged user, and a pair typed under Other (max) counts', async ($, on) => {
+test('the user\'s answer is applied once, tagged user, and an effort that comes back as the answer to its question (max, typed under Other) counts', async ($, on) => {
   const w = wire(on, { fm: [ABSENT], choose: user('sonnet', 'max') })
   const { nonce } = await refuse($, 'Review the guard')
   await askAs($, 'Review the guard', nonce)
