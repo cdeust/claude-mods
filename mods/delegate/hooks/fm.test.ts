@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { brief, classify, DEADLINE_MS, EXPECT_MS, failureOf, fit, INSTRUCTIONS, MAX_BRIEF, MIN_RUN_MS, newGate, parse, within } from './fm'
+import { brief, classify, DEADLINE_MS, EXPECT_MS, failureOf, fit, INSTRUCTIONS, MAX_BRIEF, MIN_RUN_MS, newGate, parse, warm, WARM_MS, within } from './fm'
 import type { Run, Sleep } from './fm'
 
 const said: Run = async () => ({ exitCode: 0, stdout: '{"class":"read","reason":"r"}', stderr: '' })
@@ -52,7 +52,8 @@ test('only a JSON object with a known class parses', () => {
 test('a rejected process.run is told apart: cannot start, timeout, anything else', () => {
   expect(failureOf(new Error('HooksError: p: $.process.run(/usr/bin/fm) failed to start: ENOENT'))).toBe('fm-absent')
   expect(failureOf(new Error('HooksError: p: $.process.run(/usr/bin/fm) aborted: still running after 4000ms'))).toBe('fm-timeout')
-  expect(failureOf(new TypeError("undefined is not an object (evaluating '$.process.run')"))).toBe('fm-absent')
+  // not an absence: `$.process` exists on the pinned engine, so a TypeError is a fault in the call (fm is tried again)
+  expect(failureOf(new TypeError("undefined is not an object (evaluating '$.process.run')"))).toBe('fm-error')
   expect(failureOf(new Error('something else'))).toBe('fm-error')
 })
 
@@ -190,4 +191,20 @@ test('exit codes: overflow is its own reason, any other non-zero exit is fm-exit
   expect(await classify(newGate(), over, never, 's', task)).toEqual({ ok: false, failure: 'fm-overflow' })
   expect(await classify(newGate(), bad, never, 's', task)).toEqual({ ok: false, failure: 'fm-exit' })
   expect(await classify(newGate(), junk, never, 's', task)).toEqual({ ok: false, failure: 'fm-unparseable' })
+})
+
+test('warm-up: answered is null; it never rejects; one that never returns is ended by its guard', async () => {
+  const argvs: string[][] = []
+  const ok = async (argv: readonly string[], init: { timeoutMs: number }) => {
+    argvs.push([...argv])
+    expect(init.timeoutMs).toBe(WARM_MS)
+  }
+  expect(await warm(ok, never)).toBeNull()
+  expect(argvs[0]).toEqual(['/usr/bin/fm', 'respond', '--no-stream', '--greedy', 'ok'])
+  expect(await warm(async () => Promise.reject(new Error('$.process.run(/usr/bin/fm) failed to start: ENOENT')), never)).toBe('fm-absent')
+  expect(await warm(() => { throw new TypeError('no process') }, never)).toBe('fm-error') // a synchronous throw too
+  const m = manual()
+  const hung = warm(() => new Promise<never>(() => undefined), m.sleep)
+  m.fire()
+  expect(await hung).toBe('fm-timeout')
 })

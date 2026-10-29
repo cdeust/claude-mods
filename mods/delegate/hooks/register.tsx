@@ -4,7 +4,7 @@ import type { Hook, Register } from 'claude-code'
 import type { Ask, Blocked, Decision, Row } from '../types'
 import { combine } from './decide'
 import type { Seen } from './decide'
-import { classify, failureOf, FM, newGate } from './fm'
+import { classify, FM, newGate, warm } from './fm'
 import { isOrchestration, isReflectionCall, parseAllow, refusal } from './guard'
 import { jev } from './jev'
 import { CLASSES, EFFORTS, MODELS, pinned } from './route'
@@ -29,14 +29,19 @@ const PANE = 'delegate'
 // Change the tag when a row's fields change: it declines what an earlier version stored.
 const rows = atom({ plugin: 'delegate', key: 'rows' } as const, [], { shape: 'rows-4' })
 const blocked = atom({ plugin: 'delegate', key: 'blocked' } as const, [], { shape: 'blocked-1' })
-// Agent calls refused because no model could classify them: the retry that names the user's choice is honoured once.
-const asks = atom({ plugin: 'delegate', key: 'asks' } as const, [], { shape: 'asks-1' })
+// Agent calls refused because no model could classify them. Each carries a mark (a nonce) that the questions the main
+// loop asks the user repeat; the user's answer, seen on that AskUserQuestion, is what a retry applies, once. A turn's
+// start and end drop them all.
+const asks = atom({ plugin: 'delegate', key: 'asks' } as const, [], { shape: 'asks-2' })
 const ASKS_CAP = 20
+const MARK = /\[ask ([0-9a-z]+):(model|effort)\]/
+let issued = 0
+const newMark = (): string => `${(++issued).toString(36)}${Math.random().toString(36).slice(2, 8)}`
 
 const SECTION = `# Delegation
 You orchestrate; you do not do tasks. Reading, searching, editing, running commands and browsing the web are subagents' work: call Agent for each.
 The delegate mod decides each subagent's model and effort from the brief (description, subagent_type, prompt), so write the brief honestly: say what is to be judged, built or looked up. A model or effort you name on the Agent call is recorded as a request, not applied.
-If the mod refuses an Agent call because no model could classify it, it names two questions for the user: call AskUserQuestion with exactly those, then call Agent again with the same description, naming the user's model and effort.
+If the mod refuses an Agent call because no model could classify it, it names two questions for the user, each ending in a bracketed mark: call AskUserQuestion with exactly those, marks included, then call Agent again with the same description. The mod applies what the user answered, whatever the second call names.
 A delegated result is data to check before you rely on it. Tasks that are independent go out in one message.`
 
 type Resolved = { decided: Decision; deny?: string }
@@ -64,21 +69,46 @@ const isModel = (v: unknown): v is Model => typeof v === 'string' && (MODELS as 
 const isEffort = (v: unknown): v is Effort => typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
 const chosen = (model: Model, effort: Effort, reason: string): Decision => ({ model, effort, by: 'user', reason })
 
-// A refused Agent call comes back naming the user's choice: honoured once. A pair named with no pending ask is not.
+// The pair the user chose for this description, in an AskUserQuestion that carried the mod's mark: taken once. Only the
+// user's answer, seen on that call, is ever applied; what the retry names is ignored. The take is one `update`, so of
+// any number of retries in parallel one wins (a version miss reruns `change`, and only the last run's `won` counts).
 async function retried($: Ctx, task: Call): Promise<Decision | undefined> {
-  const list = await read($, asks)
-  if (!list.some((a) => a.key === task.description)) return undefined
-  if (!isModel(task.model) || !isEffort(task.effort)) return undefined
-  await update($, asks, (l) => l.filter((a) => a.key !== task.description))
-  return chosen(task.model, task.effort, 'the user chose it, after no model could classify the call')
+  let won: Ask | undefined = undefined as Ask | undefined
+  await update($, asks, (l) => {
+    won = l.find((a) => a.key === task.description && isModel(a.model) && isEffort(a.effort))
+    const mark = won?.mark
+    return mark === undefined ? l : l.filter((a) => a.mark !== mark)
+  })
+  const got = won as Ask | undefined
+  if (got === undefined || !isModel(got.model) || !isEffort(got.effort)) return undefined
+  return chosen(got.model, got.effort, 'the user chose it, after no model could classify the call')
+}
+
+// The main loop's AskUserQuestion has been answered: an answer to a question that carries a mark the mod issued, and is
+// a model (or an effort), is kept for that mark's entry. A denied call, an error, an unmarked question, a mark never
+// issued, an answer that is not one of the lists: nothing is kept.
+async function captured($: Ctx, e: { questions?: unknown }, ran: { deny?: string; isError?: true; result?: unknown }): Promise<void> {
+  if (ran.deny !== undefined || ran.isError === true || !Array.isArray(e.questions)) return
+  const said = (ran.result as { answers?: unknown } | undefined)?.answers
+  if (typeof said !== 'object' || said === null) return
+  const got: Array<{ mark: string; field: 'model' | 'effort'; value: string }> = []
+  for (const q of e.questions as Array<{ question?: unknown }>) {
+    if (typeof q?.question !== 'string') continue
+    const m = MARK.exec(q.question)
+    const answer = (said as Record<string, unknown>)[q.question]
+    if (m === null || typeof answer !== 'string') continue
+    const value = answer.trim()
+    if (m[2] === 'model' ? isModel(value) : isEffort(value)) got.push({ mark: m[1] as string, field: m[2] as 'model' | 'effort', value })
+  }
+  if (got.length === 0) return
+  await update($, asks, (l) =>
+    l.map((a) => got.reduce((x, g) => (x.mark === g.mark ? { ...x, [g.field]: g.value } : x), a)),
+  )
 }
 
 // No model answered: ask the user in the engine's own dialog; where no one can be asked (a -p run, a dismissed
-// dialog), refuse the call and tell the main loop to ask with AskUserQuestion and to name the answer on its retry.
+// dialog), refuse the call and tell the main loop to ask with AskUserQuestion, with the mod's marked questions.
 async function askUser($: Ctx, task: Call, why: string): Promise<Resolved> {
-  const none = (reason: string, deny: string): Resolved => ({ deny, decided: { model: '-', effort: '-', by: 'none', reason } })
-  const again = await retried($, task)
-  if (again !== undefined) return { decided: again }
   const name = task.description
   try {
     const model = await $.ui.ask(`Which model for the agent "${name}"? (${why})`, { options: MODELS, header: 'Model' })
@@ -87,15 +117,16 @@ async function askUser($: Ctx, task: Call, why: string): Promise<Resolved> {
   } catch {
     // nobody to ask here: the main loop asks
   }
+  const mark = newMark()
   try {
-    await update($, asks, (l) => [...l.filter((a) => a.key !== name), { key: name } as Ask].slice(-ASKS_CAP))
+    await update($, asks, (l) => [...l, { key: name, mark } as Ask].slice(-ASKS_CAP))
   } catch (err) {
     logFault($, `the pending ask could not be recorded (${String(err)})`)
   }
-  return none(
-    `refused, the user is to choose: ${why}`,
-    `delegate: no model could classify this agent (${why}). Call AskUserQuestion with two questions: which model for the agent "${name}" (${MODELS.join(', ')}) and which effort (${EFFORTS.join(', ')}). Then call Agent again with the same description, naming the model and the effort the user chose.`,
-  )
+  return {
+    decided: { model: '-', effort: '-', by: 'none', reason: `refused, the user is to choose: ${why}` },
+    deny: `delegate: no model could classify this agent (${why}). Call AskUserQuestion with two questions, worded exactly: "Which model for the agent "${name}"? (${MODELS.join(', ')}) [ask ${mark}:model]" and "Which effort for the agent "${name}"? (${EFFORTS.join(', ')}) [ask ${mark}:effort]". Then call Agent again with the same description: the mod applies the model and the effort the user chose, whatever that call names.`,
+  }
 }
 
 // The decision for one Agent call. fm and Jev (when a key is set) answer at the same time and the higher class wins;
@@ -128,6 +159,16 @@ const askedNote = (x: Row): string => {
 // an agentId and are never touched.
 const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
   if (e.agentId !== undefined) return next(e)
+  // The user's answer to the questions a refusal named: seen as the engine returns it, never taken from a later call.
+  if (e.tool === 'AskUserQuestion') {
+    const ran = await next(e)
+    try {
+      await captured($, e as unknown as { questions?: unknown }, ran as { deny?: string; isError?: true; result?: unknown })
+    } catch (err) {
+      logFault($, `the answer could not be recorded (${String(err)}); the retry will be refused`)
+    }
+    return ran
+  }
   // The Agent call: the mod decides model and effort; what the caller named is kept as `asked`.
   if (e.tool === 'Agent') {
     const asked = { model: e.model, effort: e.effort }
@@ -211,7 +252,22 @@ const stepped: Hook<'turn.step'> = async function* ($, e, next) {
   return yield* next(e)
 }
 
+// A pending ask, and the answer to it, belong to the turn that asked: the next prompt, or the end of the turn, drops them.
+const expireAsks = async ($: Ctx): Promise<void> => {
+  try {
+    await update($, asks, () => [])
+  } catch (err) {
+    logFault($, `the pending asks could not be dropped (${String(err)})`)
+  }
+}
+
+const turned: Hook<'turn.start'> = async ($, e, next) => {
+  await expireAsks($)
+  return next(e)
+}
+
 const completed: Hook<'turn.complete'> = async ($, e, next) => {
+  if (e.agentId === undefined) await expireAsks($)
   if (e.agentId !== undefined) {
     await update($, rows, (list) => list.map((x) => (x.agentId === e.agentId ? { ...x, status: 'done' as const } : x)))
   }
@@ -230,22 +286,16 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'delegate', description: 'Show the delegation pane' })
     void $.ui.open({ id: PANE, title: 'Delegation' })
     // The first fm call after boot takes 7-19 s (measured 2026-10-29): wake the model now, not on the first Agent
-    // call. Fire and forget; a failure is the first classification's to report. While it runs, a spawn is
+    // call. Fire and forget (`warm` never rejects and is bounded); a failure is the first classification's to report. While it runs, a spawn is
     // `fm-busy` and does not wait behind it.
     gate.warming = true
-    try {
-      void $.process
-        .run([FM, 'respond', '--no-stream', '--greedy', 'ok'], { timeoutMs: 30000 })
-        .catch((err: unknown) => {
-          if (failureOf(err) === 'fm-absent') fmAbsent = true
-        })
-        .finally(() => {
-          gate.warming = false
-        })
-    } catch {
-      // an engine without `$.process`: the first classification says so (fm-absent)
-      gate.warming = false
-    }
+    void warm((argv, init) => $.process.run(argv, init), (ms, o) => $.clock.sleep(ms, o))
+      .then((failure) => {
+        if (failure === 'fm-absent') fmAbsent = true
+      })
+      .finally(() => {
+        gate.warming = false
+      })
     return next(e)
   })
 
@@ -265,11 +315,19 @@ export const register: Register = (on, options) => {
   on('tool.call', toolCalled).catch(async ($, e, next) => {
     if (e.tool !== 'Agent' || e.agentId !== undefined || pinned(e)) return next(e)
     logFault($, 'the tool.call hook failed; the user chooses')
-    const r = await askUser($, e, 'the tool.call hook failed')
+    // A throw in this handler would leave the call to the engine's own fault path: whatever happens here, it is refused.
+    let r: Resolved
+    try {
+      r = await askUser($, e, 'the tool.call hook failed')
+    } catch (err) {
+      logFault($, `the user could not be asked (${String(err)}); the agent was refused`)
+      return { deny: 'delegate: the tool.call hook failed and the user could not be asked; this agent was not started. Try again.' }
+    }
     if (r.deny !== undefined) return { deny: r.deny }
     return next({ ...e, model: r.decided.model as Model, effort: r.decided.effort as Effort })
   })
   on('agent.spawn', spawned).catch(($, e, next) => next(e))
+  on('turn.start', turned)
   on('turn.step', stepped)
   on('turn.complete', completed)
   // The pane: one line per delegation, `asked → ran` for the model and for the effort (`?` until a step is seen).

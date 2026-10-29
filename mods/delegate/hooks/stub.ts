@@ -29,6 +29,9 @@ export type Wiring = {
   fm?: FmReply[] // replies in order, the last repeating; absent: fm is not answered at all (the call is denied)
   net?: NetReply[] // same for http.fetch
   asks?: string[] // answers of the user's dialog, in order; absent: nobody can be asked (a -p run)
+  // The user's answer to each question of an AskUserQuestion call; undefined: the user declined (the call is denied).
+  choose?: (question: string) => string | undefined
+  stateDown?: true // `state.get` is refused: every read of the mod's atoms rejects
   faultOnAgent?: true // the Agent call throws beneath the mod, as a fault in a lower hook would
 }
 
@@ -44,6 +47,8 @@ export function wire(on: On, w: Wiring = {}) {
     calls.push({ argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
     return fmResult(fm[Math.min(calls.length - 1, fm.length - 1)] as FmReply)
   })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  if (w.stateDown) on('state.get', () => ({ deny: 'state is down' }))
   const net = w.net ?? []
   on('http.fetch', (_, e) => {
     nets.push({ url: e.url, method: e.init?.method, headers: e.init?.headers, body: e.init?.body })
@@ -61,6 +66,15 @@ export function wire(on: On, w: Wiring = {}) {
     if (e.tool === 'Agent') sent.push({ model: e.model, effort: e.effort })
     if (e.tool === 'AskUserQuestion') {
       questions.push(JSON.stringify(e))
+      if (w.choose !== undefined) {
+        const answers: Record<string, string> = {}
+        for (const q of (e as unknown as { questions: Array<{ question: string }> }).questions) {
+          const a = w.choose(q.question)
+          if (a === undefined) return { deny: 'no one to ask' }
+          answers[q.question] = a
+        }
+        return { result: { answers } } as never
+      }
       if (w.asks === undefined) return { deny: 'no one to ask' }
       const a = answers.shift() ?? 'low'
       return { result: { answers: { [String((e as unknown as { questions: Array<{ question: string }> }).questions[0]?.question)]: a } } } as never

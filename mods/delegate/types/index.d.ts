@@ -18,8 +18,10 @@ export type Row = {
 // retry that named the choice), 'caller' a fork or a custom type, which the mod does not decide, 'none' a call refused
 // because no model answered and the user is to choose.
 export type Decision = { model: string; effort: string; by: 'fm' | 'jev' | 'fm+jev' | 'user' | 'caller' | 'none'; reason: string }
-// A refused Agent call waiting for the user's choice, keyed by its description: the retry that names it is honoured once.
-export type Ask = { key: string }
+// A refused Agent call waiting for the user's choice: its description, the mark its questions carry, and, once the user
+// has answered an AskUserQuestion that carries the mark, the model and the effort chosen. Taken once, by a call with
+// that description; dropped at the start or the end of a turn.
+export type Ask = { key: string; mark: string; model?: string; effort?: string }
 export type Blocked = { tool: string; mode: 'block' | 'warn' }
 
 declare module 'claude-code' {

@@ -19,7 +19,8 @@ function held(on: On) {
     if (e.tool === 'AskUserQuestion') return { deny: 'no one to ask' }
     return { result: {} }
   })
-  on('clock.sleep', () => new Promise(() => undefined))
+  const sleeps: Array<() => void> = []
+  on('clock.sleep', () => new Promise((resolve) => sleeps.push(() => resolve({ value: undefined as never }))))
   on('ui.log', () => ({ value: undefined as never }))
   const fetches: string[] = []
   on('http.fetch', (_, e) => {
@@ -32,6 +33,7 @@ function held(on: On) {
     calls,
     sent,
     fetches,
+    fire: () => sleeps.splice(0).forEach((f) => f()),
     arrived: (n: number) => (calls.length >= n ? Promise.resolve() : new Promise<void>((go) => waiting.push({ n, go }))),
     release: (i: number, r: ReturnType<typeof fmSays>) => releases[i]?.(done(r)),
   }
@@ -98,4 +100,19 @@ test('while the model warms up, Jev takes the spawn', KEY, async ($, on) => {
   await spawn($, { description: 'Crawl the docs' })
   expect(h.sent).toEqual([{ model: 'haiku', effort: 'low' }])
   expect((await pane($)).lines[0]).toMatch(/\[jev\]/)
+})
+
+test('a warm-up that never returns is ended by its guard: the model is not warming for the rest of the session', async ($, on) => {
+  const h = held(on)
+  await start($, on)
+  await h.arrived(1)
+  expect(((await spawn($, { description: 'Crawl the docs' })) as { deny?: string }).deny).toMatch(/AskUserQuestion/)
+  expect(h.calls).toHaveLength(1) // busy: no classification call
+  h.fire() // the warm-up's guard runs out; the process was never answered
+  for (let i = 0; i < 20; i++) await Promise.resolve() // the continuations of the settled guard
+  const a = spawn($, { description: 'Crawl the docs again' })
+  await h.arrived(2) // now a classification call reaches fm
+  h.release(1, fmSays('read'))
+  await a
+  expect(h.sent).toEqual([{ model: 'haiku', effort: 'low' }])
 })

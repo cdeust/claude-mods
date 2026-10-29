@@ -84,12 +84,20 @@ text: it is that two different models read it and the higher class wins, so stee
 than steering one. With no key only fm reads the brief, and the protection is the agent type's bounds. The
 `<brief>...</brief>` block around the text is formatting: it shows where the brief ends and defends nothing.
 
+This defense holds **only when both models answer**. With no key, with Jev failing or rate limited, or with fm busy,
+absent or slow, one model alone decides and nothing is maxed: the only remaining protection is the agent type's
+bounds (next section), and a brief that steers that one model down gets the lower class. The row says which model was
+missing.
+
 Jev's confidence (0 to 1, from the spread of its probabilities) is recorded in the row, not used to decide.
 
 ### What bounds the answer
 
 Only what the engine knows, with no reading of the brief's words: **Explore**, a read-only search agent, is capped
-at `build`; **Plan**, which designs, is floored at `judge`. A changed answer ends the reason `[capped from X by the
+at `build`; **Plan**, which designs, is floored at `judge`. The bound reads `subagent_type`, and the **caller chooses
+it**: a call that names `general-purpose` (or leaves the type out) is not capped, whatever it does, and one that names
+`Explore` takes the cap. The Explore cap is a cost limit that the caller can pick or avoid, not a security boundary
+against the caller. A changed answer ends the reason `[capped from X by the
 agent type]` or `[floored from X by the agent type]`. (An earlier version also floored on keywords found in the
 description; that text analysis is removed.)
 
@@ -98,9 +106,19 @@ description; that text analysis is removed.)
 If fm and Jev both fail to answer, the mod asks which model (haiku, sonnet, opus, fable) and which effort (low,
 medium, high, xhigh; `max` typed under "Other") in the engine's own dialog, and applies the answer tagged `user`.
 Where nobody can be asked (a `-p` run, a dismissed dialog) the Agent call is **refused** with a message telling the
-main loop to call `AskUserQuestion` with exactly those two questions and to call `Agent` again with the same
-description, naming the user's model and effort. That retry is honoured once, tagged `user`. A pair named by the
-caller with no pending ask is never applied.
+main loop to call `AskUserQuestion` with exactly two questions, each ending in a mark the mod issued
+(`[ask <nonce>:model]`, `[ask <nonce>:effort]`), and then to call `Agent` again with the same description.
+
+What the retry names is ignored. The mod watches the `AskUserQuestion` call itself (a `tool.call` hook sees the
+engine's answer) and keeps the user's answer to a marked question, if and only if the call was answered, the mark is
+one the mod issued, and the answer is a model (or an effort) from the lists above. The retry applies that stored
+pair, tagged `user`, and consumes it in one atomic state update, so of any number of parallel retries one is applied
+and the others are refused again. The pending entry is dropped at the start and at the end of the main loop's turn:
+an answer does not outlive the turn that asked. The invariant: a pair is applied tagged `user` only if the user chose
+it in a marked `AskUserQuestion` during the current turn, once. A refusal anyone can obtain (a burst, a warm-up, a `-p`
+run) opens nothing by itself: with no answer, a retry that names a pair is refused. What this does not prove: the
+main loop writes the question and its options, so it can offer the user a narrowed choice; the user's answer is what
+is applied, and the pane shows the pair and `[user]`.
 
 ### Recorded beside the caller's request
 
@@ -112,7 +130,7 @@ field it did not name), and under it the reason: the class, each model's answer 
 |---|---|
 | `fm-timeout` | fm did not answer in its deadline (a cold first call takes 7-19 s; the session start warms it) |
 | `fm-busy` | another classification is in flight and this call's deadline cannot be met behind it, or fm is warming up |
-| `fm-absent` | `/usr/bin/fm` cannot start (or the engine has no `$.process`): fm is skipped for the rest of the session |
+| `fm-absent` | `/usr/bin/fm` cannot start (the engine reports "failed to start"): fm is skipped for the rest of the session. Any other fault in the call is `fm-error` and fm is tried again at the next spawn |
 | `fm-exit`, `fm-overflow`, `fm-unparseable`, `fm-error` | fm exited non-zero, reported a context overflow, answered with something that is not a class, or failed otherwise |
 | `jev-nokey` | no API key is configured: Jev is skipped |
 | `jev-limited (429/529)`, `jev-auth (401/403)`, `jev-http (status)` | TypeSafe refused or failed; no retry, no loop |
@@ -170,7 +188,10 @@ from when it was enqueued; it gets what is left as its timeout. A call is `fm-bu
 already use its deadline (the typical call is 1.65 s, so the first two of a burst are served and the rest are
 busy) or when the model is warming up. A call waiting for its turn gives up when what is left would not cover a
 run, and a call that never returns is cut at its timeout, so the slot is always released (the guard is
-`$.clock.sleep`; the sandbox has no `setTimeout`). With a key, a busy spawn is decided by Jev alone.
+`$.clock.sleep`; the sandbox has no `setTimeout`). A waiter that gives up does not free the slot while the call ahead
+still runs: the next call chains on that call. The warm-up call sent at the session start (`fm respond ... ok`, 30 s)
+is guarded the same way: it never rejects, a failed start is `fm-absent`, and if it neither answers nor is killed the
+guard ends the wait, so the model is never left marked as warming. With a key, a busy spawn is decided by Jev alone.
 
 ### Data sent to TypeSafe, and the key
 

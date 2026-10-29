@@ -85,13 +85,28 @@ export function parse(stdout: string): { cls: Class; why: string } | null {
 
 // What a rejected `$.process.run` means (the engine's own messages, probed 2026-10-29 on 2.1.312):
 // "failed to start: ENOENT" (no such binary) and "aborted: still running after Nms" (the timeout).
+// Only the engine's own "failed to start" is absence. `$.process` is declared on 2.1.306 and 2.1.312 (probed: the call
+// reaches `process.run`), so a TypeError is a fault in the call, not the absence of fm: `fm-error`, and fm is tried again.
 export function failureOf(err: unknown): Failure {
-  // An engine without `$.process` (CI pins 2.1.306): the noun is undefined and the call is a TypeError.
-  if (err instanceof TypeError) return 'fm-absent'
   const text = String((err as Error | undefined)?.message ?? err)
   if (text.includes('failed to start')) return 'fm-absent'
   if (['still running', 'aborted', 'timed out', 'timeout'].some((m) => text.toLowerCase().includes(m))) return 'fm-timeout'
   return 'fm-error'
+}
+
+// The first fm call after boot takes 7-19 s: the session start sends this one so that the model is awake for the first
+// Agent call. It never rejects and never outlives `WARM_MS`: if the process neither answers nor is killed by the engine,
+// the guard ends the wait, so the caller's `warming` flag is always cleared. `null`: fm answered.
+export const WARM_MS = 30000
+export type WarmRun = (argv: readonly string[], init: { timeoutMs: number }) => Promise<unknown>
+
+export async function warm(run: WarmRun, sleep: Sleep): Promise<Failure | null> {
+  try {
+    const got = await within(run([FM, 'respond', '--no-stream', '--greedy', 'ok'], { timeoutMs: WARM_MS }), WARM_MS, sleep)
+    return 'late' in got ? 'fm-timeout' : null
+  } catch (err) {
+    return failureOf(err)
+  }
 }
 
 async function attempt(run: Run, sleep: Sleep, schema: string, task: Brief, timeoutMs: number): Promise<Answer> {

@@ -13,26 +13,13 @@ test('neither model answers and nobody can be asked here: the Agent call is refu
   const w = wire(on, { fm: [ABSENT] })
   const reason = await denied(spawn($, { description: 'Review the guard', model: 'haiku', effort: 'low' }))
   expect(reason).toMatch(/AskUserQuestion/)
-  expect(reason).toMatch(/which model for the agent "Review the guard" \(haiku, sonnet, opus, fable\)/)
-  expect(reason).toMatch(/which effort \(low, medium, high, xhigh, max\)/)
+  expect(reason).toMatch(/Which model for the agent "Review the guard"\? \(haiku, sonnet, opus, fable\) \[ask [0-9a-z]+:model\]/)
+  expect(reason).toMatch(/Which effort for the agent "Review the guard"\? \(low, medium, high, xhigh, max\) \[ask [0-9a-z]+:effort\]/)
   expect(reason).toMatch(/call Agent again with the same description/)
   expect(w.sent).toEqual([]) // nothing was spawned, the caller's pair did not win
   const { lines, reasons } = await pane($)
   expect(lines[0]).toMatch(/\[none\]/)
   expect(reasons[0]).toMatch(/refused, the user is to choose: fm: fm-absent; jev: jev-nokey/)
-})
-
-test('the retry naming the user\'s choice is honoured once, tagged user', async ($, on) => {
-  const w = wire(on, { fm: [ABSENT] })
-  await spawn($, { description: 'Review the guard' }) // refused, an ask is pending
-  await spawn($, { description: 'Review the guard', model: 'sonnet', effort: 'max' })
-  expect(w.sent).toEqual([{ model: 'sonnet', effort: 'max' }])
-  expect((await pane($)).lines[1]).toMatch(/sonnet → \? · max → \? · Review the guard \[user\]/)
-
-  // the ask is spent: the same call again is a caller naming a pair with no pending ask
-  const again = await denied(spawn($, { description: 'Review the guard', model: 'sonnet', effort: 'max' }))
-  expect(again).toMatch(/AskUserQuestion/)
-  expect(w.sent).toHaveLength(1)
 })
 
 test('a caller naming a pair with no pending ask does not win, whatever it names', async ($, on) => {
@@ -45,16 +32,6 @@ test('nor when no model answers: the named pair is refused, not applied', async 
   const w = wire(on, { fm: [ABSENT] })
   expect(await denied(spawn($, { description: 'Another task', model: 'opus', effort: 'max' }))).toMatch(/AskUserQuestion/)
   expect(w.sent).toEqual([])
-})
-
-test('a pending ask is for its description only, and a retry that names no valid pair keeps it pending', async ($, on) => {
-  const w = wire(on, { fm: [ABSENT] })
-  await spawn($, { description: 'First task' })
-  expect(await denied(spawn($, { description: 'Second task', model: 'opus', effort: 'high' }))).toMatch(/AskUserQuestion/)
-  expect(await denied(spawn($, { description: 'First task', model: 'opus' }))).toMatch(/AskUserQuestion/)
-  expect(await denied(spawn($, { description: 'First task', model: 'gpt', effort: 'high' }))).toMatch(/AskUserQuestion/)
-  await spawn($, { description: 'First task', model: 'opus', effort: 'high' })
-  expect(w.sent).toEqual([{ model: 'opus', effort: 'high' }])
 })
 
 test('where a person can be asked, the dialog answers and the pair is tagged user', async ($, on) => {
