@@ -156,8 +156,11 @@ here the same day: random CJK ideographs, 1000 units = 2091 tokens, **0.478** (r
 Cyrillic, Arabic, Thai and kana, 1000 units = 1218 tokens, **0.821** (a different mix from the reviewer's, so a
 different figure). Two characters per token is not a worst case. **Adversarial non-Latin input can therefore exceed
 the fm deadline even at the 2000-character cap** (2000 CJK units are about 4200 tokens, about 5 s by the 1.2 ms
-per token rule): the call is then `fm-timeout` and Jev (if keyed) or you decide. Re-measured as the CJK run:
-see the PR for the raw timing.
+per token rule): the call is then `fm-timeout` and Jev (if keyed) or you decide. Measured the same day, random CJK
+ideographs through the same call: 1081 characters 3.39 s, 1981 characters 5.20 s (past the 4 s deadline). Also
+observed: after several of the test's own fm calls were killed mid-run, ordinary English briefs took 53, 78 and 86 s
+for a few minutes before the service recovered (1.8 s again): fm can be slow for reasons outside the brief, which is
+what the deadline and the slot guard are for.
 
 ### Concurrency
 
