@@ -54,10 +54,12 @@ test('Jev down and fm down is the ask path too', KEY, async ($, on) => {
   expect((await pane($)).reasons[0]).toMatch(/fm: fm-timeout; jev: jev-limited \(529\)/)
 })
 
-test('a fault in the hook goes to the ask path, never to the caller\'s pair', async ($, on) => {
-  wire(on, { fm: [fmSays('read')], faultOnAgent: true }) // a handler beneath the mod throws: next() rejects after the decision
+test('a fault beneath the mod refuses the call and the row says so, the caller\'s pair never goes through', async ($, on) => {
+  const w = wire(on, { fm: [fmSays('read')], faultOnAgent: true }) // a handler beneath the mod throws: next() rejects after the decision
   const reason = await denied(spawn($, { description: 'Review the guard', model: 'opus', effort: 'max' }))
-  expect(reason).toMatch(/AskUserQuestion/)
+  expect(reason).toMatch(/failed below the mod/)
+  expect(w.sent).toEqual([])
+  expect((await pane($)).lines[0]).toMatch(/^✗/)
 })
 
 test('Explore is a read-only search agent: its ceiling is build, and the cap is recorded', KEY, async ($, on) => {
@@ -74,13 +76,13 @@ test('Plan designs: its floor is judge, and the floor is recorded', async ($, on
   expect((await pane($)).reasons[0]).toMatch(/\[floored from read by the agent type\]/)
 })
 
-test('a fork and a custom type are the caller\'s: no model is asked, nothing is rewritten', KEY, async ($, on) => {
+test('a fork and a custom type are not decided by the mod: no model is asked, the named pair is not sent on', KEY, async ($, on) => {
   const w = wire(on, { fm: [fmSays('critical')], net: [jevSays('critical')] })
   await spawn($, { subagent_type: 'fork' })
   await spawn($, { subagent_type: 'zetetic:reviewer', model: 'sonnet' })
   expect(w.calls).toHaveLength(0)
   expect(w.nets).toHaveLength(0)
-  expect(w.sent).toEqual([{ model: undefined, effort: undefined }, { model: 'sonnet', effort: undefined }])
+  expect(w.sent).toEqual([{ model: undefined, effort: undefined }, { model: undefined, effort: undefined }]) // `sonnet` was only asked
 })
 
 test('the section tells the main loop that the mod decides and how a refusal is answered', async ($, on) => {

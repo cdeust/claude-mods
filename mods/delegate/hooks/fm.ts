@@ -4,14 +4,14 @@
 //
 // What binds is latency, not the context window: a call costs about 1.2 ms per input token, and the slowest text
 // (hex, ~1.1 characters per token) takes 7.9 s at 6000 characters, past the deadline long before the context
-// overflows. The input is therefore capped in characters (README, "The classifier call", measured 2026-10-29).
+// overflows. The input is therefore capped in characters (README, "The two models' calls", measured 2026-10-29).
 
 import { CLASSES, DEFINITIONS } from './route'
 import type { Brief, Class } from './route'
 
 export const FM = '/usr/bin/fm'
 
-// source: README "The classifier call". Longest call measured at the cap (hex, 2000 characters): 1.89 s.
+// source: README "The two models' calls". Longest call measured at the cap (hex, 2000 characters): 1.89 s.
 export const MAX_BRIEF = 2000
 const DESC_MAX = 300 // description and type are kept whole up to these lengths; the prompt takes the rest
 const TYPE_MAX = 60

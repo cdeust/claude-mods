@@ -14,13 +14,13 @@ export type Row = {
   decided: Decision
   status: 'running' | 'done' | 'refused'
 }
-// by: 'fm', 'jev' or 'fm+jev' the model(s) that answered (both: the higher class), 'user' the person chose (asked, or the
-// retry that named the choice), 'caller' a fork or a custom type, which the mod does not decide, 'none' a call refused
+// by: 'fm', 'jev' or 'fm+jev' the model(s) that answered (both: the higher class), 'user' the person chose (in the `ui.ask` dialog, or in a marked
+// AskUserQuestion the mod captured; what a retry names is ignored), 'caller' a fork or a custom type, which the mod does not decide, 'none' a call refused
 // because no model answered and the user is to choose.
 export type Decision = { model: string; effort: string; by: 'fm' | 'jev' | 'fm+jev' | 'user' | 'caller' | 'none'; reason: string }
 // A refused Agent call waiting for the user's choice: its description, the mark its questions carry, and, once the user
 // has answered an AskUserQuestion that carries the mark, the model and the effort chosen. Taken once, by a call with
-// that description; dropped at the start or the end of a turn.
+// that description; dropped at the start or the end of the main loop's turn.
 export type Ask = { key: string; mark: string; model?: string; effort?: string }
 export type Blocked = { tool: string; mode: 'block' | 'warn' }
 

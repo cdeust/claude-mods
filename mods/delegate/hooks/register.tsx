@@ -30,11 +30,17 @@ const PANE = 'delegate'
 const rows = atom({ plugin: 'delegate', key: 'rows' } as const, [], { shape: 'rows-4' })
 const blocked = atom({ plugin: 'delegate', key: 'blocked' } as const, [], { shape: 'blocked-1' })
 // Agent calls refused because no model could classify them. Each carries a mark (a nonce) that the questions the main
-// loop asks the user repeat; the user's answer, seen on that AskUserQuestion, is what a retry applies, once. A turn's
-// start and end drop them all.
+// loop asks the user repeat; the user's answer, seen on that AskUserQuestion, is what a retry applies, once. The main loop's
+// turn start and end drop them all (a subagent's do not).
 const asks = atom({ plugin: 'delegate', key: 'asks' } as const, [], { shape: 'asks-2' })
 const ASKS_CAP = 20
-const MARK = /\[ask ([0-9a-z]+):(model|effort)\]/
+const MARK = /\[ask ([0-9a-z]+):(model|effort)\]/g
+// The mod's own mark is the last one in a question (the canonical text ends with it); a description may hold look-alikes before it.
+const lastMark = (text: string): { mark: string; field: 'model' | 'effort' } | null => {
+  const all = [...text.matchAll(MARK)]
+  const m = all[all.length - 1]
+  return m === undefined ? null : { mark: m[1] as string, field: m[2] as 'model' | 'effort' }
+}
 let issued = 0
 const newMark = (): string => `${(++issued).toString(36)}${Math.random().toString(36).slice(2, 8)}`
 
@@ -83,24 +89,37 @@ const canonicalQuestion = (name: string, mark: string, field: 'model' | 'effort'
   }
 }
 // What the main loop may not have written into the call, or what shows the dialog did not resolve on a person's choice.
-const FROM_ELSEWHERE = ['answers', 'annotations', 'response', 'afkTimeoutMs'] as const
+const FROM_ELSEWHERE = ['answers', 'annotations', 'response', 'afkTimeoutMs', 'followUp'] as const
 
 // The call, with its marked questions replaced by the mod's own; `clean` is false when it carried answers of its own
-// (the engine returns an input's `answers`), which then are neither sent on nor taken for the user's.
-async function canonical($: Ctx, e: object): Promise<{ input: object; clean: boolean }> {
+// (the engine returns an input's `answers`), which then are neither sent on nor taken for the user's. `asked` lists the
+// questions the mod worded, each with the entry it belongs to: the capture pairs an answer with these, by the text, and
+// never reads a mark out of a question again (a description can hold one). A mark and field already worded once are
+// not worded twice (the dialog refuses two questions with the same text).
+type Worded = { question: string; mark: string; field: 'model' | 'effort' }
+async function canonical($: Ctx, e: object): Promise<{ input: object; clean: boolean; asked: Worded[] }> {
   const x = e as Record<string, unknown>
-  const marked = (q: unknown): RegExpExecArray | null => (typeof (q as { question?: unknown } | undefined)?.question === 'string' ? MARK.exec((q as { question: string }).question) : null)
-  if (!Array.isArray(x.questions) || !x.questions.some((q) => marked(q) !== null)) return { input: e, clean: false }
+  const marked = (q: unknown) => (typeof (q as { question?: unknown } | undefined)?.question === 'string' ? lastMark((q as { question: string }).question) : null)
+  if (!Array.isArray(x.questions) || !x.questions.some((q) => marked(q) !== null)) return { input: e, clean: false, asked: [] }
   const list = await read($, asks)
-  const questions = x.questions.map((q) => {
+  const asked: Worded[] = []
+  const questions: unknown[] = []
+  for (const q of x.questions) {
     const m = marked(q)
-    const entry = m === null ? undefined : list.find((a) => a.mark === m[1])
-    return m === null || entry === undefined ? q : canonicalQuestion(entry.key, entry.mark, m[2] as 'model' | 'effort')
-  })
+    const entry = m === null ? undefined : list.find((a) => a.mark === m.mark)
+    if (m === null || entry === undefined) {
+      questions.push(q)
+      continue
+    }
+    const w = canonicalQuestion(entry.key, entry.mark, m.field)
+    if (asked.some((a) => a.mark === entry.mark && a.field === m.field)) continue
+    asked.push({ question: w.question, mark: entry.mark, field: m.field })
+    questions.push(w)
+  }
   const clean = !FROM_ELSEWHERE.some((k) => Object.hasOwn(x, k))
   const input: Record<string, unknown> = { ...x, questions }
   for (const k of FROM_ELSEWHERE) delete input[k]
-  return { input, clean }
+  return { input, clean, asked }
 }
 
 // The pair the user chose for this description, in an AskUserQuestion that carried the mod's mark: taken once. Only the
@@ -121,20 +140,23 @@ async function retried($: Ctx, task: Call): Promise<Decision | undefined> {
 // The main loop's AskUserQuestion has been answered: an answer to a question that carries a mark the mod issued, and is
 // a model (or an effort), is kept for that mark's entry. A denied call, an error, an unmarked question, a mark never
 // issued, an answer that is not one of the lists: nothing is kept.
-async function captured($: Ctx, e: { questions?: unknown }, ran: { deny?: string; isError?: true; result?: unknown }): Promise<void> {
+async function captured($: Ctx, e: { questions?: unknown }, asked: readonly Worded[], ran: { deny?: string; isError?: true; result?: unknown }): Promise<void> {
   if (ran.deny !== undefined || ran.isError === true || !Array.isArray(e.questions)) return
   // A dialog that resolved on the user's idle time (afkTimeoutMs) holds unconfirmed selections: not a choice.
   if (typeof ran.result === 'object' && ran.result !== null && Object.hasOwn(ran.result, 'afkTimeoutMs')) return
+  // Nor one where the user asked for another round of questions (followUp) instead of answering.
+  const follow = (ran.result as { followUp?: unknown } | null | undefined)?.followUp
+  if (follow !== undefined && follow !== false) return
   const said = (ran.result as { answers?: unknown } | undefined)?.answers
   if (typeof said !== 'object' || said === null) return
   const got: Array<{ mark: string; field: 'model' | 'effort'; value: string }> = []
   for (const q of e.questions as Array<{ question?: unknown }>) {
     if (typeof q?.question !== 'string') continue
-    const m = MARK.exec(q.question)
+    const w = asked.find((a) => a.question === q.question) // the mod's own wording, by equality
     const answer = (said as Record<string, unknown>)[q.question]
-    if (m === null || typeof answer !== 'string') continue
+    if (w === undefined || typeof answer !== 'string') continue
     const value = answer.trim()
-    if (m[2] === 'model' ? isModel(value) : isEffort(value)) got.push({ mark: m[1] as string, field: m[2] as 'model' | 'effort', value })
+    if (w.field === 'model' ? isModel(value) : isEffort(value)) got.push({ mark: w.mark, field: w.field, value })
   }
   if (got.length === 0) return
   await update($, asks, (l) =>
@@ -183,6 +205,9 @@ async function decide($: Ctx, task: Call): Promise<Resolved> {
   return { decided: { ...CLASSES[v.cls], by: v.by, reason: v.reason } }
 }
 
+// A pinned call (a fork, a custom type) goes on without the model and effort the caller named: they stay in `asked`.
+const unnamed = (e: Call): Call => ({ ...e, model: undefined, effort: undefined })
+
 // What the caller named, when the mod decided otherwise: the disagreement the pane keeps visible.
 const askedNote = (x: Row): string => {
   const { model, effort } = x.asked
@@ -199,14 +224,15 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
   if (e.tool === 'AskUserQuestion') {
     let sent: object = e
     let clean = false
+    let asked: Worded[] = []
     try {
-      ;({ input: sent, clean } = await canonical($, e))
+      ;({ input: sent, clean, asked } = await canonical($, e))
     } catch (err) {
       logFault($, `the questions could not be checked (${String(err)}); no answer will be taken`)
     }
     const ran = await next(sent as typeof e)
     try {
-      if (clean) await captured($, sent as { questions?: unknown }, ran as { deny?: string; isError?: true; result?: unknown })
+      if (clean) await captured($, sent as { questions?: unknown }, asked, ran as { deny?: string; isError?: true; result?: unknown })
     } catch (err) {
       logFault($, `the answer could not be recorded (${String(err)}); the retry will be refused`)
     }
@@ -216,9 +242,17 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
   if (e.tool === 'Agent') {
     const asked = { model: e.model, effort: e.effort }
     const keep = pinned(e)
-    const r: Resolved = keep
-      ? { decided: { model: e.model ?? 'inherited', effort: e.effort ?? 'default', by: 'caller', reason: 'fork or custom type: not decided by the mod' } }
-      : await decide($, e)
+    let r: Resolved
+    if (keep) r = { decided: { model: 'inherited', effort: 'default', by: 'caller', reason: 'fork or custom type: its definition or the parent decides; the named pair is only a request' } }
+    else {
+      try {
+        r = await decide($, e)
+      } catch (err) {
+        // The decision failed (the pending asks could not be read or taken): the user is asked, with a row to show it.
+        logFault($, `the decision failed (${String(err)}); the user chooses`)
+        r = await askUser($, e, 'the decision failed')
+      }
+    }
     const decided = r.decided
     if (fmAbsent && !absentSaid) {
       absentSaid = true
@@ -241,8 +275,7 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
       logFault($, `the row could not be recorded (${String(err)}); the decision still applies`)
     }
     if (r.deny !== undefined) return { deny: r.deny }
-    const ran = await next(keep ? e : { ...e, model: decided.model as Model, effort: decided.effort as Effort })
-    if (ran.deny !== undefined) {
+    const refuseRow = async (): Promise<void> => {
       try {
         await update($, rows, (list) => list.map((x) => (x.id === entry.id ? { ...x, status: 'refused' as const } : x)))
       } catch (err) {
@@ -250,6 +283,17 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
         logFault($, `the row could not be marked refused (${String(err)})`)
       }
     }
+    let ran: Awaited<ReturnType<typeof next>>
+    try {
+      ran = await next(keep ? unnamed(e) : { ...e, model: decided.model as Model, effort: decided.effort as Effort })
+    } catch (err) {
+      // The layer below failed after the row was written: the row says so and the call is refused here. It is not sent
+      // again (it may have started), and the caller's pair never goes through.
+      logFault($, `the Agent call failed below the mod (${String(err)}); it was refused`)
+      await refuseRow()
+      return { deny: 'delegate: the Agent call failed below the mod; this agent was not confirmed started. Call Agent again.' }
+    }
+    if (ran.deny !== undefined) await refuseRow()
     return ran
   }
   if (mode === 'off' || isOrchestration(e.tool, extra)) return next(e)
@@ -358,7 +402,8 @@ export const register: Register = (on, options) => {
   // A fault in a gating hook must not stop a session, and an Agent call the mod decides never goes on with the
   // caller's pair or a guess: it takes the same path as an unclassified call, the user chooses.
   on('tool.call', toolCalled).catch(async ($, e, next) => {
-    if (e.tool !== 'Agent' || e.agentId !== undefined || pinned(e)) return next(e)
+    if (e.tool !== 'Agent' || e.agentId !== undefined) return next(e)
+    if (pinned(e)) return next(unnamed(e))
     logFault($, 'the tool.call hook failed; the user chooses')
     // A throw in this handler would leave the call to the engine's own fault path: whatever happens here, it is refused.
     let r: Resolved

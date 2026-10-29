@@ -177,7 +177,7 @@ Ran 90 tests across 10 files. [1.62s]
   Received: 2
 ```
 
-# Round 2 (review of 75a391f): `docs/verification/pr56-review-round2-2026-10-29.md`
+# Round 2 (review of 75a391f): the round 2 review comment on the PR (https://github.com/cdeust/claude-mods/pull/56#issuecomment-6498073817)
 
 All four findings were verified at the source by the reviewer in the 2.1.306 d.ts and binary (input schema declares
 `answers?: {}`, `call()` returns the input's answers, `afkTimeoutMs` on the output, `TurnStartInput` fires for

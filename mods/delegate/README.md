@@ -6,7 +6,8 @@ three things:
 1. **Decides** the model and the effort of every `Agent` call from its brief, with Apple's on-device model (fm)
    and, if you configure a TypeSafe key, Jev; with no answer from either it asks you. A model or an effort the
    call names is kept as a request (`asked`) beside the decision, never applied; a `fork` and a custom subagent
-   type (a plugin's agent, which pins its own model) are left alone.
+   type (a plugin's agent, which pins its own model) are not decided by the mod, and the model and effort they name are
+   not sent on either (recorded as `asked`).
 2. **Guards** the main loop: its own work tools (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `WebFetch`, ...) are
    refused with a message that says to delegate. A subagent's calls carry an `agentId` and are never touched.
 3. **Shows** the delegations in a `/delegate` pane: for each, the model and the effort asked, and the ones the
@@ -56,13 +57,14 @@ hook needs and nothing else:
 No keyword, pattern or text rule takes part in the decision. Two models read the brief; the engine's agent type
 bounds the result; when no model answers, you choose. Per `Agent` call:
 
-1. A `fork` and a custom subagent type are the caller's: the mod does not decide them.
+1. A `fork` and a custom subagent type are not decided by the mod: they go on without the model and effort the caller
+   named (kept as `asked`), so their definition or the parent decides.
 2. **fm** (Apple's on-device model, `/usr/bin/fm`) and, **if a TypeSafe API key is configured, Jev** (`jev-latest`,
    `POST https://api.typesafe.ai/v1/systemone`, one Choice question over the four classes) read the brief at the
    same time. Both answered: **the higher class wins** (`read` < `build` < `judge` < `critical`), so a brief that
    steers one model down is still read by the other. One answered: it decides, and the row says which model was
    missing and why. Jev takes over from fm when fm is busy (see "Concurrency") and when fm fails (`fm-absent`,
-   `fm-exit`, `fm-timeout`, `fm-unparseable`, `fm-overflow`); fm decides alone when there is no key or Jev fails.
+   `fm-exit`, `fm-timeout`, `fm-unparseable`, `fm-overflow`, `fm-error`); fm decides alone when there is no key or Jev fails.
 3. The agent type bounds the class (below), and a bound that changed the answer is recorded in the row.
 4. **Neither answered** (fm unavailable or failed, and Jev keyless, failed or rate limited): the mod asks you which
    model and which effort, tagged `user` (below).
@@ -113,14 +115,18 @@ What the retry names is ignored. The mod watches the `AskUserQuestion` call itse
 engine's answer) and keeps the user's answer to a marked question, if and only if the call was answered, the mark is
 one the mod issued, and the answer is a model (or an effort) from the lists above. The retry applies that stored
 pair, tagged `user`, and consumes it in one atomic state update, so of any number of parallel retries one is applied
-and the others are refused again. The marked questions are **rewritten by the mod** before they reach the user: their text and options are the mod's
+and the others are classified again, like any call. The marked questions are **rewritten by the mod** before they reach the user: their text and options are the mod's
 (all four models, efforts low to xhigh, `max` under "Other"), whatever the main loop wrote, and `answers`, `annotations`,
-`response` and `afkTimeoutMs` written into the call are removed. Nothing is taken when the call carried any of them, when
-the result carries `afkTimeoutMs` (the dialog resolved on the user's idle time), or when the call was refused. The
+`response`, `afkTimeoutMs` and `followUp` written into the call are removed, and a mark and field are worded once. An
+answer is paired with an entry by the text the mod worded (equality), never by a mark read out of the text again, so a
+description that holds `[ask ...]` cannot redirect it. Nothing is taken when the call carried any of them, when the result
+carries `afkTimeoutMs` (the dialog resolved on the user's idle time) or `followUp` (the user asked for more questions
+instead of answering), or when the call was refused. The
 pending entry is dropped at the start and at the end of the main loop's turn (a subagent's `turn.start` does not drop
 it): an answer does not outlive the turn that asked. The invariant: a pair is applied tagged `user` only if the user chose
 it in a marked `AskUserQuestion` during the current turn, once. A refusal anyone can obtain (a burst, a warm-up, a `-p`
-run) opens nothing by itself: with no answer, a retry that names a pair is refused. What this does not prove: that the
+run) opens nothing by itself: with no answer, a retry is classified again like any call, and refused only if both models still fail; the pair it names
+is never applied. What this does not prove: that the
 engine's answer comes from a person (a hook or host beneath this mod that answers the dialog is trusted); the pane
 shows the pair and `[user]`.
 
@@ -140,7 +146,7 @@ field it did not name), and under it the reason: the class, each model's answer 
 | `jev-limited (429/529)`, `jev-auth (401/403)`, `jev-http (status)` | TypeSafe refused or failed; no retry, no loop |
 | `jev-timeout`, `jev-unparseable`, `jev-error` | no answer in 4 s, an answer that is not a class, a failed request |
 
-`caller` rows (fork, custom type) carry the caller's own fields; `none` rows are calls refused until you choose.
+`caller` rows (fork, custom type) show `inherited`/`default` (the pair they named is in the `asked` note); `none` rows are calls refused until you choose.
 
 ### The two models' calls
 
@@ -200,7 +206,7 @@ guard ends the wait, so the model is never left marked as warming. With a key, a
 ### Data sent to TypeSafe, and the key
 
 With **no key** nothing leaves the machine: fm is on-device. With a key, **every Agent brief (description, agent type
-and up to 2000 characters of the prompt, which may contain code or other sensitive text) is sent to TypeSafe**,
+and the prompt, the whole brief cut to 2000 characters, which may contain code or other sensitive text) is sent to TypeSafe**,
 beside the on-device read. TypeSafe states that it does not train models on user data (docs.typesafe.ai/models.md and
 the privacy policy linked from docs.typesafe.ai/legal.md); zero data retention is offered to enterprise customers
 only (docs.typesafe.ai/legal.md). Do not set a key if your briefs may carry what you may not send to a third party.

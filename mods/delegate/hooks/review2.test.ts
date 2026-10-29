@@ -61,10 +61,15 @@ test('R1b a subagent turn.start between the refusal and the AskUserQuestion does
 
 test('R2 answers the main loop wrote into the AskUserQuestion input are not the user\'s choice', async ($, on) => {
   const w = wireBelow(on, (x) => ({ questions: x.questions, answers: x.answers ?? {} })) // echoes the input's answers
-  const nonce = await refuse($, D)
+  // keyed by the text the mod words (the refusal spells it out), the only key an echoed answer could be taken under
+  const deny = ((await spawn($, { description: D })) as Reply).deny ?? ''
+  const [mq, eq] = [...deny.matchAll(/"(Which (?:model|effort) for the agent "Review the guard"\? \([^)]*\) \[ask [0-9a-z]+:(?:model|effort)\])"/g)].map((x) => x[1]!)
+  expect(mq).toBeDefined()
+  const nonce = /\[ask ([0-9a-z]+):model\]$/.exec(mq!)?.[1] ?? ''
   expect(nonce).not.toBe('')
-  const q = qs(D, nonce)
-  await $.tool.call({ tool: 'AskUserQuestion', questions: q, answers: { [q[0]!.question]: 'fable', [q[1]!.question]: 'max' } } as never)
+  const q = qs(D, nonce).map((x, i) => ({ ...x, question: i === 0 ? mq! : eq! }))
+  await $.tool.call({ tool: 'AskUserQuestion', questions: q, answers: { [mq!]: 'fable', [eq!]: 'max' } } as never)
+  expect(w.seen[0]).not.toHaveProperty('answers') // not sent on to the dialog
   await spawn($, { description: D })
   expect(w.sent).toEqual([])
 })
@@ -73,8 +78,10 @@ test('R2b nor are annotations or a response the main loop wrote', async ($, on) 
   const answer = (x: { questions: Array<{ question: string }> }) => Object.fromEntries(x.questions.map((q) => [q.question, q.question.includes(':model]') ? 'fable' : 'max']))
   const w = wireBelow(on, (x) => ({ questions: x.questions, answers: answer(x) }))
   const nonce = await refuse($, D)
+  expect(nonce).not.toBe('')
   await $.tool.call({ tool: 'AskUserQuestion', questions: qs(D, nonce), response: 'fable, max' } as never)
   await $.tool.call({ tool: 'AskUserQuestion', questions: qs(D, nonce), annotations: {} } as never)
+  for (const s of w.seen) for (const k of ['answers', 'annotations', 'response', 'afkTimeoutMs', 'followUp']) expect(s).not.toHaveProperty(k)
   await spawn($, { description: D })
   expect(w.sent).toEqual([])
 })
