@@ -10,6 +10,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+from codex_resume_fixtures import with_claude
 from test_ci_codex_reviews import (
     SHA,
     OTHER,
@@ -70,7 +71,7 @@ class ResolvedSecurityTests(unittest.TestCase):
         with patch.object(
             m.runtime, "_api", return_value=[page() if packet is None else packet]
         ):
-            return m.review_evidence([summary() if row is None else row], SHA, REPO, PR)
+            return m.review_evidence(with_claude([summary() if row is None else row]), SHA, REPO, PR)
 
     def test_completed_null_is_clean_only_with_matching_resolved_native_threads(self):
         result = self.evaluate()
@@ -188,7 +189,7 @@ class ResolvedSecurityTests(unittest.TestCase):
         with patch.object(
             m.runtime, "_api", side_effect=m.runtime.EvidenceError("api")
         ):
-            result = m.review_evidence([summary()], SHA, REPO, PR)
+            result = m.review_evidence(with_claude([summary()]), SHA, REPO, PR)
         self.assertEqual(result["state"], "blocked")
         self.assertEqual(result["reason"], "api")
         self.assertFalse(result["reviews_complete"])
@@ -204,19 +205,19 @@ class ResolvedSecurityTests(unittest.TestCase):
         m = module()
         with patch.object(m.runtime, "_api", return_value=[first, second]):
             self.assertEqual(
-                m.review_evidence([summary()], SHA, REPO, PR)["state"], "success"
+                m.review_evidence(with_claude([summary()]), SHA, REPO, PR)["state"], "success"
             )
         thread(second)["comments"]["nodes"][0]["databaseId"] = 1
         with patch.object(m.runtime, "_api", return_value=[first, second]):
             self.assertEqual(
-                m.review_evidence([summary()], SHA, REPO, PR)["state"], "blocked"
+                m.review_evidence(with_claude([summary()]), SHA, REPO, PR)["state"], "blocked"
             )
 
     def test_cli_reads_threads_and_rechecks_the_live_head(self):
         from test_ci_codex_reviews import pull
 
         m = module()
-        replies = [pull(), summary_pages([[summary()]], number=PR), [page()], pull()]
+        replies = [pull(), summary_pages([with_claude([summary()])], number=PR), [page()], pull()]
         results = [
             subprocess.CompletedProcess([], 0, json.dumps(row), "") for row in replies
         ]
