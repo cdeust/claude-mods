@@ -1,6 +1,6 @@
 {
   "name": "delegate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "The main loop only delegates; the mod decides each subagent's model and effort from its brief, with Apple's on-device model and, when a key is set, TypeSafe Jev (the higher class wins). When no model answers it asks you. Lookups run on haiku at low effort, implementation on sonnet, review and measurement on opus.",
   "types": "./types/index.d.ts",
   "userConfig": {

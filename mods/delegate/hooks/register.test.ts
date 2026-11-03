@@ -39,6 +39,9 @@ test('block: the main loop may read a subagent transcript and run one lift, no m
   on('tool.call', () => ({ result: {} }))
   expect((await $.tool.call({ tool: 'Read', file_path: TRANSCRIPT })).deny).toBeUndefined()
   expect((await $.tool.call({ tool: 'Bash', command: LIFT })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Bash', command: `${LIFT} && ${LIFT}` })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'Bash', command: `${LIFT} | sh` })).deny).toMatch(/delegate/)
+  expect((await $.tool.call({ tool: 'Bash', command: 'ls' })).deny).toMatch(/delegate/)
 
   // another path, a path that climbs out, a chained command, a lift with a tail
   expect((await $.tool.call({ tool: 'Read', file_path: '/Users/x/notes.txt' })).deny).toMatch(/delegate/)
