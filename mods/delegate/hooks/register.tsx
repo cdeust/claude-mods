@@ -5,7 +5,8 @@ import type { Ask, Blocked, Decision, Row } from '../types'
 import { combine } from './decide'
 import type { Seen } from './decide'
 import { classify, FM, newGate, warm } from './fm'
-import { isOrchestration, isReflectionCall, parseAllow, refusal } from './guard'
+import { isLedgerCall, isOrchestration, isTranscriptOnDisk, parseAllow, projectsDir, refusal, transcriptsRead } from './guard'
+import type { Call as Shape } from './guard'
 import { jev } from './jev'
 import { CLASSES, EFFORTS, MODELS, pinned } from './route'
 import type { Effort, Model } from './route'
@@ -215,6 +216,25 @@ const askedNote = (x: Row): string => {
   return ` (asked ${model ?? '-'}/${effort ?? '-'})`
 }
 
+// The Stop reflection hook's four calls (a ledger lift or list; a Read or a grep of subagent transcripts): the
+// shapes are guard.ts's. A transcript must also be, under the real HOME, a regular file where its path says.
+// Anything that faults (HOME unset, a stat refused or missing) refuses here, since this hook's .catch fails open.
+async function isReflectionOnDisk($: Ctx, call: Shape): Promise<boolean> {
+  if (isLedgerCall(call)) return true
+  try {
+    const home = await $.env.get('HOME')
+    const paths = transcriptsRead(call, home)
+    if (paths === undefined || home === undefined) return false
+    const projects = await $.fs.stat(projectsDir(home), { resolve: true })
+    for (const path of paths) {
+      if (!isTranscriptOnDisk(await $.fs.stat(path, { resolve: true }), projects, path, home)) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 // One hook, not two: the engine refuses a second unmatched `tool.call`, and one filtered by `{ tool: 'Agent' }`
 // does not compile with typescript 5.6.3 (TS2589), so the Agent call is told apart here. A subagent's calls carry
 // an agentId and are never touched.
@@ -297,8 +317,7 @@ const toolCalled: Hook<'tool.call'> = async ($, e, next) => {
     return ran
   }
   if (mode === 'off' || isOrchestration(e.tool, extra)) return next(e)
-  // The Stop reflection hook's two calls (a subagent's transcript, one ledger lift): see guard.ts.
-  if (isReflectionCall(e as unknown as { tool: string; file_path?: unknown; command?: unknown })) return next(e)
+  if (await isReflectionOnDisk($, e as unknown as Shape)) return next(e)
   const how = mode === 'warn' ? 'warn' : 'block'
   await update($, blocked, (list) => [...list, { tool: e.tool, mode: how } as Blocked].slice(-ROWS_CAP))
   if (how === 'warn') {
