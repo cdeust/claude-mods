@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { fmSays, wire } from './stub'
 
 const PANE = {
   plugin: 'delegate',
@@ -8,12 +9,12 @@ const PANE = {
 } as const
 
 test('the pane shows a routed delegation, on every surface', async ($, on) => {
-  on('tool.call', () => ({ result: {} }))
+  wire(on, { fm: [fmSays('read')] })
   await $.tool.call({ tool: 'Agent', description: 'Crawl the docs', prompt: 'p' } as never)
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /Crawl the docs/ }))?.text).toMatch(/haiku → \? · low → \? · Crawl the docs \[regex\]/)
+    expect((await ui.find({ type: 'Text', text: /Crawl the docs/ }))?.text).toMatch(/haiku → \? · low → \? · Crawl the docs \[fm\]/)
     await ui.unmount()
   }
 })
@@ -30,7 +31,7 @@ const END = (e: { turnId: string; index: number }) =>
   ({ turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null }) as never
 
 test('the pane shows asked and ran for model and effort, and ? until a step is seen', async ($, on) => {
-  on('tool.call', () => ({ result: {} }))
+  wire(on, { fm: [fmSays('read')] })
   on('agent.spawn', () => ({ model: 'haiku', agentId: 'ag-1' }))
   on('turn.step', async function* (_, e) {
     return END(e)
@@ -60,7 +61,7 @@ test('the pane shows asked and ran for model and effort, and ? until a step is s
 })
 
 test('a step that comes before the spawn answers is kept for the row', async ($, on) => {
-  on('tool.call', () => ({ result: {} }))
+  wire(on, { fm: [fmSays('read')] })
   on('agent.spawn', () => ({ model: 'haiku', agentId: 'ag-early' }))
   on('turn.step', async function* (_, e) {
     return END(e)

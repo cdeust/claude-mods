@@ -18,9 +18,9 @@ export function isOrchestration(tool: string, extra: readonly string[] = []): bo
 }
 
 // What the main loop keeps besides orchestration, for the Stop reflection hook and nothing else: four call shapes,
-// each matched on the whole input. A ledger lift or list (Bash), and a Read or one read-only grep (Bash) of
-// subagent transcripts. The shapes are here and pure; for a transcript, register.tsx then checks the disk
-// (isTranscriptOnDisk). Anything else stays a subagent's work.
+// each matched on the whole input. A ledger lift (lifts may be chained) or list (Bash), and a Read or one read-only
+// grep (Bash) of subagent transcripts. The shapes are here and pure; for a transcript, register.tsx then checks the
+// disk (isTranscriptOnDisk). Anything else stays a subagent's work.
 
 export type Call = { tool: string; file_path?: unknown; command?: unknown }
 
@@ -106,8 +106,16 @@ function isLedgerCommand(command: unknown, shape: RegExp): boolean {
   return m !== null && !hasDotDot(m[1] ?? '..') && !hasDotDot(m[2] ?? '..')
 }
 
+// A chain of lifts: the Stop reflection hook asks for every pending reflection to be lifted by the main loop, often
+// in one command. Segments are separated by `&&` (at most one space each side) and each one is a lift, checked as
+// above on its own words: shellWords refuses every `&`, so the only ones left are the separators, and the shell reads
+// `&&` as the same operator with or without spaces around it. `&&` is the only separator: after `;` the exit status
+// is the last segment's, so a refused lift would be reported as done. No assignment is accepted: an assignment of an
+// exported name reaches the child process, zsh acts on some names (`UID`, `PPID`, `X_id==ls`), and `$` stays
+// refused, so nothing could read a variable anyway. A second space beside `&&` leaves a segment with a leading or
+// trailing space, and an empty segment (`&&&&`, a trailing `&&`) has no word, so shellWords refuses both.
 export function isLiftCommand(command: unknown): boolean {
-  return isLedgerCommand(command, LIFT_COMMAND)
+  return typeof command === 'string' && command.split(/ ?&& ?/).every((segment) => isLedgerCommand(segment, LIFT_COMMAND))
 }
 
 export function isListCommand(command: unknown): boolean {

@@ -1,0 +1,7 @@
+[run]
+source = scripts
+omit = scripts/tests/*
+patch = subprocess
+
+[report]
+show_missing = true

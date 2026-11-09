@@ -1,5 +1,5 @@
 {
-  "unit": "npm install -g @anthropic-ai/claude-code@2.1.306 && claude plugin validate mods/delegate && claude plugin test mods/delegate",
+  "unit": "npm install -g @anthropic-ai/claude-code@2.1.306 && claude plugin validate mods/delegate && claude plugin test mods/delegate && python3 -m venv \"$RUNNER_TEMP/native-coverage\" && \"$RUNNER_TEMP/native-coverage/bin/python\" -m pip install --disable-pip-version-check --require-hashes -r requirements-ci-coverage.lock && \"$RUNNER_TEMP/native-coverage/bin/python\" -m coverage run -m unittest discover -s scripts/tests -q && \"$RUNNER_TEMP/native-coverage/bin/python\" -m coverage combine && \"$RUNNER_TEMP/native-coverage/bin/python\" -m coverage xml",
   "regression": "npm install -g @anthropic-ai/claude-code@2.1.306 && claude plugin validate mods/delegate",
   "e2e": "npm install -g @anthropic-ai/claude-code@2.1.306 && claude plugin test mods/delegate",
   "environment": "claude plugin validate mods/delegate && claude plugin test mods/delegate",
