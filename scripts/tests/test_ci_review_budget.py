@@ -156,6 +156,7 @@ class CliTests(unittest.TestCase):
                 "HEAD_REF": "feat",
                 "LABELS": labels,
                 "GITHUB_OUTPUT": str(out_file),
+                "RUNNER_TEMP": str(out_file.parent),
             }
             gh = fake_gh(runs, jobs)
             stdout = StringIO()
@@ -180,6 +181,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("skip=true", lines)
         self.assertIn("refinement PR", text)
         self.assertIn(budget.BYPASS_LABEL, text)
+
+
+class OutputFileTests(unittest.TestCase):
+    def test_the_output_file_must_sit_inside_the_runner_temp(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            inside = {"RUNNER_TEMP": tmp, "GITHUB_OUTPUT": str(Path(tmp) / "cmd" / "out")}
+            expected = os.path.realpath(inside["GITHUB_OUTPUT"])
+            self.assertEqual(budget.output_file(inside), expected)
+            for outside in (str(Path(other) / "out"), str(Path(tmp) / ".." / "out"), tmp):
+                with self.subTest(path=outside), self.assertRaises(SystemExit):
+                    budget.output_file({"RUNNER_TEMP": tmp, "GITHUB_OUTPUT": outside})
 
 
 class WorkflowWiringTests(unittest.TestCase):
