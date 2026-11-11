@@ -43,3 +43,14 @@ cd mods/delegate && npx -y -p typescript@5.6.3 tsc -p . --noEmit
 `ci.json` is the pipeline's contract (`.github/workflows/pipeline.yml`); its commands validate and test the mod.
 
 `docs/verification/` holds the evidence of past pull requests, including those of mods since removed.
+
+## Releasing
+
+The version is `version` in `mods/delegate/.claude-plugin/plugin.json`. After a merge whose five test categories
+pass, the pipeline's `tag` job pushes `delegate/v<version>` (`ci.json` `release_packages`) with the
+`RELEASE_TAG_SSH_KEY` deploy key. That push starts `.github/workflows/release.yml`, which checks out the tag, fails
+unless the tag equals `delegate/v` plus the manifest's version at that commit, runs `claude plugin validate` and
+`claude plugin test`, and publishes a GitHub Release with `delegate-<version>.tar.gz` (the committed
+`mods/delegate` tree; the same git and gzip rebuild it byte for byte) and its `.sha256`. The notes list the commit subjects under
+`mods/delegate` since the previous `delegate/v*` tag. To release a tag that already exists, run the workflow by
+hand (Actions, Release, Run workflow) with `tag` set to it, e.g. `delegate/v0.3.2`; nothing is re-tagged.
