@@ -9,5 +9,6 @@
       "version_file": "mods/delegate/.claude-plugin/plugin.json",
       "tag_prefix": "delegate/v"
     }
-  ]
+  ],
+  "low_risk_files": ["uv.lock", "pyproject.toml"]
 }
