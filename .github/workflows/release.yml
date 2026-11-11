@@ -1,0 +1,140 @@
+name: Release
+
+# Publishes the GitHub Release of a delegate tag. The `tag` job of
+# pipeline-post-merge.yml pushes `delegate/v<version>` (ci.json `release_packages`)
+# over SSH with the RELEASE_TAG_SSH_KEY deploy key, so the push event below
+# fires: only a push made with GITHUB_TOKEN creates no new workflow run.
+# source: docs.github.com, "Automatic token authentication", section
+# "Using the GITHUB_TOKEN in a workflow".
+# workflow_dispatch releases a tag that already exists (delegate/v0.3.2, pushed
+# before this workflow existed) without moving it.
+#
+# The release is built from the tag only: the commit it names, the previous
+# delegate/v* tag for the notes, never the main branch.
+
+on:
+  push:
+    tags:
+      - "delegate/v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. delegate/v0.3.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish the delegate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write  # create the release + upload its assets
+    env:
+      # Passed to every run: step through env, never interpolated into a script.
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      # source: ci.json release_packages (version_file, tag_prefix "delegate/v").
+      MOD_DIR: mods/delegate
+      VERSION_FILE: mods/delegate/.claude-plugin/plugin.json
+    steps:
+      - name: Validate the tag name
+        run: |
+          set -euo pipefail
+          # [[ =~ ]] tests the whole value; grep would accept one matching line of several.
+          if ! [[ "$RELEASE_TAG" =~ ^delegate/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must match ^delegate/v[0-9]+\.[0-9]+\.[0-9]+\$"
+            exit 1
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0  # every delegate/v* tag, for the release notes range
+          persist-credentials: false
+
+      - name: Verify the tag names this commit and the manifest's version
+        id: version
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          [ "$(git rev-parse HEAD)" = "$commit" ] || { echo "::error::HEAD is not the tagged commit"; exit 1; }
+          version="$(git show "${commit}:${VERSION_FILE}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          if [ "delegate/v${version}" != "$RELEASE_TAG" ]; then
+            echo "::error::${VERSION_FILE} says ${version}; tag is ${RELEASE_TAG}"
+            exit 1
+          fi
+          { echo "version=$version"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+
+      - name: Install the Claude Code CLI
+        # The lockfile pinned at the tag, the same install as pipeline.yml.
+        # source: https://docs.npmjs.com/cli/v11/commands/npm-ci
+        run: |
+          npm ci --prefix "$GITHUB_WORKSPACE/.github/claude-cli"
+          echo "$GITHUB_WORKSPACE/.github/claude-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Validate and test the mod
+        # ci.json `regression` and `e2e`; neither needs a secret.
+        run: |
+          set -euo pipefail
+          claude plugin validate "$MOD_DIR"
+          claude plugin test "$MOD_DIR"
+
+      - name: Build the tarball and its checksum
+        id: bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # Deterministic: the committed tree (not the working copy), every entry
+          # dated at the commit time, gzip without name or timestamp.
+          # source: https://git-scm.com/docs/git-archive (--mtime; a tree gets the current time otherwise)
+          mtime="$(git show -s --format=%ct "$COMMIT")"
+          name="delegate-${VERSION}.tar.gz"
+          mkdir -p dist
+          git archive --format=tar --mtime="@${mtime}" --prefix=delegate/ "${COMMIT}:${MOD_DIR}" \
+            | gzip -n -9 > "dist/${name}"
+          (cd dist && sha256sum "$name" | tee "${name}.sha256")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Write the release notes from the delegate tags
+        env:
+          COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # The previous delegate/v* tag by version, not by date; none for the first.
+          previous="$(git tag --list 'delegate/v*' --sort=-version:refname \
+            | grep -Ex 'delegate/v[0-9]+\.[0-9]+\.[0-9]+' \
+            | awk -v cur="$RELEASE_TAG" 'seen && !done { print; done = 1 } $0 == cur { seen = 1 }')"
+          if [ -n "$previous" ]; then
+            range="${previous}..${COMMIT}"
+            echo "Changes to \`${MOD_DIR}\` since \`${previous}\`:" > release-notes.md
+          else
+            range="$COMMIT"
+            echo "Changes to \`${MOD_DIR}\`:" > release-notes.md
+          fi
+          echo >> release-notes.md
+          git log --no-merges --format='- %s (%h)' "$range" -- "$MOD_DIR" > changes.md
+          if [ -s changes.md ]; then cat changes.md >> release-notes.md; else echo "- No commit under ${MOD_DIR}." >> release-notes.md; fi
+          cat release-notes.md
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/${{ steps.bundle.outputs.name }}
+            dist/${{ steps.bundle.outputs.name }}.sha256
+          fail_on_unmatched_files: true
