@@ -10,5 +10,6 @@
       "tag_prefix": "delegate/v"
     }
   ],
-  "low_risk_files": ["uv.lock", "pyproject.toml"]
+  "low_risk_files": ["uv.lock", "pyproject.toml"],
+  "docs_paths": ["docs/"]
 }
